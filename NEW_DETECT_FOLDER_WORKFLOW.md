@@ -217,8 +217,8 @@ x/y/w/h
 欄位說明：
 
 - `source_block_index`：對應原始 block 索引。
-- `xyxy_pixel`：使用 `aligned_box_map.json` 的 `new_xyxy_pixel`。
-- `center_normalized`：使用 `aligned_box_map.json` 的 `new_center_normalized`。
+- `xyxy_pixel`：align 成功時使用 `new_xyxy_pixel`；如果 align 回退，使用 `final_xyxy_pixel`（原始 block）。
+- `center_normalized`：align 成功時使用 `new_center_normalized`；如果 align 回退，使用 `final_center_normalized`。
 - `orientation`：文字方向，只會是 `horizontal` 或 `vertical`；匹配不到 line 時預設 `vertical`。
 - `font_size`：同一 block 內 line-trans 短邊寬度的下中位數；匹配不到 line 時回退為 `min(new_xyxy_width, new_xyxy_height)`。
 

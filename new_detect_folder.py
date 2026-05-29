@@ -119,7 +119,10 @@ def _deal_overlap_path_for_page(paths: dict[str, str], page_name: str) -> str:
 
 
 def _xyxy_from_align_item(item: dict) -> list[int]:
-    xyxy = item.get('new_xyxy_pixel') or item.get('final_xyxy_pixel')
+    if item.get('accepted') is False:
+        xyxy = item.get('final_xyxy_pixel') or item.get('new_xyxy_pixel')
+    else:
+        xyxy = item.get('new_xyxy_pixel') or item.get('final_xyxy_pixel')
     if isinstance(xyxy, list) and len(xyxy) == 4:
         return [int(round(v)) for v in xyxy]
 
@@ -128,6 +131,21 @@ def _xyxy_from_align_item(item: dict) -> list[int]:
     w = int(round(item.get('w', 0)))
     h = int(round(item.get('h', 0)))
     return [x, y, x + w, y + h]
+
+
+def _center_from_align_item(
+    item: dict,
+    xyxy: list[int],
+    img_w: int,
+    img_h: int,
+) -> list[float]:
+    if item.get('accepted') is False:
+        center = item.get('final_center_normalized')
+    else:
+        center = item.get('new_center_normalized') or item.get('final_center_normalized')
+    if isinstance(center, list) and len(center) == 2:
+        return [round(float(center[0]), 4), round(float(center[1]), 4)]
+    return _center_normalized_from_xyxy(xyxy, img_w, img_h)
 
 
 def _center_normalized_from_xyxy(
@@ -299,11 +317,7 @@ def _build_measure_maps(
         for item in align_items:
             source_index = int(item.get('source_block_index', len(page_items)))
             xyxy = _xyxy_from_align_item(item)
-            center = item.get('new_center_normalized')
-            if not isinstance(center, list) or len(center) != 2:
-                center = _center_normalized_from_xyxy(xyxy, img_w, img_h)
-            else:
-                center = [round(float(center[0]), 4), round(float(center[1]), 4)]
+            center = _center_from_align_item(item, xyxy, img_w, img_h)
 
             matched_lines = line_groups.get(source_index, [])
             widths = [_line_width(line) for line in matched_lines]
