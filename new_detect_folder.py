@@ -368,34 +368,31 @@ def _fit_label_origin(
     img_h, img_w = canvas_shape[:2]
     x1, y1, x2, y2 = box
     pad = 5
+    # Prefer the block's bottom-right corner, then adjust near image borders.
     candidates = [
-        (x1 + pad, y1 + pad),
-        (x1 + pad, y2 - text_h - pad),
+        (x2 - text_w - pad, y2 - text_h - pad),
         (x2 - text_w - pad, y1 + pad),
-        (x1 + pad, y1 - text_h - pad),
-        (x1 + pad, y2 + pad),
+        (x1 + pad, y2 - text_h - pad),
+        (x2 - text_w - pad, y2 + pad),
+        (x2 + pad, y2 - text_h - pad),
     ]
     for x, y in candidates:
         if 1 <= x and x + text_w <= img_w - 1 and 1 <= y and y + text_h <= img_h - 1:
             return int(round(x)), int(round(y))
 
-    x = max(1, min(int(round(x1 + pad)), img_w - text_w - 1))
-    y = max(1, min(int(round(y1 + pad)), img_h - text_h - 1))
+    x = max(1, min(int(round(x2 - text_w - pad)), img_w - text_w - 1))
+    y = max(1, min(int(round(y2 - text_h - pad)), img_h - text_h - 1))
     return x, y
 
 
-def _draw_stroked_text(
+def _draw_black_text(
     canvas: np.ndarray,
     text: str,
     origin: tuple[int, int],
     font_scale: float,
-    color: tuple[int, int, int],
 ) -> None:
     font = cv2.FONT_HERSHEY_SIMPLEX
-    x, y = origin
-    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (1, 1)):
-        cv2.putText(canvas, text, (x + dx, y + dy), font, font_scale, (0, 0, 0), 1, cv2.LINE_AA)
-    cv2.putText(canvas, text, (x, y), font, font_scale, color, 1, cv2.LINE_AA)
+    cv2.putText(canvas, text, origin, font, font_scale, (0, 0, 0), 1, cv2.LINE_AA)
 
 
 def _draw_measure_block_labels(
@@ -416,8 +413,66 @@ def _draw_measure_block_labels(
         text_w, text_h, line_height = _text_block_size(lines, font_scale)
         box = _label_box_for_measure_item(item, align_by_source.get(source_index))
         x, y = _fit_label_origin(box, canvas.shape, text_w, text_h)
-        _draw_stroked_text(canvas, lines[0], (x, y + line_height - 5), font_scale, (255, 255, 0))
-        _draw_stroked_text(canvas, lines[1], (x, y + line_height * 2 - 5), font_scale, (0, 255, 255))
+        pad = 3
+        cv2.rectangle(
+            canvas,
+            (x - pad, y - pad),
+            (x + text_w + pad, y + text_h + pad),
+            (255, 255, 255),
+            -1,
+        )
+        _draw_black_text(canvas, lines[0], (x, y + line_height - 5), font_scale)
+        _draw_black_text(canvas, lines[1], (x, y + line_height * 2 - 5), font_scale)
+    return canvas
+
+
+def _center_marker_color(item: dict) -> tuple[int, int, int]:
+    debug = item.get('layout_debug', {})
+    if not debug.get('accepted'):
+        return (0, 0, 0)
+    center_mode = debug.get('resolved_center_mode', debug.get('center_mode'))
+    if center_mode == 'outer':
+        return (255, 0, 0)
+    if center_mode == 'inner':
+        return (0, 165, 255)
+    if center_mode == 'average':
+        return (0, 255, 0)
+    return (0, 255, 0)
+
+
+def _center_xy_for_align_item(item: dict) -> tuple[int, int]:
+    xyxy = item.get('final_xyxy_pixel') or item.get('new_xyxy_pixel')
+    if isinstance(xyxy, list) and len(xyxy) == 4:
+        x1, y1, x2, y2 = [float(v) for v in xyxy]
+        return int(round((x1 + x2) / 2)), int(round((y1 + y2) / 2))
+
+    x = float(item.get('x', 0))
+    y = float(item.get('y', 0))
+    w = float(item.get('w', 0))
+    h = float(item.get('h', 0))
+    return int(round(x + w / 2)), int(round(y + h / 2))
+
+
+def _draw_measure_center_blocks(
+    canvas: np.ndarray,
+    measure_items: list[dict],
+    align_items: list[dict],
+) -> np.ndarray:
+    align_by_source = _align_item_by_source_index(align_items)
+    height, width = canvas.shape[:2]
+    for measure_item in measure_items:
+        source_index = int(measure_item.get('source_block_index', -1))
+        align_item = align_by_source.get(source_index)
+        if align_item is None:
+            continue
+        cx, cy = _center_xy_for_align_item(align_item)
+        side = max(4, int(round(float(measure_item.get('font_size') or 0))))
+        half = side / 2
+        x1 = max(0, int(round(cx - half)))
+        y1 = max(0, int(round(cy - half)))
+        x2 = min(width - 1, int(round(cx + half)))
+        y2 = min(height - 1, int(round(cy + half)))
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), _center_marker_color(align_item), -1)
     return canvas
 
 
@@ -438,6 +493,11 @@ def _write_measure_previews(
 
         center_img = imread(center_path)
         canvas = _draw_line_width_measurements(center_img, line_pages.get(page_name, []))
+        canvas = _draw_measure_center_blocks(
+            canvas,
+            measure_items,
+            align_pages.get(page_name, []),
+        )
         canvas = _draw_measure_block_labels(
             canvas,
             measure_items,

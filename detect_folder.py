@@ -634,7 +634,7 @@ def _draw_plain_measurement_text(
     text: str,
     center: np.ndarray,
     font_scale: float,
-    color: tuple[int, int, int] = LINE_WIDTH_TEXT_COLOR,
+    color: tuple[int, int, int] = (0, 0, 0),
 ) -> None:
     font = cv2.FONT_HERSHEY_SIMPLEX
     thickness = 1
@@ -644,6 +644,14 @@ def _draw_plain_measurement_text(
     height, width = canvas.shape[:2]
     x = max(1, min(x, width - text_w - 2))
     y = max(text_h + 1, min(y, height - baseline - 2))
+    pad = 2
+    cv2.rectangle(
+        canvas,
+        (x - pad, y - text_h - pad),
+        (x + text_w + pad, y + baseline + pad),
+        (255, 255, 255),
+        -1,
+    )
     cv2.putText(canvas, text, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
 
 
