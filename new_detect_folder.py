@@ -7,6 +7,7 @@ import os
 import os.path as osp
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -40,6 +41,7 @@ from detect_folder import (
 CTD_DIR = 'ctd'
 MASK_DIR = 'mask'
 ALIGN_DIR = 'align'
+MEASURE_PREVIEW_DIR = 'measure_preview'
 BLOCK_MAP_JSON = 'block_map.json'
 LINE_TRANS_MAP_JSON = 'line_trans_map.json'
 ALIGNED_BOX_MAP_JSON = 'aligned_box_map.json'
@@ -55,6 +57,7 @@ def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
         'align': osp.join(ctd_dir, ALIGN_DIR),
         'center': osp.join(ctd_dir, ALIGN_DIR, CENTER_DIR),
         'deal_overlap': osp.join(ctd_dir, ALIGN_DIR, DEAL_OVERLAP_DIR),
+        'measure_preview': osp.join(ctd_dir, MEASURE_PREVIEW_DIR),
     }
     for path in paths.values():
         os.makedirs(path, exist_ok=True)
@@ -327,6 +330,122 @@ def _build_measure_maps(
     return measure, measure_debug
 
 
+def _align_item_by_source_index(items: list[dict]) -> dict[int, dict]:
+    result = {}
+    for fallback_index, item in enumerate(items):
+        source_index = int(item.get('source_block_index', fallback_index))
+        result[source_index] = item
+    return result
+
+
+def _label_box_for_measure_item(measure_item: dict, align_item: dict | None) -> list[int]:
+    if align_item is not None:
+        old_box = align_item.get('layout_debug', {}).get('old_xyxy_pixel')
+        if isinstance(old_box, list) and len(old_box) == 4:
+            return [int(round(v)) for v in old_box]
+
+    xyxy = measure_item.get('xyxy_pixel')
+    if isinstance(xyxy, list) and len(xyxy) == 4:
+        return [int(round(v)) for v in xyxy]
+    return [0, 0, 0, 0]
+
+
+def _text_block_size(lines: list[str], font_scale: float) -> tuple[int, int, int]:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    sizes = [cv2.getTextSize(line, font, font_scale, 1)[0] for line in lines]
+    line_height = max(size[1] for size in sizes) + 4
+    width = max(size[0] for size in sizes)
+    height = line_height * len(lines)
+    return width, height, line_height
+
+
+def _fit_label_origin(
+    box: list[int],
+    canvas_shape: tuple[int, int] | tuple[int, int, int],
+    text_w: int,
+    text_h: int,
+) -> tuple[int, int]:
+    img_h, img_w = canvas_shape[:2]
+    x1, y1, x2, y2 = box
+    pad = 5
+    candidates = [
+        (x1 + pad, y1 + pad),
+        (x1 + pad, y2 - text_h - pad),
+        (x2 - text_w - pad, y1 + pad),
+        (x1 + pad, y1 - text_h - pad),
+        (x1 + pad, y2 + pad),
+    ]
+    for x, y in candidates:
+        if 1 <= x and x + text_w <= img_w - 1 and 1 <= y and y + text_h <= img_h - 1:
+            return int(round(x)), int(round(y))
+
+    x = max(1, min(int(round(x1 + pad)), img_w - text_w - 1))
+    y = max(1, min(int(round(y1 + pad)), img_h - text_h - 1))
+    return x, y
+
+
+def _draw_stroked_text(
+    canvas: np.ndarray,
+    text: str,
+    origin: tuple[int, int],
+    font_scale: float,
+    color: tuple[int, int, int],
+) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    x, y = origin
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (1, 1)):
+        cv2.putText(canvas, text, (x + dx, y + dy), font, font_scale, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.putText(canvas, text, (x, y), font, font_scale, color, 1, cv2.LINE_AA)
+
+
+def _draw_measure_block_labels(
+    canvas: np.ndarray,
+    measure_items: list[dict],
+    align_items: list[dict],
+) -> np.ndarray:
+    if not measure_items:
+        return canvas
+
+    font_scale = max(0.34, min(0.5, canvas.shape[1] / 1900))
+    align_by_source = _align_item_by_source_index(align_items)
+    for item in measure_items:
+        source_index = int(item.get('source_block_index', -1))
+        orientation = str(item.get('orientation', 'vertical'))
+        font_size = item.get('font_size', 0)
+        lines = [orientation, f'{float(font_size):.1f}']
+        text_w, text_h, line_height = _text_block_size(lines, font_scale)
+        box = _label_box_for_measure_item(item, align_by_source.get(source_index))
+        x, y = _fit_label_origin(box, canvas.shape, text_w, text_h)
+        _draw_stroked_text(canvas, lines[0], (x, y + line_height - 5), font_scale, (255, 255, 0))
+        _draw_stroked_text(canvas, lines[1], (x, y + line_height * 2 - 5), font_scale, (0, 255, 255))
+    return canvas
+
+
+def _write_measure_previews(
+    paths: dict[str, str],
+    line_trans_map: dict,
+    aligned_box_map: dict,
+    measure_map: dict,
+) -> None:
+    line_pages = line_trans_map.get('transMap', {})
+    align_pages = aligned_box_map.get('transMap', {})
+    measure_pages = measure_map.get('pages', {})
+
+    for page_name, measure_items in tqdm(measure_pages.items(), desc='measure preview'):
+        center_path = osp.join(paths['center'], f'{Path(page_name).stem}.png')
+        if not osp.isfile(center_path):
+            raise FileNotFoundError(f'找不到 center 預覽圖：{center_path}')
+
+        center_img = imread(center_path)
+        canvas = _draw_line_width_measurements(center_img, line_pages.get(page_name, []))
+        canvas = _draw_measure_block_labels(
+            canvas,
+            measure_items,
+            align_pages.get(page_name, []),
+        )
+        imwrite(osp.join(paths['measure_preview'], f'{Path(page_name).stem}.png'), canvas)
+
+
 def _align_pages(
     img_dir: str,
     paths: dict[str, str],
@@ -495,6 +614,7 @@ def run(
     )
     _write_json(measure_path, measure_map)
     _write_json(measure_debug_path, measure_debug_map)
+    _write_measure_previews(paths, line_trans_map, aligned_box_map, measure_map)
 
     print('完成。輸出：')
     print(f'  - {block_map_path}')
@@ -506,6 +626,7 @@ def run(
     print(f'  - {measure_path}')
     print(f'  - {measure_debug_path}')
     print(f'  - {paths["center"]}/<檔名>.png')
+    print(f'  - {paths["measure_preview"]}/<檔名>.png')
     print(f'  - {paths["deal_overlap"]}/<檔名>.png')
     print(f"重定位頁數：{align_summary['pages']}")
     print(f"重定位 block 數：{align_summary['boxes']}")

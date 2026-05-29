@@ -60,6 +60,7 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 <圖片資料夾>/ctd/measure.json
 <圖片資料夾>/ctd/measure.debug.json
 <圖片資料夾>/ctd/align/center/<檔名>.png
+<圖片資料夾>/ctd/measure_preview/<檔名>.png
 <圖片資料夾>/ctd/align/deal_overlap/<檔名>.png  # 如果偵測到重疊且檔案不存在
 ```
 
@@ -87,6 +88,9 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 
     deal_overlap/
       <檔名>.png
+
+  measure_preview/
+    <檔名>.png
 ```
 
 不會生成：
@@ -228,6 +232,20 @@ x/y/w/h
   "align": {}
 }
 ```
+
+## measure_preview 預覽圖
+
+預覽圖位於：
+
+```text
+ctd/measure_preview/<檔名>.png
+```
+
+這張圖合併 `ctd/align/center/<檔名>.png` 和 `ctd/line-trans-box/<檔名>.png` 的資訊：
+
+- 保留 center 對齊預覽中的 block 陰影、候選區域、中心與結果框。
+- 疊加 line-trans 的短邊卡尺測量標記。
+- 在每個 block 陰影附近標出 `orientation` 和 `font_size`，方便檢查 `measure.json` 是否合理。
 
 ## center 預覽圖
 
