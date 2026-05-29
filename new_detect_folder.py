@@ -43,6 +43,8 @@ ALIGN_DIR = 'align'
 BLOCK_MAP_JSON = 'block_map.json'
 LINE_TRANS_MAP_JSON = 'line_trans_map.json'
 ALIGNED_BOX_MAP_JSON = 'aligned_box_map.json'
+MEASURE_JSON = 'measure.json'
+MEASURE_DEBUG_JSON = 'measure.debug.json'
 
 
 def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
@@ -108,6 +110,221 @@ def _mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
 
 def _deal_overlap_path_for_page(paths: dict[str, str], page_name: str) -> str:
     return osp.join(paths['deal_overlap'], f'{Path(page_name).stem}.png')
+
+
+def _xyxy_from_align_item(item: dict) -> list[int]:
+    xyxy = item.get('new_xyxy_pixel') or item.get('final_xyxy_pixel')
+    if isinstance(xyxy, list) and len(xyxy) == 4:
+        return [int(round(v)) for v in xyxy]
+
+    x = int(round(item.get('x', 0)))
+    y = int(round(item.get('y', 0)))
+    w = int(round(item.get('w', 0)))
+    h = int(round(item.get('h', 0)))
+    return [x, y, x + w, y + h]
+
+
+def _center_normalized_from_xyxy(
+    xyxy: list[int],
+    img_w: int,
+    img_h: int,
+) -> list[float]:
+    x1, y1, x2, y2 = xyxy
+    return [
+        round(((x1 + x2) / 2) / img_w, 4),
+        round(((y1 + y2) / 2) / img_h, 4),
+    ]
+
+
+def _line_box_from_item(item: dict) -> list[int] | None:
+    poly = item.get('polygon')
+    if isinstance(poly, list) and len(poly) >= 4:
+        arr = np.asarray(poly, dtype=np.float64).reshape(-1, 2)
+        x1, y1 = arr.min(axis=0)
+        x2, y2 = arr.max(axis=0)
+        return [int(x1), int(y1), int(x2), int(y2)]
+    if all(key in item for key in ('x', 'y', 'w', 'h')):
+        x = int(round(item['x']))
+        y = int(round(item['y']))
+        w = int(round(item['w']))
+        h = int(round(item['h']))
+        return [x, y, x + w, y + h]
+    return None
+
+
+def _line_center(item: dict) -> tuple[float, float] | None:
+    poly = item.get('polygon')
+    if isinstance(poly, list) and len(poly) >= 4:
+        arr = np.asarray(poly, dtype=np.float64).reshape(-1, 2)
+        center = arr.mean(axis=0)
+        return float(center[0]), float(center[1])
+    box = _line_box_from_item(item)
+    if box is None:
+        return None
+    x1, y1, x2, y2 = box
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
+
+def _line_width(item: dict) -> float:
+    value = item.get('font_width_px')
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    poly = item.get('polygon')
+    if isinstance(poly, list) and len(poly) >= 4:
+        pts = np.asarray(poly, dtype=np.float64).reshape(4, 2)
+        lengths = [
+            float(np.linalg.norm(pts[(i + 1) % 4] - pts[i]))
+            for i in range(4)
+        ]
+        return min((lengths[0] + lengths[2]) / 2.0, (lengths[1] + lengths[3]) / 2.0)
+
+    box = _line_box_from_item(item)
+    if box is None:
+        return 0.0
+    x1, y1, x2, y2 = box
+    return float(min(max(0, x2 - x1), max(0, y2 - y1)))
+
+
+def _line_orientation(item: dict) -> str:
+    poly = item.get('polygon')
+    if isinstance(poly, list) and len(poly) >= 4:
+        pts = np.asarray(poly, dtype=np.float64).reshape(4, 2)
+        lengths = [
+            float(np.linalg.norm(pts[(i + 1) % 4] - pts[i]))
+            for i in range(4)
+        ]
+        pair_a = (lengths[0] + lengths[2]) / 2.0
+        pair_b = (lengths[1] + lengths[3]) / 2.0
+        long_indices = (0, 2) if pair_a >= pair_b else (1, 3)
+        vec = pts[(long_indices[0] + 1) % 4] - pts[long_indices[0]]
+        return 'horizontal' if abs(vec[0]) >= abs(vec[1]) else 'vertical'
+
+    box = _line_box_from_item(item)
+    if box is None:
+        return 'vertical'
+    x1, y1, x2, y2 = box
+    return 'horizontal' if (x2 - x1) >= (y2 - y1) else 'vertical'
+
+
+def _overlap_area(a: list[int], b: list[int]) -> int:
+    x1 = max(a[0], b[0])
+    y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2])
+    y2 = min(a[3], b[3])
+    return max(0, x2 - x1) * max(0, y2 - y1)
+
+
+def _line_groups_by_block(
+    block_items: list[dict],
+    line_items: list[dict],
+) -> dict[int, list[dict]]:
+    groups: dict[int, list[dict]] = {}
+    block_boxes = []
+    for item in block_items:
+        xyxy = item.get('xyxy_pixel')
+        if not isinstance(xyxy, list) or len(xyxy) != 4:
+            continue
+        source_index = int(item.get('source_block_index', len(block_boxes)))
+        block_boxes.append((source_index, [int(round(v)) for v in xyxy]))
+
+    for line in line_items:
+        center = _line_center(line)
+        line_box = _line_box_from_item(line)
+        best_index = None
+        if center is not None:
+            cx, cy = center
+            for source_index, box in block_boxes:
+                if box[0] <= cx <= box[2] and box[1] <= cy <= box[3]:
+                    best_index = source_index
+                    break
+
+        if best_index is None and line_box is not None:
+            best_area = 0
+            for source_index, box in block_boxes:
+                area = _overlap_area(line_box, box)
+                if area > best_area:
+                    best_area = area
+                    best_index = source_index
+
+        if best_index is not None:
+            groups.setdefault(best_index, []).append(line)
+    return groups
+
+
+def _lower_median(values: list[float]) -> float:
+    sorted_values = sorted(values)
+    return sorted_values[(len(sorted_values) - 1) // 2]
+
+
+def _orientation_from_lines(lines: list[dict]) -> str:
+    if not lines:
+        return 'vertical'
+    counts = {'horizontal': 0, 'vertical': 0}
+    areas = {'horizontal': 0.0, 'vertical': 0.0}
+    for line in lines:
+        orientation = _line_orientation(line)
+        counts[orientation] += 1
+        areas[orientation] += float(line.get('area') or 0)
+    if counts['horizontal'] == counts['vertical']:
+        return 'horizontal' if areas['horizontal'] > areas['vertical'] else 'vertical'
+    return 'horizontal' if counts['horizontal'] > counts['vertical'] else 'vertical'
+
+
+def _build_measure_maps(
+    img_dir: str,
+    block_map: dict,
+    line_trans_map: dict,
+    aligned_box_map: dict,
+) -> tuple[dict, dict]:
+    pages = {}
+    block_pages = block_map.get('blockMap', {})
+    line_pages = line_trans_map.get('transMap', {})
+    align_pages = aligned_box_map.get('transMap', {})
+
+    for page_name, align_items in align_pages.items():
+        img = imread(_image_path_for_page(img_dir, page_name))
+        img_h, img_w = img.shape[:2]
+        block_items = block_pages.get(page_name, [])
+        line_items = line_pages.get(page_name, [])
+        line_groups = _line_groups_by_block(block_items, line_items)
+
+        page_items = []
+        for item in align_items:
+            source_index = int(item.get('source_block_index', len(page_items)))
+            xyxy = _xyxy_from_align_item(item)
+            center = item.get('new_center_normalized')
+            if not isinstance(center, list) or len(center) != 2:
+                center = _center_normalized_from_xyxy(xyxy, img_w, img_h)
+            else:
+                center = [round(float(center[0]), 4), round(float(center[1]), 4)]
+
+            matched_lines = line_groups.get(source_index, [])
+            widths = [_line_width(line) for line in matched_lines]
+            widths = [value for value in widths if value > 0]
+            if widths:
+                font_size = _lower_median(widths)
+            else:
+                x1, y1, x2, y2 = xyxy
+                font_size = float(min(max(0, x2 - x1), max(0, y2 - y1)))
+
+            page_items.append({
+                'source_block_index': source_index,
+                'xyxy_pixel': xyxy,
+                'center_normalized': center,
+                'orientation': _orientation_from_lines(matched_lines),
+                'font_size': round(float(font_size), 1),
+            })
+        pages[page_name] = page_items
+
+    measure = {'pages': pages}
+    measure_debug = {
+        'pages': pages,
+        'block': block_map,
+        'line': line_trans_map,
+        'align': aligned_box_map,
+    }
+    return measure, measure_debug
 
 
 def _align_pages(
@@ -249,11 +466,16 @@ def run(
     block_map_path = osp.join(ctd_dir, BLOCK_MAP_JSON)
     line_trans_map_path = osp.join(ctd_dir, LINE_TRANS_MAP_JSON)
     aligned_box_map_path = osp.join(ctd_dir, ALIGNED_BOX_MAP_JSON)
+    measure_path = osp.join(ctd_dir, MEASURE_JSON)
+    measure_debug_path = osp.join(ctd_dir, MEASURE_DEBUG_JSON)
 
     if only_align:
         if not osp.isfile(block_map_path):
             raise FileNotFoundError(f'--only-align 需要既有 block map：{block_map_path}')
+        if not osp.isfile(line_trans_map_path):
+            raise FileNotFoundError(f'--only-align 需要既有 line trans map：{line_trans_map_path}')
         block_map = _load_json(block_map_path)
+        line_trans_map = _load_json(line_trans_map_path)
         print(f'只重定位：{img_dir}')
     else:
         model_path = osp.abspath(model_path)
@@ -265,6 +487,14 @@ def run(
 
     aligned_box_map, align_summary = _align_pages(img_dir, paths, block_map)
     _write_json(aligned_box_map_path, aligned_box_map)
+    measure_map, measure_debug_map = _build_measure_maps(
+        img_dir,
+        block_map,
+        line_trans_map,
+        aligned_box_map,
+    )
+    _write_json(measure_path, measure_map)
+    _write_json(measure_debug_path, measure_debug_map)
 
     print('完成。輸出：')
     print(f'  - {block_map_path}')
@@ -273,6 +503,8 @@ def run(
         print(f'  - {paths["mask"]}/<檔名>.png')
         print(f'  - {paths["line_trans_box"]}/<檔名>.png')
     print(f'  - {aligned_box_map_path}')
+    print(f'  - {measure_path}')
+    print(f'  - {measure_debug_path}')
     print(f'  - {paths["center"]}/<檔名>.png')
     print(f'  - {paths["deal_overlap"]}/<檔名>.png')
     print(f"重定位頁數：{align_summary['pages']}")

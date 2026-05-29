@@ -48,6 +48,7 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 
 ```text
 <圖片資料夾>/ctd/block_map.json
+<圖片資料夾>/ctd/line_trans_map.json
 <圖片資料夾>/ctd/mask/<檔名>.png
 <圖片資料夾>/ctd/align/deal_overlap/<檔名>.png  # 如果存在
 ```
@@ -56,6 +57,8 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 
 ```text
 <圖片資料夾>/ctd/aligned_box_map.json
+<圖片資料夾>/ctd/measure.json
+<圖片資料夾>/ctd/measure.debug.json
 <圖片資料夾>/ctd/align/center/<檔名>.png
 <圖片資料夾>/ctd/align/deal_overlap/<檔名>.png  # 如果偵測到重疊且檔案不存在
 ```
@@ -69,6 +72,8 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
   block_map.json
   line_trans_map.json
   aligned_box_map.json
+  measure.json
+  measure.debug.json
 
   mask/
     <檔名>.png
@@ -180,6 +185,49 @@ x/y/w/h
 ```
 
 如果 `accepted=false`，表示該項目沒有採用新候選框，而是回退原始 block box。
+
+## measure.json
+
+`ctd/measure.json` 合併最常用的排版測量資訊，每個 item 對應一個文字 block。
+
+格式：
+
+```json
+{
+  "pages": {
+    "267.png": [
+      {
+        "source_block_index": 0,
+        "xyxy_pixel": [642, 110, 767, 306],
+        "center_normalized": [0.8437, 0.1733],
+        "orientation": "vertical",
+        "font_size": 25.6
+      }
+    ]
+  }
+}
+```
+
+欄位說明：
+
+- `source_block_index`：對應原始 block 索引。
+- `xyxy_pixel`：使用 `aligned_box_map.json` 的 `new_xyxy_pixel`。
+- `center_normalized`：使用 `aligned_box_map.json` 的 `new_center_normalized`。
+- `orientation`：文字方向，只會是 `horizontal` 或 `vertical`；匹配不到 line 時預設 `vertical`。
+- `font_size`：同一 block 內 line-trans 短邊寬度的下中位數；匹配不到 line 時回退為 `min(new_xyxy_width, new_xyxy_height)`。
+
+## measure.debug.json
+
+`ctd/measure.debug.json` 在 `measure.json` 的基礎上附帶原始三份資料，方便追查來源：
+
+```json
+{
+  "pages": {},
+  "block": {},
+  "line": {},
+  "align": {}
+}
+```
 
 ## center 預覽圖
 
