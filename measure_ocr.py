@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import os.path as osp
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from PIL import Image
 
 
 DEFAULT_MODEL_DIR = Path(__file__).resolve().parent / 'models' / 'PaddleOCR-VL-For-Manga'
-DEFAULT_PROMPT = 'OCR this Japanese manga text image. Return only the recognized text.'
+DEFAULT_PROMPT = 'OCR:'
 
 
 def _load_json(path: str | Path) -> dict:
@@ -90,6 +91,10 @@ def _require_transformers() -> tuple[Any, Any, Any]:
     return torch, AutoModelForCausalLM, AutoProcessor
 
 
+def _chunks(items: list[Any], chunk_size: int) -> list[list[Any]]:
+    return [items[index:index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
 class MangaOCR:
     def __init__(
         self,
@@ -108,7 +113,7 @@ class MangaOCR:
             model_dir,
             trust_remote_code=True,
             local_files_only=True,
-            use_fast=False,
+            use_fast=True,
         )
 
         torch_dtype = self._resolve_dtype(dtype)
@@ -120,10 +125,14 @@ class MangaOCR:
         )
         self.model.to(device)
         self.model.eval()
+        if self.model.generation_config.pad_token_id is None:
+            self.model.generation_config.pad_token_id = self.processor.tokenizer.eos_token_id
 
     def _resolve_dtype(self, dtype: str) -> Any:
         if dtype == 'auto':
-            return 'auto'
+            if self.device == 'cuda':
+                return self.torch.float16
+            return self.torch.float32
         if dtype == 'float16':
             return self.torch.float16
         if dtype == 'bfloat16':
@@ -145,8 +154,12 @@ class MangaOCR:
         return self.processor.apply_chat_template(messages, add_generation_prompt=True)
 
     def recognize(self, image: Image.Image) -> str:
+        return self.recognize_batch([image])[0]
+
+    def recognize_batch(self, images: list[Image.Image]) -> list[str]:
         prompt_text = self._prompt_text()
-        inputs = self.processor(images=image, text=prompt_text, return_tensors='pt')
+        prompts = [prompt_text] * len(images)
+        inputs = self.processor(images=images, text=prompts, return_tensors='pt', padding=True)
         inputs = {
             key: value.to(self.device) if hasattr(value, 'to') else value
             for key, value in inputs.items()
@@ -157,14 +170,15 @@ class MangaOCR:
                 **inputs,
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
+                use_cache=True,
             )
         generated = outputs[:, input_len:]
-        text = self.processor.batch_decode(
+        texts = self.processor.batch_decode(
             generated,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
-        )[0]
-        return _clean_ocr_text(text)
+        )
+        return [_clean_ocr_text(text) for text in texts]
 
 
 def _iter_pages(measure: dict, page_filter: str | None) -> list[tuple[str, list[dict]]]:
@@ -187,6 +201,7 @@ def run(
     page: str | None,
     limit_pages: int | None,
     limit_items: int | None,
+    batch_size: int,
     save_crops: str | None,
     dry_run: bool,
 ) -> str:
@@ -203,8 +218,10 @@ def run(
     ocr = None if dry_run else MangaOCR(model_dir, device, dtype, max_new_tokens, prompt)
     output = {'pages': {}}
 
+    start_time = time.perf_counter()
     total_pages = len(pages)
     for page_index, (page_name, items) in enumerate(pages, start=1):
+        page_start = time.perf_counter()
         image_path = _image_path_for_page(image_dir, page_name)
         image = Image.open(image_path).convert('RGB')
         output_items = []
@@ -212,26 +229,40 @@ def run(
             items = items[:limit_items]
         print(f'[{page_index}/{total_pages}] OCR {page_name}: {len(items)} boxes')
 
-        for index, item in enumerate(items):
-            out_item = dict(item)
-            crop = _crop_box(image, item['xyxy_pixel'], pad)
+        indexed_items = list(enumerate(items))
+        for batch in _chunks(indexed_items, max(1, batch_size)):
+            batch_indices = [index for index, _ in batch]
+            batch_items = [item for _, item in batch]
+            batch_crops = [_crop_box(image, item['xyxy_pixel'], pad) for item in batch_items]
+
             if save_crops_path is not None:
-                crop_name = f'{Path(page_name).stem}-{index:03d}.png'
-                crop.save(save_crops_path / crop_name)
+                for index, crop in zip(batch_indices, batch_crops):
+                    crop_name = f'{Path(page_name).stem}-{index:03d}.png'
+                    crop.save(save_crops_path / crop_name)
 
             if dry_run:
-                out_item['ocr_text'] = ''
+                batch_texts = [''] * len(batch_items)
+                batch_errors = [None] * len(batch_items)
             else:
                 try:
-                    out_item['ocr_text'] = ocr.recognize(crop) if ocr is not None else ''
-                except Exception as exc:  # Keep batch OCR running if one crop fails.
-                    out_item['ocr_text'] = ''
-                    out_item['ocr_error'] = str(exc)
-            output_items.append(out_item)
+                    batch_texts = ocr.recognize_batch(batch_crops) if ocr is not None else [''] * len(batch_items)
+                    batch_errors = [None] * len(batch_items)
+                except Exception as exc:  # Keep page OCR running if one batch fails.
+                    batch_texts = [''] * len(batch_items)
+                    batch_errors = [str(exc)] * len(batch_items)
+
+            for item, text, error in zip(batch_items, batch_texts, batch_errors):
+                out_item = dict(item)
+                out_item['ocr_text'] = text
+                if error:
+                    out_item['ocr_error'] = error
+                output_items.append(out_item)
         output['pages'][page_name] = output_items
-        print(f'[{page_index}/{total_pages}] 完成 {page_name}')
+        page_elapsed = time.perf_counter() - page_start
+        print(f'[{page_index}/{total_pages}] 完成 {page_name} ({page_elapsed:.1f}s)')
 
     _write_json(output_path, output)
+    print(f'總耗時：{time.perf_counter() - start_time:.1f}s')
     return output_path
 
 
@@ -255,16 +286,17 @@ def main() -> None:
     parser.add_argument('--device', default='mps', help='cpu, cuda, mps, ...')
     parser.add_argument(
         '--dtype',
-        default='float16',
+        default='auto',
         choices=['auto', 'float16', 'bfloat16', 'float32'],
         help='Model dtype',
     )
     parser.add_argument('--pad', type=int, default=2, help='Crop padding in pixels')
-    parser.add_argument('--max-new-tokens', type=int, default=128)
+    parser.add_argument('--max-new-tokens', type=int, default=512)
     parser.add_argument('--prompt', default=DEFAULT_PROMPT)
     parser.add_argument('--page', default=None, help='Only process one page, e.g. 241.png')
     parser.add_argument('--limit-pages', type=int, default=None)
     parser.add_argument('--limit-items', type=int, default=None)
+    parser.add_argument('--batch-size', type=int, default=1, help='Number of crops per generate call')
     parser.add_argument('--save-crops', default=None, help='Optional folder for crop QA images')
     parser.add_argument('--dry-run', action='store_true', help='Only crop/write JSON; do not load OCR model')
     args = parser.parse_args()
@@ -283,6 +315,7 @@ def main() -> None:
         page=args.page,
         limit_pages=args.limit_pages,
         limit_items=args.limit_items,
+        batch_size=args.batch_size,
         save_crops=args.save_crops,
         dry_run=args.dry_run,
     )
