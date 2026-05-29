@@ -1,0 +1,365 @@
+{
+  "project_name": "imgtrans_1",
+  "export_format": "LabelPlus",
+  "pages": {
+    "001.jpg": [
+      {
+        "xyxy_pixel": [
+          399,
+          343,
+          923,
+          459
+        ],
+        "center_normalized": [
+          0.5876,
+          0.2506
+        ],
+        "orientation": "horizontal",
+        "ocr_text": "介の青春",
+        "font_size": 93.60000000000001,
+        "new_xyxy_pixel": [
+          296,
+          375,
+          650,
+          420
+        ],
+        "new_center_normalized": [
+          0.4204,
+          0.2484
+        ],
+        "layout_debug": {
+          "processed": true,
+          "calculation_method": "outer_center",
+          "center_mode": "outer",
+          "seed_point": [
+            661.0,
+            401.0
+          ],
+          "new_center_pixel": [
+            473.0,
+            397.5
+          ],
+          "candidate_xyxy_raw": [
+            295.5,
+            375.0,
+            649.5,
+            420.0
+          ],
+          "raw_outer_rect": {
+            "left": 121,
+            "top": 340,
+            "width": 704,
+            "height": 105,
+            "area": 73920
+          },
+          "outer_rect": {
+            "left": 122,
+            "top": 359,
+            "width": 701,
+            "height": 77,
+            "area": 53977
+          },
+          "outer_refine": {
+            "method": "projection",
+            "applied": true,
+            "reason": null,
+            "col_threshold": 4.4,
+            "row_threshold": 16.2
+          },
+          "inner_rect": {
+            "left": 684,
+            "top": 378,
+            "width": 7,
+            "height": 13,
+            "area": 91
+          },
+          "result_rect": {
+            "left": 296,
+            "top": 375,
+            "width": 354,
+            "height": 45
+          },
+          "accepted": false,
+          "skip_reason": "movement_too_large",
+          "old_xyxy_pixel": [
+            399,
+            343,
+            923,
+            459
+          ],
+          "old_center_pixel": [
+            661.0,
+            401.0
+          ],
+          "final_center_pixel": [
+            661.0,
+            401.0
+          ],
+          "move_px": 188.03,
+          "move_norm": 0.167125,
+          "old_area": 60784.0,
+          "candidate_area": 15930.0,
+          "area_ratio": 0.2621,
+          "outer_area": 53977,
+          "inner_area": 91,
+          "outer_inner_area_ratio": 593.1538,
+          "safety_checks": {
+            "overlaps_old": true,
+            "center_inside_outer": true,
+            "large_movement": true,
+            "inside_image": true,
+            "outer_inner_area_too_large": true
+          }
+        },
+        "final_xyxy_pixel": [
+          399,
+          343,
+          923,
+          459
+        ],
+        "final_center_normalized": [
+          0.5876,
+          0.2506
+        ]
+      },
+      {
+        "xyxy_pixel": [
+          79,
+          923,
+          449,
+          1187
+        ],
+        "center_normalized": [
+          0.2347,
+          0.6594
+        ],
+        "orientation": "horizontal",
+        "ocr_text": "森高タ次太秦洋介",
+        "font_size": 207.9,
+        "new_xyxy_pixel": [
+          155,
+          1181,
+          239,
+          1545
+        ],
+        "new_center_normalized": [
+          0.1751,
+          0.8519
+        ],
+        "layout_debug": {
+          "processed": true,
+          "calculation_method": "outer_center",
+          "center_mode": "outer",
+          "seed_point": [
+            171.5,
+            1121.0
+          ],
+          "new_center_pixel": [
+            197.0,
+            1363.0
+          ],
+          "candidate_xyxy_raw": [
+            155.25,
+            1181.25,
+            238.75,
+            1544.75
+          ],
+          "raw_outer_rect": {
+            "left": 132,
+            "top": 1121,
+            "width": 139,
+            "height": 479,
+            "area": 66581
+          },
+          "outer_rect": {
+            "left": 137,
+            "top": 1126,
+            "width": 120,
+            "height": 474,
+            "area": 56880
+          },
+          "outer_refine": {
+            "method": "projection",
+            "applied": true,
+            "reason": null,
+            "col_threshold": 95.0,
+            "row_threshold": 26.2
+          },
+          "inner_rect": {
+            "left": 145,
+            "top": 1167,
+            "width": 47,
+            "height": 253,
+            "area": 11891
+          },
+          "result_rect": {
+            "left": 155,
+            "top": 1181,
+            "width": 84,
+            "height": 364
+          },
+          "accepted": false,
+          "skip_reason": "movement_too_large",
+          "old_xyxy_pixel": [
+            79,
+            923,
+            449,
+            1187
+          ],
+          "old_center_pixel": [
+            264.0,
+            1055.0
+          ],
+          "final_center_pixel": [
+            264.0,
+            1055.0
+          ],
+          "move_px": 315.2,
+          "move_norm": 0.201502,
+          "old_area": 97680.0,
+          "candidate_area": 30576.0,
+          "area_ratio": 0.313,
+          "outer_area": 56880,
+          "inner_area": 11891,
+          "outer_inner_area_ratio": 4.7834,
+          "safety_checks": {
+            "overlaps_old": true,
+            "center_inside_outer": true,
+            "large_movement": true,
+            "inside_image": true,
+            "outer_inner_area_too_large": true
+          }
+        },
+        "final_xyxy_pixel": [
+          79,
+          923,
+          449,
+          1187
+        ],
+        "final_center_normalized": [
+          0.2347,
+          0.6594
+        ]
+      },
+      {
+        "xyxy_pixel": [
+          349,
+          1116,
+          660,
+          1585
+        ],
+        "center_normalized": [
+          0.4484,
+          0.8441
+        ],
+        "orientation": "vertical",
+        "ocr_text": "韮中",
+        "font_size": 274.5,
+        "new_xyxy_pixel": [
+          395,
+          1262,
+          613,
+          1334
+        ],
+        "new_center_normalized": [
+          0.448,
+          0.8113
+        ],
+        "layout_debug": {
+          "processed": true,
+          "calculation_method": "outer_center",
+          "center_mode": "outer",
+          "seed_point": [
+            504.5,
+            1350.5
+          ],
+          "new_center_pixel": [
+            504.0,
+            1298.0
+          ],
+          "candidate_xyxy_raw": [
+            395.25,
+            1262.5,
+            612.75,
+            1333.5
+          ],
+          "raw_outer_rect": {
+            "left": 390,
+            "top": 1227,
+            "width": 235,
+            "height": 140,
+            "area": 32900
+          },
+          "outer_rect": {
+            "left": 395,
+            "top": 1235,
+            "width": 218,
+            "height": 126,
+            "area": 27468
+          },
+          "outer_refine": {
+            "method": "projection",
+            "applied": true,
+            "reason": null,
+            "col_threshold": 26.0,
+            "row_threshold": 46.4
+          },
+          "inner_rect": {
+            "left": 392,
+            "top": 1338,
+            "width": 217,
+            "height": 16,
+            "area": 3472
+          },
+          "result_rect": {
+            "left": 395,
+            "top": 1262,
+            "width": 218,
+            "height": 72
+          },
+          "accepted": false,
+          "skip_reason": "outer_inner_area_too_large",
+          "old_xyxy_pixel": [
+            349,
+            1116,
+            660,
+            1585
+          ],
+          "old_center_pixel": [
+            504.5,
+            1350.5
+          ],
+          "final_center_pixel": [
+            504.5,
+            1350.5
+          ],
+          "move_px": 52.5,
+          "move_norm": 0.032816,
+          "old_area": 145859.0,
+          "candidate_area": 15696.0,
+          "area_ratio": 0.1076,
+          "outer_area": 27468,
+          "inner_area": 3472,
+          "outer_inner_area_ratio": 7.9113,
+          "safety_checks": {
+            "overlaps_old": true,
+            "center_inside_outer": true,
+            "large_movement": false,
+            "inside_image": true,
+            "outer_inner_area_too_large": true
+          }
+        },
+        "final_xyxy_pixel": [
+          349,
+          1116,
+          660,
+          1585
+        ],
+        "final_center_normalized": [
+          0.4484,
+          0.8441
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "project_name": "imgtrans_1",
+  "export_format": "LabelPlus",
+  "pages": {
+    "001.jpg": [
+      {
+        "xyxy_pixel": [
+          399,
+          343,
+          923,
+          459
+        ],
+        "center_normalized": [
+          0.5876,
+          0.2506
+        ],
+        "orientation": "horizontal",
+        "ocr_text": "介の青春",
+        "font_size": 93.60000000000001
+      },
+      {
+        "xyxy_pixel": [
+          79,
+          923,
+          449,
+          1187
+        ],
+        "center_normalized": [
+          0.2347,
+          0.6594
+        ],
+        "orientation": "horizontal",
+        "ocr_text": "森高タ次太秦洋介",
+        "font_size": 207.9
+      },
+      {
+        "xyxy_pixel": [
+          349,
+          1116,
+          660,
+          1585
+        ],
+        "center_normalized": [
+          0.4484,
+          0.8441
+        ],
+        "orientation": "vertical",
+        "ocr_text": "韮中",
+        "font_size": 274.5
+      }
+    ]
+  }
+}

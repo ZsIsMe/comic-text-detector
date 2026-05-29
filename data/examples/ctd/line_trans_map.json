@@ -1,0 +1,2766 @@
+{
+  "transMap": {
+    "AisazuNihaIrarenai-003.png": [
+      {
+        "x": 93,
+        "y": 964,
+        "w": 4,
+        "h": 53,
+        "area": 97,
+        "font_size_proxy_px": 4,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            93,
+            964
+          ],
+          [
+            96,
+            964
+          ],
+          [
+            96,
+            1016
+          ],
+          [
+            93,
+            1016
+          ]
+        ],
+        "source_line_index": 91
+      },
+      {
+        "x": 105,
+        "y": 126,
+        "w": 19,
+        "h": 74,
+        "area": 509,
+        "font_size_proxy_px": 19,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            105,
+            126
+          ],
+          [
+            123,
+            126
+          ],
+          [
+            123,
+            199
+          ],
+          [
+            105,
+            199
+          ]
+        ],
+        "source_line_index": 86
+      },
+      {
+        "x": 132,
+        "y": 124,
+        "w": 18,
+        "h": 93,
+        "area": 775,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            132,
+            124
+          ],
+          [
+            149,
+            124
+          ],
+          [
+            149,
+            216
+          ],
+          [
+            132,
+            216
+          ]
+        ],
+        "source_line_index": 85
+      },
+      {
+        "x": 299,
+        "y": 110,
+        "w": 18,
+        "h": 35,
+        "area": 226,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            299,
+            110
+          ],
+          [
+            316,
+            110
+          ],
+          [
+            316,
+            144
+          ],
+          [
+            299,
+            144
+          ]
+        ],
+        "source_line_index": 84
+      },
+      {
+        "x": 321,
+        "y": 109,
+        "w": 20,
+        "h": 102,
+        "area": 773,
+        "font_size_proxy_px": 20,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            321,
+            109
+          ],
+          [
+            340,
+            109
+          ],
+          [
+            340,
+            210
+          ],
+          [
+            321,
+            210
+          ]
+        ],
+        "source_line_index": 83
+      },
+      {
+        "x": 522,
+        "y": 95,
+        "w": 16,
+        "h": 93,
+        "area": 533,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            522,
+            95
+          ],
+          [
+            537,
+            95
+          ],
+          [
+            537,
+            187
+          ],
+          [
+            522,
+            187
+          ]
+        ],
+        "source_line_index": 82
+      },
+      {
+        "x": 522,
+        "y": 372,
+        "w": 18,
+        "h": 131,
+        "area": 716,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            522,
+            372
+          ],
+          [
+            539,
+            372
+          ],
+          [
+            539,
+            502
+          ],
+          [
+            522,
+            502
+          ]
+        ],
+        "source_line_index": 90
+      },
+      {
+        "x": 545,
+        "y": 96,
+        "w": 18,
+        "h": 69,
+        "area": 309,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            545,
+            96
+          ],
+          [
+            562,
+            96
+          ],
+          [
+            562,
+            164
+          ],
+          [
+            545,
+            164
+          ]
+        ],
+        "source_line_index": 81
+      },
+      {
+        "x": 545,
+        "y": 372,
+        "w": 17,
+        "h": 73,
+        "area": 387,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            545,
+            372
+          ],
+          [
+            561,
+            372
+          ],
+          [
+            561,
+            444
+          ],
+          [
+            545,
+            444
+          ]
+        ],
+        "source_line_index": 89
+      },
+      {
+        "x": 568,
+        "y": 371,
+        "w": 17,
+        "h": 131,
+        "area": 784,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            568,
+            371
+          ],
+          [
+            584,
+            371
+          ],
+          [
+            584,
+            501
+          ],
+          [
+            568,
+            501
+          ]
+        ],
+        "source_line_index": 88
+      },
+      {
+        "x": 569,
+        "y": 94,
+        "w": 16,
+        "h": 36,
+        "area": 226,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            569,
+            94
+          ],
+          [
+            584,
+            94
+          ],
+          [
+            584,
+            129
+          ],
+          [
+            569,
+            129
+          ]
+        ],
+        "source_line_index": 80
+      },
+      {
+        "x": 591,
+        "y": 372,
+        "w": 16,
+        "h": 36,
+        "area": 188,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            591,
+            372
+          ],
+          [
+            606,
+            372
+          ],
+          [
+            606,
+            407
+          ],
+          [
+            591,
+            407
+          ]
+        ],
+        "source_line_index": 87
+      },
+      {
+        "x": 628,
+        "y": 95,
+        "w": 17,
+        "h": 111,
+        "area": 517,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            628,
+            95
+          ],
+          [
+            644,
+            95
+          ],
+          [
+            644,
+            205
+          ],
+          [
+            628,
+            205
+          ]
+        ],
+        "source_line_index": 79
+      },
+      {
+        "x": 651,
+        "y": 96,
+        "w": 17,
+        "h": 109,
+        "area": 537,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            651,
+            96
+          ],
+          [
+            667,
+            96
+          ],
+          [
+            667,
+            204
+          ],
+          [
+            651,
+            204
+          ]
+        ],
+        "source_line_index": 78
+      },
+      {
+        "x": 674,
+        "y": 95,
+        "w": 18,
+        "h": 73,
+        "area": 454,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            674,
+            95
+          ],
+          [
+            691,
+            95
+          ],
+          [
+            691,
+            167
+          ],
+          [
+            674,
+            167
+          ]
+        ],
+        "source_line_index": 77
+      },
+      {
+        "x": 697,
+        "y": 97,
+        "w": 18,
+        "h": 128,
+        "area": 442,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            697,
+            97
+          ],
+          [
+            714,
+            97
+          ],
+          [
+            714,
+            224
+          ],
+          [
+            697,
+            224
+          ]
+        ],
+        "source_line_index": 76
+      },
+      {
+        "x": 721,
+        "y": 95,
+        "w": 17,
+        "h": 54,
+        "area": 259,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            721,
+            95
+          ],
+          [
+            737,
+            95
+          ],
+          [
+            737,
+            148
+          ],
+          [
+            721,
+            148
+          ]
+        ],
+        "source_line_index": 75
+      },
+      {
+        "x": 905,
+        "y": 775,
+        "w": 16,
+        "h": 123,
+        "area": 647,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            905,
+            775
+          ],
+          [
+            920,
+            775
+          ],
+          [
+            920,
+            897
+          ],
+          [
+            905,
+            897
+          ]
+        ],
+        "source_line_index": 39
+      },
+      {
+        "x": 912,
+        "y": 96,
+        "w": 17,
+        "h": 84,
+        "area": 731,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            912,
+            96
+          ],
+          [
+            928,
+            96
+          ],
+          [
+            928,
+            179
+          ],
+          [
+            912,
+            179
+          ]
+        ],
+        "source_line_index": 10
+      },
+      {
+        "x": 917,
+        "y": 457,
+        "w": 17,
+        "h": 170,
+        "area": 1123,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            917,
+            457
+          ],
+          [
+            933,
+            457
+          ],
+          [
+            933,
+            626
+          ],
+          [
+            917,
+            626
+          ]
+        ],
+        "source_line_index": 22
+      },
+      {
+        "x": 918,
+        "y": 776,
+        "w": 25,
+        "h": 162,
+        "area": 610,
+        "font_size_proxy_px": 25,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            918,
+            776
+          ],
+          [
+            942,
+            776
+          ],
+          [
+            942,
+            937
+          ],
+          [
+            918,
+            937
+          ]
+        ],
+        "source_line_index": 40
+      },
+      {
+        "x": 932,
+        "y": 635,
+        "w": 74,
+        "h": 56,
+        "area": 540,
+        "font_size_proxy_px": 56,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            932,
+            635
+          ],
+          [
+            1005,
+            635
+          ],
+          [
+            1005,
+            690
+          ],
+          [
+            932,
+            690
+          ]
+        ],
+        "source_line_index": 31
+      },
+      {
+        "x": 937,
+        "y": 97,
+        "w": 18,
+        "h": 134,
+        "area": 885,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            937,
+            97
+          ],
+          [
+            954,
+            97
+          ],
+          [
+            954,
+            230
+          ],
+          [
+            937,
+            230
+          ]
+        ],
+        "source_line_index": 9
+      },
+      {
+        "x": 938,
+        "y": 776,
+        "w": 27,
+        "h": 165,
+        "area": 708,
+        "font_size_proxy_px": 27,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 3,
+        "polygon": [
+          [
+            938,
+            776
+          ],
+          [
+            964,
+            776
+          ],
+          [
+            964,
+            940
+          ],
+          [
+            938,
+            940
+          ]
+        ],
+        "source_line_index": 38
+      },
+      {
+        "x": 942,
+        "y": 457,
+        "w": 16,
+        "h": 118,
+        "area": 852,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            942,
+            457
+          ],
+          [
+            957,
+            457
+          ],
+          [
+            957,
+            574
+          ],
+          [
+            942,
+            574
+          ]
+        ],
+        "source_line_index": 21
+      },
+      {
+        "x": 956,
+        "y": 95,
+        "w": 20,
+        "h": 101,
+        "area": 809,
+        "font_size_proxy_px": 20,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            956,
+            95
+          ],
+          [
+            975,
+            95
+          ],
+          [
+            975,
+            195
+          ],
+          [
+            956,
+            195
+          ]
+        ],
+        "source_line_index": 8
+      },
+      {
+        "x": 962,
+        "y": 775,
+        "w": 24,
+        "h": 153,
+        "area": 904,
+        "font_size_proxy_px": 24,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            962,
+            775
+          ],
+          [
+            985,
+            775
+          ],
+          [
+            985,
+            927
+          ],
+          [
+            962,
+            927
+          ]
+        ],
+        "source_line_index": 36
+      },
+      {
+        "x": 963,
+        "y": 457,
+        "w": 16,
+        "h": 101,
+        "area": 527,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            963,
+            457
+          ],
+          [
+            978,
+            457
+          ],
+          [
+            978,
+            557
+          ],
+          [
+            963,
+            557
+          ]
+        ],
+        "source_line_index": 20
+      },
+      {
+        "x": 982,
+        "y": 96,
+        "w": 16,
+        "h": 99,
+        "area": 955,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            982,
+            96
+          ],
+          [
+            997,
+            96
+          ],
+          [
+            997,
+            194
+          ],
+          [
+            982,
+            194
+          ]
+        ],
+        "source_line_index": 7
+      },
+      {
+        "x": 982,
+        "y": 776,
+        "w": 27,
+        "h": 162,
+        "area": 643,
+        "font_size_proxy_px": 27,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            982,
+            776
+          ],
+          [
+            1008,
+            776
+          ],
+          [
+            1008,
+            937
+          ],
+          [
+            982,
+            937
+          ]
+        ],
+        "source_line_index": 37
+      },
+      {
+        "x": 984,
+        "y": 457,
+        "w": 16,
+        "h": 33,
+        "area": 197,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            984,
+            457
+          ],
+          [
+            999,
+            457
+          ],
+          [
+            999,
+            489
+          ],
+          [
+            984,
+            489
+          ]
+        ],
+        "source_line_index": 19
+      },
+      {
+        "x": 1001,
+        "y": 96,
+        "w": 21,
+        "h": 64,
+        "area": 770,
+        "font_size_proxy_px": 21,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1001,
+            96
+          ],
+          [
+            1021,
+            96
+          ],
+          [
+            1021,
+            159
+          ],
+          [
+            1001,
+            159
+          ]
+        ],
+        "source_line_index": 6
+      },
+      {
+        "x": 1002,
+        "y": 785,
+        "w": 7,
+        "h": 153,
+        "area": 45,
+        "font_size_proxy_px": 7,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1002,
+            785
+          ],
+          [
+            1008,
+            785
+          ],
+          [
+            1008,
+            937
+          ],
+          [
+            1002,
+            937
+          ]
+        ],
+        "source_line_index": 35
+      },
+      {
+        "x": 1019,
+        "y": 958,
+        "w": 18,
+        "h": 112,
+        "area": 599,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1019,
+            958
+          ],
+          [
+            1036,
+            958
+          ],
+          [
+            1036,
+            1069
+          ],
+          [
+            1019,
+            1069
+          ]
+        ],
+        "source_line_index": 74
+      },
+      {
+        "x": 1031,
+        "y": 774,
+        "w": 24,
+        "h": 152,
+        "area": 794,
+        "font_size_proxy_px": 24,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1031,
+            774
+          ],
+          [
+            1054,
+            774
+          ],
+          [
+            1054,
+            925
+          ],
+          [
+            1031,
+            925
+          ]
+        ],
+        "source_line_index": 34
+      },
+      {
+        "x": 1037,
+        "y": 956,
+        "w": 24,
+        "h": 123,
+        "area": 831,
+        "font_size_proxy_px": 24,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1037,
+            956
+          ],
+          [
+            1060,
+            956
+          ],
+          [
+            1060,
+            1078
+          ],
+          [
+            1037,
+            1078
+          ]
+        ],
+        "source_line_index": 73
+      },
+      {
+        "x": 1045,
+        "y": 818,
+        "w": 5,
+        "h": 52,
+        "area": 57,
+        "font_size_proxy_px": 5,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1045,
+            818
+          ],
+          [
+            1049,
+            818
+          ],
+          [
+            1049,
+            869
+          ],
+          [
+            1045,
+            869
+          ]
+        ],
+        "source_line_index": 33
+      },
+      {
+        "x": 1062,
+        "y": 778,
+        "w": 20,
+        "h": 115,
+        "area": 539,
+        "font_size_proxy_px": 20,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1062,
+            778
+          ],
+          [
+            1081,
+            778
+          ],
+          [
+            1081,
+            892
+          ],
+          [
+            1062,
+            892
+          ]
+        ],
+        "source_line_index": 32
+      },
+      {
+        "x": 1073,
+        "y": 952,
+        "w": 16,
+        "h": 86,
+        "area": 436,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1073,
+            952
+          ],
+          [
+            1088,
+            952
+          ],
+          [
+            1088,
+            1037
+          ],
+          [
+            1073,
+            1037
+          ]
+        ],
+        "source_line_index": 67
+      },
+      {
+        "x": 1086,
+        "y": 784,
+        "w": 22,
+        "h": 286,
+        "area": 1905,
+        "font_size_proxy_px": 22,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1086,
+            784
+          ],
+          [
+            1107,
+            784
+          ],
+          [
+            1107,
+            1069
+          ],
+          [
+            1086,
+            1069
+          ]
+        ],
+        "source_line_index": 66
+      },
+      {
+        "x": 1108,
+        "y": 781,
+        "w": 23,
+        "h": 178,
+        "area": 964,
+        "font_size_proxy_px": 23,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1108,
+            781
+          ],
+          [
+            1130,
+            781
+          ],
+          [
+            1130,
+            958
+          ],
+          [
+            1108,
+            958
+          ]
+        ],
+        "source_line_index": 65
+      },
+      {
+        "x": 1108,
+        "y": 956,
+        "w": 22,
+        "h": 144,
+        "area": 1086,
+        "font_size_proxy_px": 22,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1108,
+            956
+          ],
+          [
+            1129,
+            956
+          ],
+          [
+            1129,
+            1099
+          ],
+          [
+            1108,
+            1099
+          ]
+        ],
+        "source_line_index": 72
+      },
+      {
+        "x": 1124,
+        "y": 780,
+        "w": 28,
+        "h": 311,
+        "area": 2770,
+        "font_size_proxy_px": 28,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1124,
+            780
+          ],
+          [
+            1151,
+            780
+          ],
+          [
+            1151,
+            1090
+          ],
+          [
+            1124,
+            1090
+          ]
+        ],
+        "source_line_index": 71
+      },
+      {
+        "x": 1125,
+        "y": 454,
+        "w": 16,
+        "h": 52,
+        "area": 358,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1125,
+            454
+          ],
+          [
+            1140,
+            454
+          ],
+          [
+            1140,
+            505
+          ],
+          [
+            1125,
+            505
+          ]
+        ],
+        "source_line_index": 18
+      },
+      {
+        "x": 1144,
+        "y": 455,
+        "w": 16,
+        "h": 136,
+        "area": 916,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1144,
+            455
+          ],
+          [
+            1159,
+            455
+          ],
+          [
+            1159,
+            590
+          ],
+          [
+            1144,
+            590
+          ]
+        ],
+        "source_line_index": 17
+      },
+      {
+        "x": 1149,
+        "y": 778,
+        "w": 28,
+        "h": 140,
+        "area": 815,
+        "font_size_proxy_px": 28,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1149,
+            778
+          ],
+          [
+            1176,
+            778
+          ],
+          [
+            1176,
+            917
+          ],
+          [
+            1149,
+            917
+          ]
+        ],
+        "source_line_index": 64
+      },
+      {
+        "x": 1150,
+        "y": 952,
+        "w": 22,
+        "h": 117,
+        "area": 663,
+        "font_size_proxy_px": 22,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1150,
+            952
+          ],
+          [
+            1171,
+            952
+          ],
+          [
+            1171,
+            1068
+          ],
+          [
+            1150,
+            1068
+          ]
+        ],
+        "source_line_index": 70
+      },
+      {
+        "x": 1162,
+        "y": 455,
+        "w": 45,
+        "h": 97,
+        "area": 1315,
+        "font_size_proxy_px": 45,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 3,
+        "polygon": [
+          [
+            1162,
+            455
+          ],
+          [
+            1206,
+            455
+          ],
+          [
+            1206,
+            551
+          ],
+          [
+            1162,
+            551
+          ]
+        ],
+        "source_line_index": 16
+      },
+      {
+        "x": 1172,
+        "y": 779,
+        "w": 22,
+        "h": 106,
+        "area": 587,
+        "font_size_proxy_px": 22,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1172,
+            779
+          ],
+          [
+            1193,
+            779
+          ],
+          [
+            1193,
+            884
+          ],
+          [
+            1172,
+            884
+          ]
+        ],
+        "source_line_index": 63
+      },
+      {
+        "x": 1174,
+        "y": 971,
+        "w": 15,
+        "h": 68,
+        "area": 312,
+        "font_size_proxy_px": 15,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1174,
+            971
+          ],
+          [
+            1188,
+            971
+          ],
+          [
+            1188,
+            1038
+          ],
+          [
+            1174,
+            1038
+          ]
+        ],
+        "source_line_index": 69
+      },
+      {
+        "x": 1193,
+        "y": 456,
+        "w": 23,
+        "h": 110,
+        "area": 738,
+        "font_size_proxy_px": 23,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1193,
+            456
+          ],
+          [
+            1215,
+            456
+          ],
+          [
+            1215,
+            565
+          ],
+          [
+            1193,
+            565
+          ]
+        ],
+        "source_line_index": 15
+      },
+      {
+        "x": 1193,
+        "y": 948,
+        "w": 17,
+        "h": 138,
+        "area": 633,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1193,
+            948
+          ],
+          [
+            1209,
+            948
+          ],
+          [
+            1209,
+            1085
+          ],
+          [
+            1193,
+            1085
+          ]
+        ],
+        "source_line_index": 68
+      },
+      {
+        "x": 1196,
+        "y": 779,
+        "w": 18,
+        "h": 67,
+        "area": 358,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1196,
+            779
+          ],
+          [
+            1213,
+            779
+          ],
+          [
+            1213,
+            845
+          ],
+          [
+            1196,
+            845
+          ]
+        ],
+        "source_line_index": 30
+      },
+      {
+        "x": 1213,
+        "y": 981,
+        "w": 20,
+        "h": 84,
+        "area": 572,
+        "font_size_proxy_px": 20,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1213,
+            981
+          ],
+          [
+            1232,
+            981
+          ],
+          [
+            1232,
+            1064
+          ],
+          [
+            1213,
+            1064
+          ]
+        ],
+        "source_line_index": 57
+      },
+      {
+        "x": 1220,
+        "y": 780,
+        "w": 13,
+        "h": 123,
+        "area": 490,
+        "font_size_proxy_px": 13,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1220,
+            780
+          ],
+          [
+            1232,
+            780
+          ],
+          [
+            1232,
+            902
+          ],
+          [
+            1220,
+            902
+          ]
+        ],
+        "source_line_index": 62
+      },
+      {
+        "x": 1231,
+        "y": 984,
+        "w": 27,
+        "h": 98,
+        "area": 579,
+        "font_size_proxy_px": 27,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1231,
+            984
+          ],
+          [
+            1257,
+            984
+          ],
+          [
+            1257,
+            1081
+          ],
+          [
+            1231,
+            1081
+          ]
+        ],
+        "source_line_index": 56
+      },
+      {
+        "x": 1238,
+        "y": 777,
+        "w": 18,
+        "h": 58,
+        "area": 258,
+        "font_size_proxy_px": 18,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1238,
+            777
+          ],
+          [
+            1255,
+            777
+          ],
+          [
+            1255,
+            834
+          ],
+          [
+            1238,
+            834
+          ]
+        ],
+        "source_line_index": 61
+      },
+      {
+        "x": 1254,
+        "y": 778,
+        "w": 23,
+        "h": 62,
+        "area": 390,
+        "font_size_proxy_px": 23,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1254,
+            778
+          ],
+          [
+            1276,
+            778
+          ],
+          [
+            1276,
+            839
+          ],
+          [
+            1254,
+            839
+          ]
+        ],
+        "source_line_index": 60
+      },
+      {
+        "x": 1264,
+        "y": 522,
+        "w": 16,
+        "h": 84,
+        "area": 545,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1264,
+            522
+          ],
+          [
+            1279,
+            522
+          ],
+          [
+            1279,
+            605
+          ],
+          [
+            1264,
+            605
+          ]
+        ],
+        "source_line_index": 28
+      },
+      {
+        "x": 1265,
+        "y": 976,
+        "w": 20,
+        "h": 128,
+        "area": 596,
+        "font_size_proxy_px": 20,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1265,
+            976
+          ],
+          [
+            1284,
+            976
+          ],
+          [
+            1284,
+            1103
+          ],
+          [
+            1265,
+            1103
+          ]
+        ],
+        "source_line_index": 54
+      },
+      {
+        "x": 1272,
+        "y": 782,
+        "w": 6,
+        "h": 58,
+        "area": 37,
+        "font_size_proxy_px": 6,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1272,
+            782
+          ],
+          [
+            1277,
+            782
+          ],
+          [
+            1277,
+            839
+          ],
+          [
+            1272,
+            839
+          ]
+        ],
+        "source_line_index": 59
+      },
+      {
+        "x": 1277,
+        "y": 976,
+        "w": 30,
+        "h": 106,
+        "area": 488,
+        "font_size_proxy_px": 30,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1277,
+            976
+          ],
+          [
+            1306,
+            976
+          ],
+          [
+            1306,
+            1081
+          ],
+          [
+            1277,
+            1081
+          ]
+        ],
+        "source_line_index": 55
+      },
+      {
+        "x": 1284,
+        "y": 521,
+        "w": 17,
+        "h": 153,
+        "area": 1118,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1284,
+            521
+          ],
+          [
+            1300,
+            521
+          ],
+          [
+            1300,
+            673
+          ],
+          [
+            1284,
+            673
+          ]
+        ],
+        "source_line_index": 27
+      },
+      {
+        "x": 1302,
+        "y": 776,
+        "w": 19,
+        "h": 43,
+        "area": 189,
+        "font_size_proxy_px": 19,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1302,
+            776
+          ],
+          [
+            1320,
+            776
+          ],
+          [
+            1320,
+            818
+          ],
+          [
+            1302,
+            818
+          ]
+        ],
+        "source_line_index": 29
+      },
+      {
+        "x": 1303,
+        "y": 987,
+        "w": 4,
+        "h": 95,
+        "area": 25,
+        "font_size_proxy_px": 4,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1303,
+            987
+          ],
+          [
+            1306,
+            987
+          ],
+          [
+            1306,
+            1081
+          ],
+          [
+            1303,
+            1081
+          ]
+        ],
+        "source_line_index": 53
+      },
+      {
+        "x": 1307,
+        "y": 522,
+        "w": 16,
+        "h": 66,
+        "area": 512,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1307,
+            522
+          ],
+          [
+            1322,
+            522
+          ],
+          [
+            1322,
+            587
+          ],
+          [
+            1307,
+            587
+          ]
+        ],
+        "source_line_index": 26
+      },
+      {
+        "x": 1318,
+        "y": 777,
+        "w": 23,
+        "h": 59,
+        "area": 211,
+        "font_size_proxy_px": 23,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1318,
+            777
+          ],
+          [
+            1340,
+            777
+          ],
+          [
+            1340,
+            835
+          ],
+          [
+            1318,
+            835
+          ]
+        ],
+        "source_line_index": 58
+      },
+      {
+        "x": 1324,
+        "y": 977,
+        "w": 19,
+        "h": 114,
+        "area": 670,
+        "font_size_proxy_px": 19,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1324,
+            977
+          ],
+          [
+            1342,
+            977
+          ],
+          [
+            1342,
+            1090
+          ],
+          [
+            1324,
+            1090
+          ]
+        ],
+        "source_line_index": 52
+      },
+      {
+        "x": 1331,
+        "y": 522,
+        "w": 17,
+        "h": 84,
+        "area": 499,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1331,
+            522
+          ],
+          [
+            1347,
+            522
+          ],
+          [
+            1347,
+            605
+          ],
+          [
+            1331,
+            605
+          ]
+        ],
+        "source_line_index": 25
+      },
+      {
+        "x": 1341,
+        "y": 779,
+        "w": 25,
+        "h": 320,
+        "area": 1489,
+        "font_size_proxy_px": 25,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1341,
+            779
+          ],
+          [
+            1365,
+            779
+          ],
+          [
+            1365,
+            1098
+          ],
+          [
+            1341,
+            1098
+          ]
+        ],
+        "source_line_index": 51
+      },
+      {
+        "x": 1345,
+        "y": 521,
+        "w": 28,
+        "h": 84,
+        "area": 944,
+        "font_size_proxy_px": 28,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1345,
+            521
+          ],
+          [
+            1372,
+            521
+          ],
+          [
+            1372,
+            604
+          ],
+          [
+            1345,
+            604
+          ]
+        ],
+        "source_line_index": 24
+      },
+      {
+        "x": 1363,
+        "y": 778,
+        "w": 26,
+        "h": 321,
+        "area": 1831,
+        "font_size_proxy_px": 26,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1363,
+            778
+          ],
+          [
+            1388,
+            778
+          ],
+          [
+            1388,
+            1098
+          ],
+          [
+            1363,
+            1098
+          ]
+        ],
+        "source_line_index": 50
+      },
+      {
+        "x": 1385,
+        "y": 822,
+        "w": 13,
+        "h": 274,
+        "area": 211,
+        "font_size_proxy_px": 13,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1385,
+            822
+          ],
+          [
+            1397,
+            822
+          ],
+          [
+            1397,
+            1095
+          ],
+          [
+            1385,
+            1095
+          ]
+        ],
+        "source_line_index": 44
+      },
+      {
+        "x": 1410,
+        "y": 948,
+        "w": 21,
+        "h": 122,
+        "area": 683,
+        "font_size_proxy_px": 21,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1410,
+            948
+          ],
+          [
+            1430,
+            948
+          ],
+          [
+            1430,
+            1069
+          ],
+          [
+            1410,
+            1069
+          ]
+        ],
+        "source_line_index": 45
+      },
+      {
+        "x": 1416,
+        "y": 93,
+        "w": 17,
+        "h": 85,
+        "area": 664,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1416,
+            93
+          ],
+          [
+            1432,
+            93
+          ],
+          [
+            1432,
+            177
+          ],
+          [
+            1416,
+            177
+          ]
+        ],
+        "source_line_index": 5
+      },
+      {
+        "x": 1418,
+        "y": 788,
+        "w": 24,
+        "h": 144,
+        "area": 1006,
+        "font_size_proxy_px": 24,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1418,
+            788
+          ],
+          [
+            1441,
+            788
+          ],
+          [
+            1441,
+            931
+          ],
+          [
+            1418,
+            931
+          ]
+        ],
+        "source_line_index": 49
+      },
+      {
+        "x": 1433,
+        "y": 947,
+        "w": 19,
+        "h": 152,
+        "area": 1008,
+        "font_size_proxy_px": 19,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1433,
+            947
+          ],
+          [
+            1451,
+            947
+          ],
+          [
+            1451,
+            1098
+          ],
+          [
+            1433,
+            1098
+          ]
+        ],
+        "source_line_index": 46
+      },
+      {
+        "x": 1437,
+        "y": 94,
+        "w": 17,
+        "h": 101,
+        "area": 734,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1437,
+            94
+          ],
+          [
+            1453,
+            94
+          ],
+          [
+            1453,
+            194
+          ],
+          [
+            1437,
+            194
+          ]
+        ],
+        "source_line_index": 4
+      },
+      {
+        "x": 1451,
+        "y": 945,
+        "w": 24,
+        "h": 123,
+        "area": 837,
+        "font_size_proxy_px": 24,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1451,
+            945
+          ],
+          [
+            1474,
+            945
+          ],
+          [
+            1474,
+            1067
+          ],
+          [
+            1451,
+            1067
+          ]
+        ],
+        "source_line_index": 48
+      },
+      {
+        "x": 1454,
+        "y": 460,
+        "w": 20,
+        "h": 119,
+        "area": 1148,
+        "font_size_proxy_px": 20,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1454,
+            460
+          ],
+          [
+            1473,
+            460
+          ],
+          [
+            1473,
+            578
+          ],
+          [
+            1454,
+            578
+          ]
+        ],
+        "source_line_index": 14
+      },
+      {
+        "x": 1458,
+        "y": 782,
+        "w": 25,
+        "h": 125,
+        "area": 823,
+        "font_size_proxy_px": 25,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1458,
+            782
+          ],
+          [
+            1482,
+            782
+          ],
+          [
+            1482,
+            906
+          ],
+          [
+            1458,
+            906
+          ]
+        ],
+        "source_line_index": 23
+      },
+      {
+        "x": 1459,
+        "y": 95,
+        "w": 15,
+        "h": 115,
+        "area": 1082,
+        "font_size_proxy_px": 15,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1459,
+            95
+          ],
+          [
+            1473,
+            95
+          ],
+          [
+            1473,
+            209
+          ],
+          [
+            1459,
+            209
+          ]
+        ],
+        "source_line_index": 3
+      },
+      {
+        "x": 1471,
+        "y": 945,
+        "w": 20,
+        "h": 131,
+        "area": 846,
+        "font_size_proxy_px": 20,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1471,
+            945
+          ],
+          [
+            1490,
+            945
+          ],
+          [
+            1490,
+            1075
+          ],
+          [
+            1471,
+            1075
+          ]
+        ],
+        "source_line_index": 47
+      },
+      {
+        "x": 1476,
+        "y": 95,
+        "w": 22,
+        "h": 64,
+        "area": 458,
+        "font_size_proxy_px": 22,
+        "axis_snapped": true,
+        "method": "line_trans_component_fallback",
+        "matched_component_count": 0,
+        "polygon": [
+          [
+            1476,
+            95
+          ],
+          [
+            1497,
+            95
+          ],
+          [
+            1497,
+            158
+          ],
+          [
+            1476,
+            158
+          ]
+        ],
+        "source_line_index": 2
+      },
+      {
+        "x": 1479,
+        "y": 461,
+        "w": 15,
+        "h": 84,
+        "area": 597,
+        "font_size_proxy_px": 15,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1479,
+            461
+          ],
+          [
+            1493,
+            461
+          ],
+          [
+            1493,
+            544
+          ],
+          [
+            1479,
+            544
+          ]
+        ],
+        "source_line_index": 13
+      },
+      {
+        "x": 1497,
+        "y": 460,
+        "w": 22,
+        "h": 67,
+        "area": 880,
+        "font_size_proxy_px": 22,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1497,
+            460
+          ],
+          [
+            1518,
+            460
+          ],
+          [
+            1518,
+            526
+          ],
+          [
+            1497,
+            526
+          ]
+        ],
+        "source_line_index": 12
+      },
+      {
+        "x": 1502,
+        "y": 93,
+        "w": 17,
+        "h": 118,
+        "area": 1150,
+        "font_size_proxy_px": 17,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1502,
+            93
+          ],
+          [
+            1518,
+            93
+          ],
+          [
+            1518,
+            210
+          ],
+          [
+            1502,
+            210
+          ]
+        ],
+        "source_line_index": 1
+      },
+      {
+        "x": 1505,
+        "y": 776,
+        "w": 46,
+        "h": 289,
+        "area": 3519,
+        "font_size_proxy_px": 46,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1505,
+            776
+          ],
+          [
+            1550,
+            776
+          ],
+          [
+            1550,
+            1064
+          ],
+          [
+            1505,
+            1064
+          ]
+        ],
+        "source_line_index": 43
+      },
+      {
+        "x": 1516,
+        "y": 460,
+        "w": 23,
+        "h": 67,
+        "area": 616,
+        "font_size_proxy_px": 23,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1516,
+            460
+          ],
+          [
+            1538,
+            460
+          ],
+          [
+            1538,
+            526
+          ],
+          [
+            1516,
+            526
+          ]
+        ],
+        "source_line_index": 11
+      },
+      {
+        "x": 1527,
+        "y": 93,
+        "w": 16,
+        "h": 84,
+        "area": 577,
+        "font_size_proxy_px": 16,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 1,
+        "polygon": [
+          [
+            1527,
+            93
+          ],
+          [
+            1542,
+            93
+          ],
+          [
+            1542,
+            176
+          ],
+          [
+            1527,
+            176
+          ]
+        ],
+        "source_line_index": 0
+      },
+      {
+        "x": 1531,
+        "y": 775,
+        "w": 27,
+        "h": 114,
+        "area": 1215,
+        "font_size_proxy_px": 27,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1531,
+            775
+          ],
+          [
+            1557,
+            775
+          ],
+          [
+            1557,
+            888
+          ],
+          [
+            1531,
+            888
+          ]
+        ],
+        "source_line_index": 42
+      },
+      {
+        "x": 1553,
+        "y": 775,
+        "w": 30,
+        "h": 123,
+        "area": 1263,
+        "font_size_proxy_px": 30,
+        "axis_snapped": true,
+        "method": "line_trans_component",
+        "matched_component_count": 2,
+        "polygon": [
+          [
+            1553,
+            775
+          ],
+          [
+            1582,
+            775
+          ],
+          [
+            1582,
+            897
+          ],
+          [
+            1553,
+            897
+          ]
+        ],
+        "source_line_index": 41
+      }
+    ]
+  }
+}

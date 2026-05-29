@@ -1,0 +1,1187 @@
+#!/usr/bin/env python3
+"""對指定資料夾內的漫畫圖片執行文字偵測，並在該資料夾下的 ctd 子資料夾輸出結果。"""
+
+import argparse
+import json
+import os
+import os.path as osp
+import shutil
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from inference import TextDetector
+from utils.imgproc_utils import get_yololabel_strings, xyxy2yolo
+from utils.io_utils import NumpyEncoder, find_all_imgs, imread, imwrite
+from utils.textmask import REFINEMASK_ANNOTATION
+
+ALIGN_ENGINE_DIR = Path(__file__).resolve().parent / '建立对齐方框'
+if str(ALIGN_ENGINE_DIR) not in sys.path:
+    sys.path.insert(0, str(ALIGN_ENGINE_DIR))
+from layout_core import apply_safety_rules as _core_apply_safety_rules
+from layout_core import calculate_layout as _core_calculate_layout
+from preview_draw import draw_item_preview as _core_draw_item_preview
+
+BLOCK_BOX_DIR = 'block-box'
+LINE_BOX_DIR = 'line-box'
+LINE_TRANS_BOX_DIR = 'line-trans-box'
+ALIGNED_BOX_DIR = 'aligned-box'
+CENTER_DIR = 'center'
+DEAL_OVERLAP_DIR = 'deal_overlap'
+BLOCK_BOX_COLOR = (0, 255, 0)      # 綠色：文字區塊
+LINE_BOX_COLOR = (0, 128, 255)     # 橘色：文字行
+LINE_TRANS_BOX_COLOR = (255, 0, 255)  # 洋紅色：line + trans 混合結果
+ALIGNED_BOX_COLOR = (255, 255, 0)  # 青色：氣泡對齊後的文字區塊
+ALIGN_MASK_COLOR = (179, 255, 255)  # 淡黃色：候選氣泡區域
+
+COMPONENT_MASK_THRESHOLD = 10
+COMPONENT_KERNEL_HEIGHT = 25
+COMPONENT_KERNEL_WIDTH = 1
+COMPONENT_MIN_BOX_HEIGHT = 50
+COMPONENT_MIN_BOX_AREA = 120
+COMPONENT_SPLIT_VALLEY_RATIO = 0.12
+COMPONENT_SPLIT_MIN_GAP = 3
+SHRINK_LINE_MASK_THRESHOLD = 10
+SHRINK_LINE_MIN_PIXELS = 8
+SHRINK_LINE_PADDING = 1.0
+SHRINK_LINE_AXIS_SNAP_DEGREES = 10
+SHRINK_PERCENTILE_LOW = 2
+SHRINK_PERCENTILE_HIGH = 98
+SHRINK_PERCENTILE_PADDING = 0.0
+SHRINK_TRANS_MAX_COMPONENT_WIDTH_RATIO = 1.35
+SHRINK_TRANS_MAX_COMPONENT_HEIGHT_RATIO = 1.35
+SHRINK_TRANS_MAX_COMPONENT_AREA_RATIO = 1.8
+SHRINK_TRANS_MIN_COMPONENT_COVERAGE = 0.5
+SHRINK_TRANS_MIN_LINE_COVERAGE = 0.08
+ALIGN_MASK_DILATE_SIZE = 9
+ALIGN_FLOOD_DIFF = 28
+ALIGN_MASK_SMOOTH_RADIUS = 7
+ALIGN_MAX_MOVE_PX = 150
+ALIGN_MAX_IMAGE_AREA_RATIO = 0.35
+ALIGN_MAX_OLD_AREA_RATIO = 40.0
+ALIGN_MAX_OUTER_INNER_AREA_RATIO = 4.0
+ALIGN_BLOCK_BG_COLOR = (0, 0, 0)
+ALIGN_BLOCK_BG_ALPHA = 0.18
+ALIGN_MANUAL_DIFF_THRESHOLD = 24
+ALIGN_MANUAL_PROTECT_DILATE_SIZE = 5
+
+
+def _box_line_width(height: int, width: int) -> int:
+    return max(2, min(height, width) // 400)
+
+
+def _mask_to_bgr(mask: np.ndarray) -> np.ndarray:
+    if len(mask.shape) == 2:
+        return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    return mask.copy()
+
+
+def _preview_base_image(img: np.ndarray) -> np.ndarray:
+    preview = img[:, :, :3].copy() if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if preview.shape[2] == 4:
+        preview = preview[:, :, :3]
+    return preview
+
+
+def _overlay_mask(
+    preview: np.ndarray,
+    mask: np.ndarray | None,
+    color: tuple[int, int, int],
+    alpha: float,
+) -> None:
+    if mask is None:
+        return
+    active = mask > 0
+    if not np.any(active):
+        return
+    color_layer = np.zeros_like(preview, dtype=np.uint8)
+    color_layer[active] = color
+    blended = (
+        preview.astype(np.float32) * (1.0 - alpha)
+        + color_layer.astype(np.float32) * alpha
+    ).astype(np.uint8)
+    preview[active] = blended[active]
+
+
+def _overlay_rect(
+    preview: np.ndarray,
+    box: list[int] | tuple[int, int, int, int],
+    color: tuple[int, int, int],
+    alpha: float,
+) -> None:
+    height, width = preview.shape[:2]
+    x1, y1, x2, y2 = _clip_xyxy(box, width, height)
+    if x2 <= x1 or y2 <= y1:
+        return
+    region = preview[y1:y2, x1:x2]
+    color_layer = np.full_like(region, color, dtype=np.uint8)
+    preview[y1:y2, x1:x2] = (
+        region.astype(np.float32) * (1.0 - alpha)
+        + color_layer.astype(np.float32) * alpha
+    ).astype(np.uint8)
+
+
+def _draw_rect_boxes(
+    mask: np.ndarray,
+    boxes: list[list[int]],
+    color: tuple[int, int, int],
+) -> np.ndarray:
+    canvas = _mask_to_bgr(mask)
+    if not boxes:
+        return canvas
+
+    line_width = _box_line_width(canvas.shape[0], canvas.shape[1])
+    for x1, y1, x2, y2 in boxes:
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, line_width)
+    return canvas
+
+
+def _draw_dashed_line(
+    img: np.ndarray,
+    pt1: tuple[int, int],
+    pt2: tuple[int, int],
+    color: tuple[int, int, int],
+    thickness: int = 2,
+    dash_length: int = 14,
+    gap_length: int = 8,
+) -> None:
+    x1, y1 = pt1
+    x2, y2 = pt2
+    length = float(np.hypot(x2 - x1, y2 - y1))
+    if length == 0:
+        return
+    dx = (x2 - x1) / length
+    dy = (y2 - y1) / length
+    distance = 0.0
+    while distance < length:
+        start = distance
+        end = min(distance + dash_length, length)
+        p1 = (int(round(x1 + dx * start)), int(round(y1 + dy * start)))
+        p2 = (int(round(x1 + dx * end)), int(round(y1 + dy * end)))
+        cv2.line(img, p1, p2, color, thickness, cv2.LINE_AA)
+        distance += dash_length + gap_length
+
+
+def _draw_dashed_rect(
+    img: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    color: tuple[int, int, int],
+    thickness: int = 2,
+) -> None:
+    _draw_dashed_line(img, (x1, y1), (x2, y1), color, thickness)
+    _draw_dashed_line(img, (x2, y1), (x2, y2), color, thickness)
+    _draw_dashed_line(img, (x2, y2), (x1, y2), color, thickness)
+    _draw_dashed_line(img, (x1, y2), (x1, y1), color, thickness)
+
+
+def _draw_rect_from_dict(
+    img: np.ndarray,
+    rect: dict | None,
+    color: tuple[int, int, int],
+    dashed: bool = False,
+) -> None:
+    if not rect:
+        return
+    x1 = int(rect['left'])
+    y1 = int(rect['top'])
+    x2 = int(rect['left'] + rect['width'])
+    y2 = int(rect['top'] + rect['height'])
+    if dashed:
+        _draw_dashed_rect(img, x1, y1, x2, y2, color, thickness=2)
+    else:
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+
+def _draw_rect_xyxy_with_center(
+    img: np.ndarray,
+    xyxy: list[int] | tuple[int, int, int, int],
+    color: tuple[int, int, int],
+    center_color: tuple[int, int, int] | None = None,
+) -> None:
+    center_color = center_color or color
+    x1, y1, x2, y2 = [int(v) for v in xyxy]
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+    cx = int(round((x1 + x2) / 2))
+    cy = int(round((y1 + y2) / 2))
+    cv2.drawMarker(img, (cx, cy), center_color, markerType=cv2.MARKER_CROSS, markerSize=18, thickness=2)
+
+
+def _draw_line_polygons(
+    mask: np.ndarray,
+    polys: list | np.ndarray,
+    color: tuple[int, int, int],
+) -> np.ndarray:
+    canvas = _mask_to_bgr(mask)
+    if len(polys) == 0:
+        return canvas
+
+    line_width = _box_line_width(canvas.shape[0], canvas.shape[1])
+    polys_arr = np.array(polys, dtype=np.int32).reshape(-1, 4, 2)
+    cv2.polylines(canvas, polys_arr, isClosed=True, color=color, thickness=line_width)
+    return canvas
+
+
+def _polygon_to_xywh(poly: np.ndarray) -> dict:
+    x_min, y_min = poly.min(axis=0)
+    x_max, y_max = poly.max(axis=0)
+    return {
+        'x': int(x_min),
+        'y': int(y_min),
+        'w': int(x_max - x_min + 1),
+        'h': int(y_max - y_min + 1),
+    }
+
+
+def _box_to_rect(box: dict) -> tuple[int, int, int, int]:
+    return box['x'], box['y'], box['x'] + box['w'], box['y'] + box['h']
+
+
+def _rect_intersection_area(
+    rect_a: tuple[int, int, int, int],
+    rect_b: tuple[int, int, int, int],
+) -> int:
+    x1 = max(rect_a[0], rect_b[0])
+    y1 = max(rect_a[1], rect_b[1])
+    x2 = min(rect_a[2], rect_b[2])
+    y2 = min(rect_a[3], rect_b[3])
+    return max(0, x2 - x1) * max(0, y2 - y1)
+
+
+def _rect_area_xyxy(box: list[int] | tuple[int, int, int, int]) -> int:
+    return max(0, int(box[2]) - int(box[0])) * max(0, int(box[3]) - int(box[1]))
+
+
+def _rects_overlap_xyxy(
+    box_a: list[int] | tuple[int, int, int, int],
+    box_b: list[int] | tuple[int, int, int, int],
+) -> bool:
+    return _rect_intersection_area(tuple(box_a), tuple(box_b)) > 0
+
+
+def _dict_rect_to_xyxy(rect: dict) -> list[int]:
+    return [
+        int(rect['left']),
+        int(rect['top']),
+        int(rect['left'] + rect['width']),
+        int(rect['top'] + rect['height']),
+    ]
+
+
+def _final_boxes_overlap(aligned_items: list[dict], min_ratio: float = 0.05) -> bool:
+    boxes = []
+    for item in aligned_items:
+        final_box = item.get('final_xyxy_pixel')
+        if final_box is None:
+            x1, y1 = int(item['x']), int(item['y'])
+            final_box = [x1, y1, x1 + int(item['w']), y1 + int(item['h'])]
+        boxes.append([int(v) for v in final_box])
+
+    for index, box_a in enumerate(boxes):
+        for box_b in boxes[index + 1:]:
+            if not _rects_overlap_xyxy(box_a, box_b):
+                continue
+            overlap_area = _rect_intersection_area(tuple(box_a), tuple(box_b))
+            smaller_area = min(_rect_area_xyxy(box_a), _rect_area_xyxy(box_b))
+            if smaller_area > 0 and overlap_area / smaller_area >= min_ratio:
+                return True
+    return False
+
+
+def _outer_overlap_indices(aligned_items: list[dict]) -> set[int]:
+    outer_boxes = []
+    for index, item in enumerate(aligned_items):
+        outer_rect = item.get('layout_debug', {}).get('outer_rect')
+        if outer_rect is None:
+            continue
+        outer_boxes.append((index, _dict_rect_to_xyxy(outer_rect)))
+
+    overlap_indices = set()
+    for pos, (index_a, box_a) in enumerate(outer_boxes):
+        for index_b, box_b in outer_boxes[pos + 1:]:
+            if _rects_overlap_xyxy(box_a, box_b):
+                overlap_indices.add(index_a)
+                overlap_indices.add(index_b)
+    return overlap_indices
+
+
+def _ensure_deal_overlap_image(original_path: str, overlap_path: str) -> str:
+    if osp.exists(overlap_path):
+        return 'exists'
+    os.makedirs(osp.dirname(overlap_path), exist_ok=True)
+    shutil.copy2(original_path, overlap_path)
+    return 'copied'
+
+
+def _clip_xyxy(
+    box: list[int] | tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> list[int]:
+    x1, y1, x2, y2 = [int(round(v)) for v in box]
+    return [
+        max(0, min(width - 1, x1)),
+        max(0, min(height - 1, y1)),
+        max(0, min(width, x2)),
+        max(0, min(height, y2)),
+    ]
+
+
+def _xyxy_to_item(box: list[int], method: str, accepted: bool, index: int) -> dict:
+    x1, y1, x2, y2 = box
+    return {
+        'x': int(x1),
+        'y': int(y1),
+        'w': int(max(0, x2 - x1)),
+        'h': int(max(0, y2 - y1)),
+        'area': int(_rect_area_xyxy(box)),
+        'method': method,
+        'accepted': accepted,
+        'source_block_index': index,
+    }
+
+
+def _matched_component_mask(
+    image_shape: tuple[int, int],
+    poly: np.ndarray,
+    component_boxes: list[dict],
+) -> tuple[np.ndarray | None, int]:
+    if not component_boxes:
+        return None, 0
+
+    line_box = _polygon_to_xywh(poly.astype(np.int32))
+    line_rect = _box_to_rect(line_box)
+    line_area = max(1, line_box['w'] * line_box['h'])
+    matched_mask = np.zeros(image_shape[:2], dtype=np.uint8)
+    matched_count = 0
+
+    for component in component_boxes:
+        component_rect = _box_to_rect(component)
+        component_area = max(1, component['w'] * component['h'])
+        intersection_area = _rect_intersection_area(line_rect, component_rect)
+        if intersection_area <= 0:
+            continue
+
+        if component['w'] > line_box['w'] * SHRINK_TRANS_MAX_COMPONENT_WIDTH_RATIO:
+            continue
+        if component['h'] > line_box['h'] * SHRINK_TRANS_MAX_COMPONENT_HEIGHT_RATIO:
+            continue
+        if component_area > line_area * SHRINK_TRANS_MAX_COMPONENT_AREA_RATIO:
+            continue
+
+        component_coverage = intersection_area / component_area
+        line_coverage = intersection_area / line_area
+        if (
+            component_coverage < SHRINK_TRANS_MIN_COMPONENT_COVERAGE
+            and line_coverage < SHRINK_TRANS_MIN_LINE_COVERAGE
+        ):
+            continue
+
+        x1, y1, x2, y2 = component_rect
+        matched_mask[y1:y2, x1:x2] = 1
+        matched_count += 1
+
+    if matched_count == 0:
+        return None, 0
+    return matched_mask, matched_count
+
+
+def _polygon_axes(poly: np.ndarray) -> tuple[np.ndarray, np.ndarray, bool] | None:
+    p0, p1, p2, p3 = poly.astype(np.float64)
+    u_vec = ((p1 - p0) + (p2 - p3)) / 2
+    v_vec = ((p3 - p0) + (p2 - p1)) / 2
+    u_norm = np.linalg.norm(u_vec)
+    v_norm = np.linalg.norm(v_vec)
+    if u_norm < 1e-6 or v_norm < 1e-6:
+        return None
+
+    u_axis = u_vec / u_norm
+    v_axis = v_vec / v_norm
+    snap_limit = np.sin(np.deg2rad(SHRINK_LINE_AXIS_SNAP_DEGREES))
+    is_near_u_horizontal = abs(u_axis[1]) <= snap_limit
+    is_near_v_vertical = abs(v_axis[0]) <= snap_limit
+    if is_near_u_horizontal and is_near_v_vertical:
+        u_axis = np.array([1.0 if u_axis[0] >= 0 else -1.0, 0.0])
+        v_axis = np.array([0.0, 1.0 if v_axis[1] >= 0 else -1.0])
+        return u_axis, v_axis, True
+
+    return u_axis, v_axis, False
+
+
+def _shrink_line_polygon(
+    mask: np.ndarray,
+    poly: np.ndarray,
+    *,
+    percentile_low: float = 0,
+    percentile_high: float = 100,
+    padding: float = SHRINK_LINE_PADDING,
+    component_boxes: list[dict] | None = None,
+    method: str = 'minmax',
+) -> dict | None:
+    axes = _polygon_axes(poly)
+    if axes is None:
+        return None
+    u_axis, v_axis, axis_snapped = axes
+
+    if len(mask.shape) == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    poly = poly.astype(np.int32)
+
+    poly_mask = np.zeros(mask.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(poly_mask, [poly], 1)
+    text_mask = (mask > SHRINK_LINE_MASK_THRESHOLD) & (poly_mask > 0)
+    matched_component_count = 0
+    if component_boxes is not None:
+        component_mask, matched_component_count = _matched_component_mask(
+            mask.shape[:2],
+            poly,
+            component_boxes,
+        )
+        if component_mask is None:
+            return None
+        text_mask &= component_mask > 0
+
+    ys, xs = np.where(text_mask)
+    if len(xs) < SHRINK_LINE_MIN_PIXELS:
+        return None
+
+    origin = poly.astype(np.float64)[0]
+    pixels = np.stack([xs, ys], axis=1).astype(np.float64)
+    rel_pixels = pixels - origin
+    rel_poly = poly.astype(np.float64) - origin
+
+    pixel_u = rel_pixels @ u_axis
+    pixel_v = rel_pixels @ v_axis
+    poly_u = rel_poly @ u_axis
+    poly_v = rel_poly @ v_axis
+
+    u_low = np.percentile(pixel_u, percentile_low)
+    u_high = np.percentile(pixel_u, percentile_high)
+    v_low = np.percentile(pixel_v, percentile_low)
+    v_high = np.percentile(pixel_v, percentile_high)
+    u_min = max(u_low - padding, poly_u.min())
+    u_max = min(u_high + padding, poly_u.max())
+    v_min = max(v_low - padding, poly_v.min())
+    v_max = min(v_high + padding, poly_v.max())
+    if u_max <= u_min or v_max <= v_min:
+        return None
+
+    shrunk_poly = np.array(
+        [
+            origin + u_axis * u_min + v_axis * v_min,
+            origin + u_axis * u_max + v_axis * v_min,
+            origin + u_axis * u_max + v_axis * v_max,
+            origin + u_axis * u_min + v_axis * v_max,
+        ],
+        dtype=np.float64,
+    )
+    height, width = mask.shape[:2]
+    shrunk_poly[:, 0] = np.clip(np.round(shrunk_poly[:, 0]), 0, width - 1)
+    shrunk_poly[:, 1] = np.clip(np.round(shrunk_poly[:, 1]), 0, height - 1)
+    shrunk_poly = shrunk_poly.astype(np.int32)
+
+    xywh = _polygon_to_xywh(shrunk_poly)
+    return {
+        **xywh,
+        'area': int(len(xs)),
+        'font_size_proxy_px': int(min(xywh['w'], xywh['h'])),
+        'axis_snapped': axis_snapped,
+        'method': method,
+        'matched_component_count': matched_component_count,
+        'polygon': shrunk_poly.tolist(),
+    }
+
+
+def _shrink_line_polygons(
+    mask: np.ndarray,
+    polys: list | np.ndarray,
+    *,
+    percentile_low: float = 0,
+    percentile_high: float = 100,
+    padding: float = SHRINK_LINE_PADDING,
+    component_boxes: list[dict] | None = None,
+    method: str = 'minmax',
+    fallback_items: list[dict] | None = None,
+) -> list[dict]:
+    if len(polys) == 0:
+        return []
+
+    line_polys = np.array(polys, dtype=np.int32).reshape(-1, 4, 2)
+    shrunk_items = []
+    fallback_by_index = {}
+    if fallback_items is not None:
+        fallback_by_index = {
+            item['source_line_index']: item
+            for item in fallback_items
+            if 'source_line_index' in item
+        }
+    for idx, poly in enumerate(line_polys):
+        item = _shrink_line_polygon(
+            mask,
+            poly,
+            percentile_low=percentile_low,
+            percentile_high=percentile_high,
+            padding=padding,
+            component_boxes=component_boxes,
+            method=method,
+        )
+        if item is None and idx in fallback_by_index:
+            item = dict(fallback_by_index[idx])
+            item['method'] = f'{method}_fallback'
+            item['matched_component_count'] = 0
+        if item is not None:
+            item['source_line_index'] = idx
+            shrunk_items.append(item)
+    shrunk_items.sort(key=lambda item: (item['x'], item['y']))
+    return shrunk_items
+
+
+def _draw_shrink_line_polygons(
+    mask: np.ndarray,
+    shrunk_items: list[dict],
+    color: tuple[int, int, int] = LINE_TRANS_BOX_COLOR,
+) -> np.ndarray:
+    canvas = _mask_to_bgr(mask)
+    if not shrunk_items:
+        return canvas
+
+    line_width = _box_line_width(canvas.shape[0], canvas.shape[1])
+    polys = np.array([item['polygon'] for item in shrunk_items], dtype=np.int32)
+    cv2.polylines(canvas, polys, isClosed=True, color=color, thickness=line_width)
+    return canvas
+
+
+def _mask_to_binary(mask: np.ndarray, threshold: int = COMPONENT_MASK_THRESHOLD) -> np.ndarray:
+    if len(mask.shape) == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    return mask > threshold
+
+
+def _compute_box_from_mask(
+    component_mask: np.ndarray,
+    offset_x: int = 0,
+    offset_y: int = 0,
+) -> dict | None:
+    ys, xs = np.where(component_mask)
+    if len(xs) == 0:
+        return None
+
+    x_min, x_max = int(xs.min()), int(xs.max())
+    y_min, y_max = int(ys.min()), int(ys.max())
+    width = x_max - x_min + 1
+    height = y_max - y_min + 1
+    return {
+        'x': offset_x + x_min,
+        'y': offset_y + y_min,
+        'w': width,
+        'h': height,
+        'area': int(len(xs)),
+        'font_size_proxy_px': width,
+    }
+
+
+def _split_component_box_by_x_projection(box: dict, binary_mask: np.ndarray) -> list[dict]:
+    x, y, w, h = box['x'], box['y'], box['w'], box['h']
+    crop = binary_mask[y:y + h, x:x + w]
+    if crop.size == 0:
+        return [box]
+
+    projection = crop.sum(axis=0).astype(np.int32)
+    peak = int(projection.max()) if projection.size > 0 else 0
+    if peak <= 0:
+        return [box]
+
+    valley_threshold = max(1, int(peak * COMPONENT_SPLIT_VALLEY_RATIO))
+    active = projection > valley_threshold
+
+    segments = []
+    start = None
+    for idx, is_active in enumerate(active):
+        if is_active and start is None:
+            start = idx
+        elif not is_active and start is not None:
+            segments.append((start, idx))
+            start = None
+    if start is not None:
+        segments.append((start, len(active)))
+
+    if len(segments) <= 1:
+        return [box]
+
+    merged_segments = []
+    for seg_start, seg_end in segments:
+        if not merged_segments:
+            merged_segments.append([seg_start, seg_end])
+            continue
+
+        prev_start, prev_end = merged_segments[-1]
+        gap = seg_start - prev_end
+        if gap < COMPONENT_SPLIT_MIN_GAP:
+            merged_segments[-1][1] = seg_end
+        else:
+            merged_segments.append([seg_start, seg_end])
+
+    if len(merged_segments) <= 1:
+        return [box]
+
+    split_boxes = []
+    for seg_start, seg_end in merged_segments:
+        sub_mask = crop[:, seg_start:seg_end]
+        sub_box = _compute_box_from_mask(sub_mask, offset_x=x + seg_start, offset_y=y)
+        if sub_box is None:
+            continue
+        if sub_box['h'] < COMPONENT_MIN_BOX_HEIGHT or sub_box['area'] < COMPONENT_MIN_BOX_AREA:
+            continue
+        split_boxes.append(sub_box)
+
+    return split_boxes if len(split_boxes) >= 2 else [box]
+
+
+def _find_component_boxes(mask: np.ndarray) -> list[dict]:
+    binary_mask = _mask_to_binary(mask)
+    kernel = np.ones((COMPONENT_KERNEL_HEIGHT, COMPONENT_KERNEL_WIDTH), dtype=np.uint8)
+    merged_mask = cv2.dilate(binary_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+
+    num_labels, labels = cv2.connectedComponents(merged_mask.astype(np.uint8), connectivity=8)
+    boxes = []
+    for label_idx in range(1, num_labels):
+        component_mask = labels == label_idx
+        box = _compute_box_from_mask(component_mask)
+        if box is None:
+            continue
+        if box['h'] < COMPONENT_MIN_BOX_HEIGHT or box['area'] < COMPONENT_MIN_BOX_AREA:
+            continue
+        boxes.extend(_split_component_box_by_x_projection(box, binary_mask))
+
+    boxes.sort(key=lambda item: (item['x'], item['y']))
+    return boxes
+
+
+def _largest_rect_in_histogram(heights: np.ndarray) -> tuple[int, tuple[int, int, int]]:
+    stack = []
+    max_area = 0
+    best_rect = (0, 0, 0)
+    histogram = np.append(heights, 0)
+    for idx, height in enumerate(histogram):
+        start = idx
+        while stack and stack[-1][0] >= height:
+            prev_height, prev_start = stack.pop()
+            width = idx - prev_start
+            area = int(prev_height) * int(width)
+            if area > max_area:
+                max_area = area
+                best_rect = (int(prev_height), int(prev_start), int(idx - 1))
+            start = prev_start
+        stack.append((int(height), int(start)))
+    return max_area, best_rect
+
+
+def _largest_inner_rect(mask: np.ndarray, bbox: tuple[int, int, int, int], step: int = 2) -> dict | None:
+    x, y, w, h = bbox
+    roi = mask[y:y + h, x:x + w]
+    rows, cols = roi.shape
+    if rows <= 0 or cols <= 0:
+        return None
+
+    is_white = roi > 0
+    height_matrix = np.zeros((rows, cols), dtype=np.int32)
+    for row in range(rows):
+        if row == 0:
+            height_matrix[row] = is_white[row].astype(np.int32)
+        else:
+            height_matrix[row] = np.where(is_white[row], height_matrix[row - 1] + 1, 0)
+
+    best_area = 0
+    best = None
+    for row in range(0, rows, step):
+        area, (rect_h, start_col, end_col) = _largest_rect_in_histogram(height_matrix[row])
+        if area > best_area and rect_h > 0:
+            best_area = area
+            rect_top = row - rect_h + 1
+            best = {
+                'left': int(x + start_col),
+                'top': int(y + rect_top),
+                'width': int(end_col - start_col + 1),
+                'height': int(rect_h),
+                'area': int(area),
+            }
+    return best
+
+
+def _smooth_binary_mask(mask: np.ndarray, radius: int = ALIGN_MASK_SMOOTH_RADIUS) -> np.ndarray:
+    if radius <= 0:
+        return mask
+    kernel_size = int(radius * 2) | 1
+    blurred = cv2.GaussianBlur(mask, (kernel_size, kernel_size), 0)
+    _, smoothed = cv2.threshold(blurred, 127, 255, cv2.THRESH_BINARY)
+    return smoothed
+
+
+def _manual_edit_mask(base_img: np.ndarray | None, calc_img: np.ndarray) -> np.ndarray | None:
+    if base_img is None or base_img.shape[:2] != calc_img.shape[:2]:
+        return None
+    base = base_img[:, :, :3] if len(base_img.shape) == 3 else cv2.cvtColor(base_img, cv2.COLOR_GRAY2BGR)
+    calc = calc_img[:, :, :3] if len(calc_img.shape) == 3 else cv2.cvtColor(calc_img, cv2.COLOR_GRAY2BGR)
+    diff = cv2.absdiff(base, calc)
+    diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    manual = (diff_gray > ALIGN_MANUAL_DIFF_THRESHOLD).astype(np.uint8) * 255
+    if cv2.countNonZero(manual) == 0:
+        return manual
+    kernel = np.ones((ALIGN_MANUAL_PROTECT_DILATE_SIZE, ALIGN_MANUAL_PROTECT_DILATE_SIZE), dtype=np.uint8)
+    return cv2.dilate(manual, kernel, iterations=1)
+
+
+def _prepare_align_gray(
+    img: np.ndarray,
+    mask: np.ndarray,
+    base_img: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img.copy()
+    text_mask = _mask_to_binary(mask).astype(np.uint8) * 255
+    kernel = np.ones((ALIGN_MASK_DILATE_SIZE, ALIGN_MASK_DILATE_SIZE), dtype=np.uint8)
+    text_mask = cv2.dilate(text_mask, kernel, iterations=1)
+    manual_mask = _manual_edit_mask(base_img, img)
+    if manual_mask is not None:
+        text_mask[manual_mask > 0] = 0
+    inpainted = cv2.inpaint(gray, text_mask, 5, cv2.INPAINT_TELEA)
+    if manual_mask is not None:
+        inpainted[manual_mask > 0] = gray[manual_mask > 0]
+    return inpainted, text_mask
+
+
+def _seed_near_box_center(text_mask: np.ndarray, box: list[int]) -> tuple[int, int]:
+    height, width = text_mask.shape[:2]
+    x1, y1, x2, y2 = box
+    cx = int(round((x1 + x2) / 2))
+    cy = int(round((y1 + y2) / 2))
+    cx = max(0, min(width - 1, cx))
+    cy = max(0, min(height - 1, cy))
+    if text_mask[cy, cx] == 0:
+        return cx, cy
+
+    pad_x = max(8, int((x2 - x1) * 0.35))
+    pad_y = max(8, int((y2 - y1) * 0.35))
+    rx1 = max(0, x1 - pad_x)
+    ry1 = max(0, y1 - pad_y)
+    rx2 = min(width, x2 + pad_x)
+    ry2 = min(height, y2 + pad_y)
+    crop = text_mask[ry1:ry2, rx1:rx2] == 0
+    ys, xs = np.where(crop)
+    if len(xs) == 0:
+        return cx, cy
+
+    abs_xs = xs + rx1
+    abs_ys = ys + ry1
+    distances = (abs_xs - cx) ** 2 + (abs_ys - cy) ** 2
+    nearest = int(np.argmin(distances))
+    return int(abs_xs[nearest]), int(abs_ys[nearest])
+
+
+def _flood_region(gray: np.ndarray, seed: tuple[int, int]) -> np.ndarray | None:
+    height, width = gray.shape[:2]
+    x, y = seed
+    if x < 0 or x >= width or y < 0 or y >= height:
+        return None
+    flood_mask = np.zeros((height + 2, width + 2), dtype=np.uint8)
+    flood_img = gray.copy()
+    flags = 4 | (255 << 8) | cv2.FLOODFILL_FIXED_RANGE | cv2.FLOODFILL_MASK_ONLY
+    try:
+        cv2.floodFill(
+            flood_img,
+            flood_mask,
+            (x, y),
+            255,
+            ALIGN_FLOOD_DIFF,
+            ALIGN_FLOOD_DIFF,
+            flags,
+        )
+    except cv2.error:
+        return None
+    region = flood_mask[1:-1, 1:-1]
+    return region if cv2.countNonZero(region) > 0 else None
+
+
+def _candidate_from_region(region: np.ndarray, old_box: list[int]) -> tuple[list[int], dict] | None:
+    smoothed = _smooth_binary_mask(region)
+    points = cv2.findNonZero(smoothed)
+    if points is None:
+        return None
+
+    x, y, w, h = cv2.boundingRect(points)
+    outer_area = w * h
+    inner = _largest_inner_rect(smoothed, (x, y, w, h), step=2)
+    if inner is None:
+        cx = x + w / 2
+        cy = y + h / 2
+        result_w = float(w)
+        result_h = float(h)
+        inner_area = 0
+    else:
+        outer_cx = x + w / 2
+        outer_cy = y + h / 2
+        inner_cx = inner['left'] + inner['width'] / 2
+        inner_cy = inner['top'] + inner['height'] / 2
+        cx = (outer_cx + inner_cx) / 2
+        cy = (outer_cy + inner_cy) / 2
+        result_w = (w + inner['width']) / 2
+        result_h = (h + inner['height']) / 2
+        inner_area = inner['area']
+
+    candidate = [
+        int(round(cx - result_w / 2)),
+        int(round(cy - result_h / 2)),
+        int(round(cx + result_w / 2)),
+        int(round(cy + result_h / 2)),
+    ]
+    old_cx = (old_box[0] + old_box[2]) / 2
+    old_cy = (old_box[1] + old_box[3]) / 2
+    move_px = float(np.hypot(cx - old_cx, cy - old_cy))
+    outer_body_mask = np.zeros_like(smoothed, dtype=np.uint8)
+    outer_body_mask[y:y + h, x:x + w] = smoothed[y:y + h, x:x + w]
+    return candidate, {
+        'outer_rect': {'left': int(x), 'top': int(y), 'width': int(w), 'height': int(h), 'area': int(outer_area)},
+        'inner_rect': inner,
+        'move_px': round(move_px, 2),
+        'outer_inner_area_ratio': float(outer_area / inner_area) if inner_area > 0 else float('inf'),
+        '_preview_mask': outer_body_mask,
+    }
+
+
+def _fallback_aligned_item(
+    old_box: list[int],
+    method: str,
+    index: int,
+    error: Exception | None = None,
+) -> dict:
+    item = _xyxy_to_item(old_box, method, False, index)
+    item['final_xyxy_pixel'] = old_box
+    item['layout_debug'] = {
+        'processed': False,
+        'accepted': False,
+        'skip_reason': method,
+        'old_xyxy_pixel': old_box,
+    }
+    if error is not None:
+        item['layout_debug']['error'] = str(error)
+    return item
+
+
+def _align_block_box(
+    img: np.ndarray,
+    mask: np.ndarray,
+    block_box: list[int],
+    index: int,
+    center_mode: str = 'auto',
+    base_img: np.ndarray | None = None,
+) -> dict:
+    height, width = img.shape[:2]
+    old_box = _clip_xyxy(block_box, width, height)
+    if _rect_area_xyxy(old_box) <= 0:
+        return _fallback_aligned_item(old_box, 'block_fallback_invalid_box', index)
+
+    gray, _ = _prepare_align_gray(img, mask, base_img=base_img)
+    core_item = {
+        'xyxy_pixel': old_box,
+        'center_normalized': [
+            round(((old_box[0] + old_box[2]) / 2) / width, 4),
+            round(((old_box[1] + old_box[3]) / 2) / height, 4),
+        ],
+    }
+    try:
+        layout = _core_calculate_layout(gray, core_item, center_mode=center_mode)
+        layout = _core_apply_safety_rules(core_item, layout, width, height)
+    except Exception as exc:
+        return _fallback_aligned_item(old_box, 'block_fallback_layout_failed', index, exc)
+
+    final_box = [int(round(v)) for v in layout['final_xyxy_pixel']]
+    debug = layout.get('layout_debug', {})
+    accepted = bool(debug.get('accepted'))
+    method = debug.get('calculation_method', 'bubble_flood_align')
+    if not accepted:
+        method = f"block_fallback_{debug.get('skip_reason') or 'safety'}"
+
+    item = _xyxy_to_item(final_box, method, accepted, index)
+    item.update(layout)
+    item['source_block_index'] = index
+    item['method'] = method
+    item['accepted'] = accepted
+    return item
+
+
+def _align_block_boxes(
+    img: np.ndarray,
+    mask: np.ndarray,
+    block_boxes: list[list[int]],
+    center_mode: str = 'auto',
+    base_img: np.ndarray | None = None,
+) -> list[dict]:
+    aligned_items = [
+        _align_block_box(img, mask, block_box, index, center_mode=center_mode, base_img=base_img)
+        for index, block_box in enumerate(block_boxes)
+    ]
+    if center_mode != 'auto':
+        return aligned_items
+
+    for index in _outer_overlap_indices(aligned_items):
+        aligned_items[index] = _align_block_box(
+            img,
+            mask,
+            block_boxes[index],
+            index,
+            center_mode='outer',
+            base_img=base_img,
+        )
+        aligned_items[index]['outer_overlap_center_mode_override'] = True
+    return aligned_items
+
+
+def _clean_aligned_items(aligned_items: list[dict]) -> list[dict]:
+    clean_items = []
+    for item in aligned_items:
+        clean_items.append({
+            key: value
+            for key, value in item.items()
+            if not key.startswith('_')
+        })
+    return clean_items
+
+
+def _draw_aligned_boxes(
+    img: np.ndarray,
+    aligned_items: list[dict],
+) -> np.ndarray:
+    canvas = _preview_base_image(img)
+    for item_index, item in enumerate(aligned_items):
+        old_box = item.get('layout_debug', {}).get('old_xyxy_pixel')
+        if old_box is not None:
+            _overlay_rect(canvas, old_box, ALIGN_BLOCK_BG_COLOR, ALIGN_BLOCK_BG_ALPHA)
+        _core_draw_item_preview(canvas, item, item.get('_preview_masks'), item_index)
+    return canvas
+
+
+def _save_box_visualizations(
+    save_dir: str,
+    imname: str,
+    img: np.ndarray,
+    mask: np.ndarray,
+    block_boxes: list[list[int]],
+    line_polys: list,
+    line_trans_items: list[dict],
+    aligned_items: list[dict],
+) -> None:
+    block_dir = osp.join(save_dir, BLOCK_BOX_DIR)
+    line_dir = osp.join(save_dir, LINE_BOX_DIR)
+    line_trans_dir = osp.join(save_dir, LINE_TRANS_BOX_DIR)
+    center_dir = osp.join(osp.dirname(save_dir), CENTER_DIR)
+    os.makedirs(block_dir, exist_ok=True)
+    os.makedirs(line_dir, exist_ok=True)
+    os.makedirs(line_trans_dir, exist_ok=True)
+    os.makedirs(center_dir, exist_ok=True)
+
+    block_img = _draw_rect_boxes(mask, block_boxes, BLOCK_BOX_COLOR)
+    line_img = _draw_line_polygons(mask, line_polys, LINE_BOX_COLOR)
+    line_trans_img = _draw_shrink_line_polygons(mask, line_trans_items, LINE_TRANS_BOX_COLOR)
+    center_img = _draw_aligned_boxes(img, aligned_items)
+
+    imwrite(osp.join(block_dir, f'{imname}.png'), block_img)
+    imwrite(osp.join(line_dir, f'{imname}.png'), line_img)
+    imwrite(osp.join(line_trans_dir, f'{imname}.png'), line_trans_img)
+    imwrite(osp.join(center_dir, f'{imname}.png'), center_img)
+
+
+def detect_folder(
+    img_dir: str,
+    model_path: str,
+    device: str | None = None,
+    save_json: bool = False,
+) -> int:
+    img_dir = osp.abspath(img_dir)
+    if not osp.isdir(img_dir):
+        raise FileNotFoundError(f'找不到資料夾：{img_dir}')
+
+    model_path = osp.abspath(model_path)
+    if not osp.isfile(model_path):
+        raise FileNotFoundError(f'找不到模型檔：{model_path}')
+
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    save_dir = osp.join(img_dir, 'ctd')
+    os.makedirs(save_dir, exist_ok=True)
+
+    imglist = [
+        p for p in find_all_imgs(img_dir, abs_path=True)
+        if not osp.basename(p).startswith('mask-')
+    ]
+    if not imglist:
+        print(f'資料夾內沒有可處理的圖片：{img_dir}')
+        return 0
+
+    print(f'資料夾：{img_dir}')
+    print(f'輸出：{save_dir}')
+    print(f'模型：{model_path}')
+    print(f'裝置：{device}')
+    print(f'圖片數量：{len(imglist)}')
+
+    detector = TextDetector(model_path=model_path, input_size=1024, device=device, act='leaky')
+    line_trans_map = {}
+    aligned_box_map = {}
+    deal_overlap_dir = osp.join(img_dir, DEAL_OVERLAP_DIR)
+    pages_using_deal_overlap = 0
+    pages_with_aligned_overlap = 0
+    deal_overlap_copied = 0
+
+    for img_path in tqdm(imglist, desc='偵測中'):
+        imgname = osp.basename(img_path)
+        img = imread(img_path)
+        im_h, im_w = img.shape[:2]
+        imname = Path(imgname).stem
+        overlap_path = osp.join(deal_overlap_dir, imgname)
+        calc_img = imread(overlap_path) if osp.exists(overlap_path) else img
+        if osp.exists(overlap_path):
+            pages_using_deal_overlap += 1
+
+        mask, mask_refined, blk_list = detector(
+            img,
+            refine_mode=REFINEMASK_ANNOTATION,
+            keep_undetected_mask=True,
+        )
+
+        polys = []
+        blk_xyxy = []
+        blk_dict_list = []
+        for blk in blk_list:
+            polys += blk.lines
+            blk_xyxy.append(blk.xyxy)
+            blk_dict_list.append(blk.to_dict())
+
+        block_boxes = [[int(x) for x in box] for box in blk_xyxy]
+
+        blk_xyxy_yolo = xyxy2yolo(blk_xyxy, im_w, im_h)
+        if blk_xyxy_yolo is not None:
+            cls_list = [1] * len(blk_xyxy_yolo)
+            yolo_label = get_yololabel_strings(cls_list, blk_xyxy_yolo)
+        else:
+            yolo_label = ''
+
+        with open(osp.join(save_dir, f'{imname}.txt'), 'w', encoding='utf8') as f:
+            f.write(yolo_label)
+
+        poly_save_path = osp.join(save_dir, f'line-{imname}.txt')
+        if len(polys) != 0:
+            polys_arr = np.array(polys).reshape(-1, 8)
+            np.savetxt(poly_save_path, polys_arr, fmt='%d')
+        elif osp.exists(poly_save_path):
+            os.remove(poly_save_path)
+
+        if save_json:
+            with open(osp.join(save_dir, f'{imname}.json'), 'w', encoding='utf8') as f:
+                f.write(json.dumps(blk_dict_list, ensure_ascii=False, cls=NumpyEncoder))
+
+        component_boxes = _find_component_boxes(mask_refined)
+        percentile_items = _shrink_line_polygons(
+            mask_refined,
+            polys,
+            percentile_low=SHRINK_PERCENTILE_LOW,
+            percentile_high=SHRINK_PERCENTILE_HIGH,
+            padding=SHRINK_PERCENTILE_PADDING,
+            method='percentile',
+        )
+        line_trans_items = _shrink_line_polygons(
+            mask_refined,
+            polys,
+            padding=SHRINK_PERCENTILE_PADDING,
+            component_boxes=component_boxes,
+            method='line_trans_component',
+            fallback_items=percentile_items,
+        )
+        line_trans_map[f'{imname}.png'] = line_trans_items
+        aligned_items = _align_block_boxes(calc_img, mask_refined, block_boxes, base_img=img)
+        aligned_box_map[f'{imname}.png'] = _clean_aligned_items(aligned_items)
+        if _final_boxes_overlap(aligned_items):
+            pages_with_aligned_overlap += 1
+            helper_status = _ensure_deal_overlap_image(img_path, overlap_path)
+            if helper_status == 'copied':
+                deal_overlap_copied += 1
+
+        imwrite(osp.join(save_dir, f'mask-{imname}.png'), mask_refined)
+        _save_box_visualizations(
+            save_dir,
+            imname,
+            img,
+            mask_refined,
+            block_boxes,
+            polys,
+            line_trans_items,
+            aligned_items,
+        )
+
+    with open(osp.join(save_dir, 'line_trans_map.json'), 'w', encoding='utf8') as f:
+        json.dump({'transMap': line_trans_map}, f, ensure_ascii=False, indent=2)
+    with open(osp.join(save_dir, 'aligned_box_map.json'), 'w', encoding='utf8') as f:
+        json.dump({'transMap': aligned_box_map}, f, ensure_ascii=False, indent=2, cls=NumpyEncoder)
+
+    print(f'完成。結果已寫入：{save_dir}')
+    print('每張圖片會產生：')
+    print('  - <檔名>.txt              YOLO 文字區塊標註')
+    print('  - line-<檔名>.txt         文字行多邊形')
+    print('  - mask-<檔名>.png         文字分割遮罩')
+    print(f'  - {BLOCK_BOX_DIR}/<檔名>.png   區塊窄框矩形（綠色）')
+    print(f'  - {LINE_BOX_DIR}/<檔名>.png    文字行四邊形輪廓（橘色）')
+    print(f'  - {LINE_TRANS_BOX_DIR}/<檔名>.png line + trans 混合框（洋紅色）')
+    print(f'  - ../{CENTER_DIR}/<檔名>.png   原圖底的氣泡對齊預覽')
+    print('  - line_trans_map.json     line + trans 混合框尺寸')
+    print('  - aligned_box_map.json    氣泡對齊區塊框尺寸')
+    print(f'  - ../{DEAL_OVERLAP_DIR}/<檔名>.png 重疊時複製的人工拆分輔助圖')
+    print(f'使用 deal_overlap 計算的頁數：{pages_using_deal_overlap}')
+    print(f'偵測到對齊框重疊的頁數：{pages_with_aligned_overlap}')
+    print(f'新複製到 deal_overlap 的頁數：{deal_overlap_copied}')
+    if save_json:
+        print('  - <檔名>.json        文字區塊 JSON')
+    return len(imglist)
+
+
+def main() -> None:
+    default_model = osp.join(osp.dirname(__file__), 'data', 'comictextdetector.pt')
+
+    parser = argparse.ArgumentParser(
+        description='對資料夾內的漫畫圖片執行文字偵測，並在該資料夾下的 ctd 子資料夾輸出結果。',
+    )
+    parser.add_argument(
+        'img_dir',
+        help='輸入圖片資料夾路徑',
+    )
+    parser.add_argument(
+        '--model',
+        default=default_model,
+        help=f'模型路徑（預設：{default_model}）',
+    )
+    parser.add_argument(
+        '--device',
+        choices=['cpu', 'cuda'],
+        default=None,
+        help='推理裝置（預設：有 GPU 則用 cuda，否則 cpu）',
+    )
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='額外輸出 JSON 格式的文字區塊資訊',
+    )
+    args = parser.parse_args()
+
+    detect_folder(
+        img_dir=args.img_dir,
+        model_path=args.model,
+        device=args.device,
+        save_json=args.json,
+    )
+
+
+if __name__ == '__main__':
+    main()
