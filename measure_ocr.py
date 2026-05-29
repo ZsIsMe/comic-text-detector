@@ -27,6 +27,22 @@ def _write_json(path: str | Path, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def _resolve_input_paths(
+    path1: str,
+    path2: str | None,
+    measure_json: str | None,
+) -> tuple[str, str]:
+    if measure_json is not None:
+        return measure_json, path1
+
+    if path2 is None:
+        image_dir = path1
+        return osp.join(image_dir, 'ctd', 'measure.json'), image_dir
+
+    # Backward-compatible form: measure_ocr.py ctd/measure.json image_dir
+    return path1, path2
+
+
 def _image_path_for_page(image_dir: str | Path, page_name: str) -> Path:
     image_dir = Path(image_dir)
     path = image_dir / page_name
@@ -92,6 +108,7 @@ class MangaOCR:
             model_dir,
             trust_remote_code=True,
             local_files_only=True,
+            use_fast=False,
         )
 
         torch_dtype = self._resolve_dtype(dtype)
@@ -99,7 +116,7 @@ class MangaOCR:
             model_dir,
             trust_remote_code=True,
             local_files_only=True,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
         )
         self.model.to(device)
         self.model.eval()
@@ -186,12 +203,14 @@ def run(
     ocr = None if dry_run else MangaOCR(model_dir, device, dtype, max_new_tokens, prompt)
     output = {'pages': {}}
 
-    for page_name, items in pages:
+    total_pages = len(pages)
+    for page_index, (page_name, items) in enumerate(pages, start=1):
         image_path = _image_path_for_page(image_dir, page_name)
         image = Image.open(image_path).convert('RGB')
         output_items = []
         if limit_items is not None:
             items = items[:limit_items]
+        print(f'[{page_index}/{total_pages}] OCR {page_name}: {len(items)} boxes')
 
         for index, item in enumerate(items):
             out_item = dict(item)
@@ -210,6 +229,7 @@ def run(
                     out_item['ocr_error'] = str(exc)
             output_items.append(out_item)
         output['pages'][page_name] = output_items
+        print(f'[{page_index}/{total_pages}] 完成 {page_name}')
 
     _write_json(output_path, output)
     return output_path
@@ -219,14 +239,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description='Add OCR text to measure.json boxes with PaddleOCR-VL-For-Manga.',
     )
-    parser.add_argument('measure_json', help='Path to ctd/measure.json')
-    parser.add_argument('image_dir', help='Folder containing original page images')
+    parser.add_argument(
+        'path1',
+        help='Image folder, or path to ctd/measure.json when using the old two-argument form',
+    )
+    parser.add_argument(
+        'path2',
+        nargs='?',
+        default=None,
+        help='Optional image folder for old form: measure_ocr.py ctd/measure.json image_dir',
+    )
+    parser.add_argument('--measure-json', default=None, help='Default: <image_dir>/ctd/measure.json')
     parser.add_argument('--output', default=None, help='Default: measure_ocr.json next to measure.json')
     parser.add_argument('--model', default=str(DEFAULT_MODEL_DIR), help='PaddleOCR-VL model directory')
-    parser.add_argument('--device', default='cpu', help='cpu, cuda, mps, ...')
+    parser.add_argument('--device', default='mps', help='cpu, cuda, mps, ...')
     parser.add_argument(
         '--dtype',
-        default='auto',
+        default='float16',
         choices=['auto', 'float16', 'bfloat16', 'float32'],
         help='Model dtype',
     )
@@ -239,10 +268,11 @@ def main() -> None:
     parser.add_argument('--save-crops', default=None, help='Optional folder for crop QA images')
     parser.add_argument('--dry-run', action='store_true', help='Only crop/write JSON; do not load OCR model')
     args = parser.parse_args()
+    measure_path, image_dir = _resolve_input_paths(args.path1, args.path2, args.measure_json)
 
     output = run(
-        measure_path=args.measure_json,
-        image_dir=args.image_dir,
+        measure_path=measure_path,
+        image_dir=image_dir,
         output_path=args.output,
         model_dir=args.model,
         device=args.device,
