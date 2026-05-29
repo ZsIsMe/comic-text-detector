@@ -288,6 +288,15 @@ ctd/progressing/align/center/<檔名>.png
 6. 使用安全規則判斷是否採用新框。
 7. 若不採用，回退原始 block box。
 
+安全規則包含：
+
+- 新候選框必須和原始 block 有重疊。
+- 新候選框中心點必須仍在原始 block 內；否則視為跑到其他氣泡，回退原始 block。
+- 新候選框中心點必須在 magic wand 找到的 `outer_rect` 內。
+- 中心移動距離不能超過安全閾值。
+- 候選框不能超出圖片。
+- `outer_rect` / `inner_rect` 面積比例不能過大。
+
 支援的中心策略與舊工程一致：
 
 - `outer`：使用 `outer_rect` 中心。

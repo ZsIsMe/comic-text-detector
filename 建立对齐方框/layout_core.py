@@ -134,6 +134,11 @@ def point_inside_rect(x, y, rect):
     return left <= x <= right and top <= y <= bottom
 
 
+def point_inside_xyxy(x, y, xyxy):
+    x1, y1, x2, y2 = [float(v) for v in xyxy]
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+
 def normalized_center(xyxy, img_w, img_h):
     cx, cy = rect_center(xyxy)
     return [round(cx / img_w, 4), round(cy / img_h, 4)]
@@ -510,6 +515,7 @@ def apply_safety_rules(item, layout, img_w, img_h):
 
     checks = {
         "overlaps_old": rects_overlap(candidate_xyxy, old_xyxy),
+        "center_inside_old": point_inside_xyxy(new_cx, new_cy, old_xyxy),
         "center_inside_outer": point_inside_rect(new_cx, new_cy, layout["layout_debug"]["outer_rect"]),
         "large_movement": move_px > 150,
         "inside_image": rect_inside_image(layout["layout_debug"]["candidate_xyxy_raw"], img_w, img_h),
@@ -519,6 +525,8 @@ def apply_safety_rules(item, layout, img_w, img_h):
     skip_reason = None
     if not checks["overlaps_old"]:
         skip_reason = "candidate_does_not_overlap_old"
+    elif not checks["center_inside_old"]:
+        skip_reason = "center_outside_old_block"
     elif not checks["center_inside_outer"]:
         skip_reason = "center_outside_outer_rect"
     elif checks["large_movement"]:
