@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""Run PaddleOCR-VL manga OCR for boxes in measure.json."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import os.path as osp
+from pathlib import Path
+from typing import Any
+
+from PIL import Image
+
+
+DEFAULT_MODEL_DIR = Path(__file__).resolve().parent / 'models' / 'PaddleOCR-VL-For-Manga'
+DEFAULT_PROMPT = 'OCR this Japanese manga text image. Return only the recognized text.'
+
+
+def _load_json(path: str | Path) -> dict:
+    with open(path, 'r', encoding='utf8') as f:
+        return json.load(f)
+
+
+def _write_json(path: str | Path, data: dict) -> None:
+    with open(path, 'w', encoding='utf8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _image_path_for_page(image_dir: str | Path, page_name: str) -> Path:
+    image_dir = Path(image_dir)
+    path = image_dir / page_name
+    if path.is_file():
+        return path
+
+    stem = Path(page_name).stem
+    for ext in ('.png', '.jpg', '.jpeg', '.bmp', '.webp'):
+        candidate = image_dir / f'{stem}{ext}'
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f'找不到原圖：{page_name}')
+
+
+def _crop_box(image: Image.Image, xyxy: list[Any], pad: int) -> Image.Image:
+    width, height = image.size
+    x1, y1, x2, y2 = [int(round(float(v))) for v in xyxy]
+    x1 = max(0, x1 - pad)
+    y1 = max(0, y1 - pad)
+    x2 = min(width, x2 + pad)
+    y2 = min(height, y2 + pad)
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError(f'無效 xyxy_pixel：{xyxy}')
+    return image.crop((x1, y1, x2, y2)).convert('RGB')
+
+
+def _clean_ocr_text(text: str) -> str:
+    text = text.strip()
+    for prefix in ('Assistant:', 'assistant:', 'OCR:', 'Text:', '文本：', '文字：'):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text
+
+
+def _require_transformers() -> tuple[Any, Any, Any]:
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoProcessor
+    except ImportError as exc:
+        raise SystemExit(
+            '缺少 OCR 推理依賴。請先安裝：\n'
+            '  .venv/bin/pip install transformers safetensors accelerate einops\n'
+            f'原始錯誤：{exc}'
+        ) from exc
+    return torch, AutoModelForCausalLM, AutoProcessor
+
+
+class MangaOCR:
+    def __init__(
+        self,
+        model_dir: str | Path,
+        device: str,
+        dtype: str,
+        max_new_tokens: int,
+        prompt: str,
+    ) -> None:
+        torch, AutoModelForCausalLM, AutoProcessor = _require_transformers()
+        self.torch = torch
+        self.device = device
+        self.max_new_tokens = max_new_tokens
+        self.prompt = prompt
+        self.processor = AutoProcessor.from_pretrained(
+            model_dir,
+            trust_remote_code=True,
+            local_files_only=True,
+        )
+
+        torch_dtype = self._resolve_dtype(dtype)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_dir,
+            trust_remote_code=True,
+            local_files_only=True,
+            torch_dtype=torch_dtype,
+        )
+        self.model.to(device)
+        self.model.eval()
+
+    def _resolve_dtype(self, dtype: str) -> Any:
+        if dtype == 'auto':
+            return 'auto'
+        if dtype == 'float16':
+            return self.torch.float16
+        if dtype == 'bfloat16':
+            return self.torch.bfloat16
+        if dtype == 'float32':
+            return self.torch.float32
+        raise ValueError(f'未知 dtype：{dtype}')
+
+    def _prompt_text(self) -> str:
+        messages = [
+            {
+                'role': 'user',
+                'content': [
+                    {'type': 'image'},
+                    {'type': 'text', 'text': self.prompt},
+                ],
+            }
+        ]
+        return self.processor.apply_chat_template(messages, add_generation_prompt=True)
+
+    def recognize(self, image: Image.Image) -> str:
+        prompt_text = self._prompt_text()
+        inputs = self.processor(images=image, text=prompt_text, return_tensors='pt')
+        inputs = {
+            key: value.to(self.device) if hasattr(value, 'to') else value
+            for key, value in inputs.items()
+        }
+        input_len = inputs['input_ids'].shape[-1]
+        with self.torch.inference_mode():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=False,
+            )
+        generated = outputs[:, input_len:]
+        text = self.processor.batch_decode(
+            generated,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+        return _clean_ocr_text(text)
+
+
+def _iter_pages(measure: dict, page_filter: str | None) -> list[tuple[str, list[dict]]]:
+    pages = measure.get('pages', {})
+    if page_filter is not None:
+        return [(page_filter, pages.get(page_filter, []))]
+    return list(pages.items())
+
+
+def run(
+    measure_path: str,
+    image_dir: str,
+    output_path: str | None,
+    model_dir: str,
+    device: str,
+    dtype: str,
+    pad: int,
+    max_new_tokens: int,
+    prompt: str,
+    page: str | None,
+    limit_pages: int | None,
+    limit_items: int | None,
+    save_crops: str | None,
+    dry_run: bool,
+) -> str:
+    measure = _load_json(measure_path)
+    output_path = output_path or osp.join(osp.dirname(measure_path), 'measure_ocr.json')
+    pages = _iter_pages(measure, page)
+    if limit_pages is not None:
+        pages = pages[:limit_pages]
+
+    save_crops_path = Path(save_crops) if save_crops else None
+    if save_crops_path is not None:
+        save_crops_path.mkdir(parents=True, exist_ok=True)
+
+    ocr = None if dry_run else MangaOCR(model_dir, device, dtype, max_new_tokens, prompt)
+    output = {'pages': {}}
+
+    for page_name, items in pages:
+        image_path = _image_path_for_page(image_dir, page_name)
+        image = Image.open(image_path).convert('RGB')
+        output_items = []
+        if limit_items is not None:
+            items = items[:limit_items]
+
+        for index, item in enumerate(items):
+            out_item = dict(item)
+            crop = _crop_box(image, item['xyxy_pixel'], pad)
+            if save_crops_path is not None:
+                crop_name = f'{Path(page_name).stem}-{index:03d}.png'
+                crop.save(save_crops_path / crop_name)
+
+            if dry_run:
+                out_item['ocr_text'] = ''
+            else:
+                try:
+                    out_item['ocr_text'] = ocr.recognize(crop) if ocr is not None else ''
+                except Exception as exc:  # Keep batch OCR running if one crop fails.
+                    out_item['ocr_text'] = ''
+                    out_item['ocr_error'] = str(exc)
+            output_items.append(out_item)
+        output['pages'][page_name] = output_items
+
+    _write_json(output_path, output)
+    return output_path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description='Add OCR text to measure.json boxes with PaddleOCR-VL-For-Manga.',
+    )
+    parser.add_argument('measure_json', help='Path to ctd/measure.json')
+    parser.add_argument('image_dir', help='Folder containing original page images')
+    parser.add_argument('--output', default=None, help='Default: measure_ocr.json next to measure.json')
+    parser.add_argument('--model', default=str(DEFAULT_MODEL_DIR), help='PaddleOCR-VL model directory')
+    parser.add_argument('--device', default='cpu', help='cpu, cuda, mps, ...')
+    parser.add_argument(
+        '--dtype',
+        default='auto',
+        choices=['auto', 'float16', 'bfloat16', 'float32'],
+        help='Model dtype',
+    )
+    parser.add_argument('--pad', type=int, default=2, help='Crop padding in pixels')
+    parser.add_argument('--max-new-tokens', type=int, default=128)
+    parser.add_argument('--prompt', default=DEFAULT_PROMPT)
+    parser.add_argument('--page', default=None, help='Only process one page, e.g. 241.png')
+    parser.add_argument('--limit-pages', type=int, default=None)
+    parser.add_argument('--limit-items', type=int, default=None)
+    parser.add_argument('--save-crops', default=None, help='Optional folder for crop QA images')
+    parser.add_argument('--dry-run', action='store_true', help='Only crop/write JSON; do not load OCR model')
+    args = parser.parse_args()
+
+    output = run(
+        measure_path=args.measure_json,
+        image_dir=args.image_dir,
+        output_path=args.output,
+        model_dir=args.model,
+        device=args.device,
+        dtype=args.dtype,
+        pad=args.pad,
+        max_new_tokens=args.max_new_tokens,
+        prompt=args.prompt,
+        page=args.page,
+        limit_pages=args.limit_pages,
+        limit_items=args.limit_items,
+        save_crops=args.save_crops,
+        dry_run=args.dry_run,
+    )
+    print(f'輸出：{output}')
+
+
+if __name__ == '__main__':
+    main()
