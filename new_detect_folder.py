@@ -21,7 +21,7 @@ from detect_folder import (
     _align_block_boxes,
     _clean_aligned_items,
     _draw_aligned_boxes,
-    _draw_shrink_line_polygons,
+    _draw_line_width_measurements,
     _ensure_deal_overlap_image,
     _final_boxes_overlap,
     _find_component_boxes,
@@ -228,7 +228,7 @@ def _detect_pages(
         line_trans_map[page_key] = line_trans_items
 
         imwrite(osp.join(paths['mask'], f'{imname}.png'), mask_refined)
-        line_trans_img = _draw_shrink_line_polygons(mask_refined, line_trans_items)
+        line_trans_img = _draw_line_width_measurements(img, line_trans_items)
         imwrite(osp.join(paths['line_trans_box'], f'{imname}.png'), line_trans_img)
 
     return {'blockMap': block_map}, {'transMap': line_trans_map}

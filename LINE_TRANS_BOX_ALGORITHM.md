@@ -12,6 +12,8 @@ ctd/line-trans-box/<檔名>.png
 ctd/line_trans_map.json
 ```
 
+`ctd/line-trans-box/<檔名>.png` 使用原圖作為底圖，只畫每個文字行短邊的細卡尺測量標記；標記旁的數字是短邊寬度 px，不再畫完整 polygon 方框。
+
 ## 為什麼需要它
 
 原始 `line-box` 來自 comic-text-detector 的文字行四邊形，能處理斜向文字，也較容易忽略注音、小碎字等非主文字。但它常會保留一些空白，框寬偏大。
@@ -77,6 +79,7 @@ line polygon 內 mask 像素
   "h": 142,
   "area": 433,
   "font_size_proxy_px": 15,
+  "font_width_px": 15.0,
   "axis_snapped": true,
   "method": "line_trans_component",
   "matched_component_count": 1,
@@ -90,6 +93,7 @@ line polygon 內 mask 像素
 - `x/y/w/h`：輸出 polygon 的水平外接矩形。
 - `area`：參與收縮的文字 mask 像素數。
 - `font_size_proxy_px`：目前取 `min(w, h)`，直排文字通常可視為字寬估計。
+- `font_width_px`：由 polygon 兩組對邊計算出的短邊平均長度，是 `line-trans-box` 預覽圖上的卡尺數字來源。
 - `axis_snapped`：是否因接近水平/垂直而被吸附成正框。
 - `method`：
   - `line_trans_component`：使用乾淨 component 收縮。

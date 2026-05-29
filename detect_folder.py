@@ -35,6 +35,8 @@ DEAL_OVERLAP_DIR = 'deal_overlap'
 BLOCK_BOX_COLOR = (0, 255, 0)      # 綠色：文字區塊
 LINE_BOX_COLOR = (0, 128, 255)     # 橘色：文字行
 LINE_TRANS_BOX_COLOR = (255, 0, 255)  # 洋紅色：line + trans 混合結果
+LINE_WIDTH_MEASURE_COLOR = (255, 235, 0)  # 青色：文字短邊測量卡尺
+LINE_WIDTH_TEXT_COLOR = (0, 255, 255)  # 黃色：短邊像素數字
 ALIGNED_BOX_COLOR = (255, 255, 0)  # 青色：氣泡對齊後的文字區塊
 ALIGN_MASK_COLOR = (179, 255, 255)  # 淡黃色：候選氣泡區域
 
@@ -237,6 +239,15 @@ def _polygon_to_xywh(poly: np.ndarray) -> dict:
         'w': int(x_max - x_min + 1),
         'h': int(y_max - y_min + 1),
     }
+
+
+def _polygon_short_edge_width(poly: np.ndarray) -> float:
+    pts = np.asarray(poly, dtype=np.float64).reshape(4, 2)
+    lengths = [
+        float(np.linalg.norm(pts[(i + 1) % 4] - pts[i]))
+        for i in range(4)
+    ]
+    return min((lengths[0] + lengths[2]) / 2.0, (lengths[1] + lengths[3]) / 2.0)
 
 
 def _box_to_rect(box: dict) -> tuple[int, int, int, int]:
@@ -487,10 +498,12 @@ def _shrink_line_polygon(
     shrunk_poly = shrunk_poly.astype(np.int32)
 
     xywh = _polygon_to_xywh(shrunk_poly)
+    font_width = _polygon_short_edge_width(shrunk_poly)
     return {
         **xywh,
         'area': int(len(xs)),
         'font_size_proxy_px': int(min(xywh['w'], xywh['h'])),
+        'font_width_px': round(font_width, 2),
         'axis_snapped': axis_snapped,
         'method': method,
         'matched_component_count': matched_component_count,
@@ -554,6 +567,140 @@ def _draw_shrink_line_polygons(
     line_width = _box_line_width(canvas.shape[0], canvas.shape[1])
     polys = np.array([item['polygon'] for item in shrunk_items], dtype=np.int32)
     cv2.polylines(canvas, polys, isClosed=True, color=color, thickness=line_width)
+    return canvas
+
+
+def _top_short_edge_measure(poly: list | np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, float] | None:
+    pts = np.asarray(poly, dtype=np.float64).reshape(4, 2)
+    edges = []
+    for idx in range(4):
+        start = pts[idx]
+        end = pts[(idx + 1) % 4]
+        length = float(np.linalg.norm(end - start))
+        edges.append((idx, start, end, length))
+
+    pair_a = (edges[0][3] + edges[2][3]) / 2.0
+    pair_b = (edges[1][3] + edges[3][3]) / 2.0
+    short_indices = (0, 2) if pair_a <= pair_b else (1, 3)
+    _, start, end, _ = min(
+        (edges[idx] for idx in short_indices),
+        key=lambda edge: ((edge[1][1] + edge[2][1]) / 2.0, (edge[1][0] + edge[2][0]) / 2.0),
+    )
+
+    direction = end - start
+    norm = np.linalg.norm(direction)
+    if norm < 1:
+        return None
+
+    short_axis = direction / norm
+    normal = np.array([-short_axis[1], short_axis[0]], dtype=np.float64)
+    if normal[1] > 0:
+        normal = -normal
+    width = (edges[short_indices[0]][3] + edges[short_indices[1]][3]) / 2.0
+    return start, end, normal, width
+
+
+def _fit_measurement_annotation(
+    start: np.ndarray,
+    end: np.ndarray,
+    normal: np.ndarray,
+    image_shape: tuple[int, int] | tuple[int, int, int],
+    text: str,
+    font_scale: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    height, width = image_shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, 1)
+
+    # Prefer the outside/top side; flip below the line if the label would be clipped.
+    for candidate_normal in (normal, -normal):
+        line_start = start + candidate_normal * 4.0
+        line_end = end + candidate_normal * 4.0
+        label_center = (line_start + line_end) / 2.0 + candidate_normal * 10.0
+        x = label_center[0] - text_w / 2
+        y_top = label_center[1] - text_h / 2
+        y_bottom = label_center[1] + text_h / 2 + baseline
+        if 1 <= x and x + text_w <= width - 1 and 1 <= y_top and y_bottom <= height - 1:
+            return line_start, line_end, candidate_normal, label_center
+
+    line_start = start + normal * 4.0
+    line_end = end + normal * 4.0
+    label_center = (line_start + line_end) / 2.0 + normal * 10.0
+    return line_start, line_end, normal, label_center
+
+
+def _draw_plain_measurement_text(
+    canvas: np.ndarray,
+    text: str,
+    center: np.ndarray,
+    font_scale: float,
+    color: tuple[int, int, int] = LINE_WIDTH_TEXT_COLOR,
+) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    thickness = 1
+    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    x = int(round(center[0] - text_w / 2))
+    y = int(round(center[1] + text_h / 2))
+    height, width = canvas.shape[:2]
+    x = max(1, min(x, width - text_w - 2))
+    y = max(text_h + 1, min(y, height - baseline - 2))
+    cv2.putText(canvas, text, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
+
+
+def _draw_line_width_measurements(
+    img: np.ndarray,
+    shrunk_items: list[dict],
+) -> np.ndarray:
+    canvas = img.copy()
+    if not shrunk_items:
+        return canvas
+
+    font_scale = max(0.26, min(0.34, canvas.shape[1] / 2500))
+    for item in shrunk_items:
+        poly = item.get('polygon')
+        if poly is None:
+            continue
+        measure = _top_short_edge_measure(poly)
+        if measure is None:
+            continue
+
+        start, end, normal, width = measure
+        if width < 3:
+            continue
+        text = str(int(round(item.get('font_width_px', width))))
+        line_start, line_end, normal, label_center = _fit_measurement_annotation(
+            start,
+            end,
+            normal,
+            canvas.shape,
+            text,
+            font_scale,
+        )
+
+        tick = 5.5
+        shadow_color = (0, 0, 0)
+        for color, thickness in ((shadow_color, 2), (LINE_WIDTH_MEASURE_COLOR, 1)):
+            cv2.line(
+                canvas,
+                tuple(np.round(line_start).astype(int)),
+                tuple(np.round(line_end).astype(int)),
+                color,
+                thickness,
+                cv2.LINE_AA,
+            )
+            for point in (line_start, line_end):
+                tick_start = point - normal * tick / 2
+                tick_end = point + normal * tick / 2
+                cv2.line(
+                    canvas,
+                    tuple(np.round(tick_start).astype(int)),
+                    tuple(np.round(tick_end).astype(int)),
+                    color,
+                    thickness,
+                    cv2.LINE_AA,
+                )
+        _draw_plain_measurement_text(canvas, text, label_center, font_scale)
+
     return canvas
 
 
@@ -986,7 +1133,7 @@ def _save_box_visualizations(
 
     block_img = _draw_rect_boxes(mask, block_boxes, BLOCK_BOX_COLOR)
     line_img = _draw_line_polygons(mask, line_polys, LINE_BOX_COLOR)
-    line_trans_img = _draw_shrink_line_polygons(mask, line_trans_items, LINE_TRANS_BOX_COLOR)
+    line_trans_img = _draw_line_width_measurements(img, line_trans_items)
     center_img = _draw_aligned_boxes(img, aligned_items)
 
     imwrite(osp.join(block_dir, f'{imname}.png'), block_img)
@@ -1134,7 +1281,7 @@ def detect_folder(
     print('  - mask-<檔名>.png         文字分割遮罩')
     print(f'  - {BLOCK_BOX_DIR}/<檔名>.png   區塊窄框矩形（綠色）')
     print(f'  - {LINE_BOX_DIR}/<檔名>.png    文字行四邊形輪廓（橘色）')
-    print(f'  - {LINE_TRANS_BOX_DIR}/<檔名>.png line + trans 混合框（洋紅色）')
+    print(f'  - {LINE_TRANS_BOX_DIR}/<檔名>.png 原圖底的文字短邊卡尺測量')
     print(f'  - ../{CENTER_DIR}/<檔名>.png   原圖底的氣泡對齊預覽')
     print('  - line_trans_map.json     line + trans 混合框尺寸')
     print('  - aligned_box_map.json    氣泡對齊區塊框尺寸')

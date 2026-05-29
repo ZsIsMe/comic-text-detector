@@ -131,6 +131,8 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 ctd/line-trans-box/<檔名>.png
 ```
 
+這張圖現在使用原圖作為底圖，不再畫完整文字行方框；每個文字行只在 polygon 最上方的短邊附近畫細卡尺標記，數字表示該文字行短邊寬度（px），可作為字體寬度參考。
+
 ## aligned_box_map.json
 
 `ctd/aligned_box_map.json` 保存 center 重定位後的 block box 結果。
