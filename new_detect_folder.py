@@ -39,6 +39,7 @@ from detect_folder import (
 
 
 CTD_DIR = 'ctd'
+PROGRESSING_DIR = 'progressing'
 MASK_DIR = 'mask'
 ALIGN_DIR = 'align'
 MEASURE_PREVIEW_DIR = 'measure_preview'
@@ -50,13 +51,15 @@ MEASURE_DEBUG_JSON = 'measure.debug.json'
 
 
 def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
+    progressing_dir = osp.join(ctd_dir, PROGRESSING_DIR)
     paths = {
         'ctd': ctd_dir,
-        'mask': osp.join(ctd_dir, MASK_DIR),
-        'line_trans_box': osp.join(ctd_dir, LINE_TRANS_BOX_DIR),
-        'align': osp.join(ctd_dir, ALIGN_DIR),
-        'center': osp.join(ctd_dir, ALIGN_DIR, CENTER_DIR),
-        'deal_overlap': osp.join(ctd_dir, ALIGN_DIR, DEAL_OVERLAP_DIR),
+        'progressing': progressing_dir,
+        'mask': osp.join(progressing_dir, MASK_DIR),
+        'line_trans_box': osp.join(progressing_dir, LINE_TRANS_BOX_DIR),
+        'align': osp.join(progressing_dir, ALIGN_DIR),
+        'center': osp.join(progressing_dir, ALIGN_DIR, CENTER_DIR),
+        'deal_overlap': osp.join(progressing_dir, ALIGN_DIR, DEAL_OVERLAP_DIR),
         'measure_preview': osp.join(ctd_dir, MEASURE_PREVIEW_DIR),
     }
     for path in paths.values():
@@ -338,25 +341,17 @@ def _align_item_by_source_index(items: list[dict]) -> dict[int, dict]:
     return result
 
 
-def _label_box_for_measure_item(measure_item: dict, align_item: dict | None) -> list[int]:
-    if align_item is not None:
-        old_box = align_item.get('layout_debug', {}).get('old_xyxy_pixel')
-        if isinstance(old_box, list) and len(old_box) == 4:
-            return [int(round(v)) for v in old_box]
-
+def _label_box_for_measure_item(measure_item: dict) -> list[int]:
     xyxy = measure_item.get('xyxy_pixel')
     if isinstance(xyxy, list) and len(xyxy) == 4:
         return [int(round(v)) for v in xyxy]
     return [0, 0, 0, 0]
 
 
-def _text_block_size(lines: list[str], font_scale: float) -> tuple[int, int, int]:
+def _single_text_size(text: str, font_scale: float) -> tuple[int, int, int]:
     font = cv2.FONT_HERSHEY_SIMPLEX
-    sizes = [cv2.getTextSize(line, font, font_scale, 1)[0] for line in lines]
-    line_height = max(size[1] for size in sizes) + 4
-    width = max(size[0] for size in sizes)
-    height = line_height * len(lines)
-    return width, height, line_height
+    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, 1)
+    return text_w, text_h + baseline, baseline
 
 
 def _fit_label_origin(
@@ -368,20 +363,19 @@ def _fit_label_origin(
     img_h, img_w = canvas_shape[:2]
     x1, y1, x2, y2 = box
     pad = 5
-    # Prefer the block's bottom-right corner, then adjust near image borders.
+    # Prefer outside bottom-right; if clipped, try other outside corners.
     candidates = [
-        (x2 - text_w - pad, y2 - text_h - pad),
-        (x2 - text_w - pad, y1 + pad),
-        (x1 + pad, y2 - text_h - pad),
-        (x2 - text_w - pad, y2 + pad),
-        (x2 + pad, y2 - text_h - pad),
+        (x2 + pad, y2 + pad),
+        (x2 + pad, y1 - text_h - pad),
+        (x1 - text_w - pad, y2 + pad),
+        (x1 - text_w - pad, y1 - text_h - pad),
     ]
     for x, y in candidates:
         if 1 <= x and x + text_w <= img_w - 1 and 1 <= y and y + text_h <= img_h - 1:
             return int(round(x)), int(round(y))
 
-    x = max(1, min(int(round(x2 - text_w - pad)), img_w - text_w - 1))
-    y = max(1, min(int(round(y2 - text_h - pad)), img_h - text_h - 1))
+    x = max(1, min(int(round(x2 + pad)), img_w - text_w - 1))
+    y = max(1, min(int(round(y2 + pad)), img_h - text_h - 1))
     return x, y
 
 
@@ -403,15 +397,14 @@ def _draw_measure_block_labels(
     if not measure_items:
         return canvas
 
-    font_scale = max(0.34, min(0.5, canvas.shape[1] / 1900))
-    align_by_source = _align_item_by_source_index(align_items)
+    font_scale = max(0.36, min(0.52, canvas.shape[1] / 1700))
     for item in measure_items:
-        source_index = int(item.get('source_block_index', -1))
         orientation = str(item.get('orientation', 'vertical'))
         font_size = item.get('font_size', 0)
-        lines = [orientation, f'{float(font_size):.1f}']
-        text_w, text_h, line_height = _text_block_size(lines, font_scale)
-        box = _label_box_for_measure_item(item, align_by_source.get(source_index))
+        suffix = 'H' if orientation == 'horizontal' else 'V'
+        text = f'{int(round(float(font_size)))}{suffix}'
+        text_w, text_h, baseline = _single_text_size(text, font_scale)
+        box = _label_box_for_measure_item(item)
         x, y = _fit_label_origin(box, canvas.shape, text_w, text_h)
         pad = 3
         cv2.rectangle(
@@ -421,8 +414,7 @@ def _draw_measure_block_labels(
             (255, 255, 255),
             -1,
         )
-        _draw_black_text(canvas, lines[0], (x, y + line_height - 5), font_scale)
-        _draw_black_text(canvas, lines[1], (x, y + line_height * 2 - 5), font_scale)
+        _draw_black_text(canvas, text, (x, y + text_h - baseline), font_scale)
     return canvas
 
 
@@ -642,9 +634,9 @@ def run(
 
     ctd_dir = osp.join(img_dir, CTD_DIR)
     paths = _ensure_dirs(ctd_dir)
-    block_map_path = osp.join(ctd_dir, BLOCK_MAP_JSON)
-    line_trans_map_path = osp.join(ctd_dir, LINE_TRANS_MAP_JSON)
-    aligned_box_map_path = osp.join(ctd_dir, ALIGNED_BOX_MAP_JSON)
+    block_map_path = osp.join(paths['progressing'], BLOCK_MAP_JSON)
+    line_trans_map_path = osp.join(paths['progressing'], LINE_TRANS_MAP_JSON)
+    aligned_box_map_path = osp.join(paths['progressing'], ALIGNED_BOX_MAP_JSON)
     measure_path = osp.join(ctd_dir, MEASURE_JSON)
     measure_debug_path = osp.join(ctd_dir, MEASURE_DEBUG_JSON)
 

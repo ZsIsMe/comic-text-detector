@@ -38,7 +38,7 @@ data/comictextdetector.pt
 
 ## 只重跑對齊
 
-如果已經有 `ctd/block_map.json` 和 `ctd/mask/`，可以不重跑模型，只重新生成 center 對齊結果：
+如果已經有 `ctd/progressing/block_map.json` 和 `ctd/progressing/mask/`，可以不重跑模型，只重新生成 center 對齊結果：
 
 ```bash
 python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
@@ -47,21 +47,21 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 `--only-align` 會讀取：
 
 ```text
-<圖片資料夾>/ctd/block_map.json
-<圖片資料夾>/ctd/line_trans_map.json
-<圖片資料夾>/ctd/mask/<檔名>.png
-<圖片資料夾>/ctd/align/deal_overlap/<檔名>.png  # 如果存在
+<圖片資料夾>/ctd/progressing/block_map.json
+<圖片資料夾>/ctd/progressing/line_trans_map.json
+<圖片資料夾>/ctd/progressing/mask/<檔名>.png
+<圖片資料夾>/ctd/progressing/align/deal_overlap/<檔名>.png  # 如果存在
 ```
 
 並更新：
 
 ```text
-<圖片資料夾>/ctd/aligned_box_map.json
+<圖片資料夾>/ctd/progressing/aligned_box_map.json
 <圖片資料夾>/ctd/measure.json
 <圖片資料夾>/ctd/measure.debug.json
-<圖片資料夾>/ctd/align/center/<檔名>.png
+<圖片資料夾>/ctd/progressing/align/center/<檔名>.png
 <圖片資料夾>/ctd/measure_preview/<檔名>.png
-<圖片資料夾>/ctd/align/deal_overlap/<檔名>.png  # 如果偵測到重疊且檔案不存在
+<圖片資料夾>/ctd/progressing/align/deal_overlap/<檔名>.png  # 如果偵測到重疊且檔案不存在
 ```
 
 ## 輸出結構
@@ -70,27 +70,29 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 
 ```text
 <圖片資料夾>/ctd/
-  block_map.json
-  line_trans_map.json
-  aligned_box_map.json
   measure.json
   measure.debug.json
 
-  mask/
-    <檔名>.png
-
-  line-trans-box/
-    <檔名>.png
-
-  align/
-    center/
-      <檔名>.png
-
-    deal_overlap/
-      <檔名>.png
-
   measure_preview/
     <檔名>.png
+
+  progressing/
+    block_map.json
+    line_trans_map.json
+    aligned_box_map.json
+
+    mask/
+      <檔名>.png
+
+    line-trans-box/
+      <檔名>.png
+
+    align/
+      center/
+        <檔名>.png
+
+      deal_overlap/
+        <檔名>.png
 ```
 
 不會生成：
@@ -104,7 +106,7 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 
 ## block_map.json
 
-`ctd/block_map.json` 保存模型偵測出的原始 block box，是 `--only-align` 的主要輸入。
+`ctd/progressing/block_map.json` 保存模型偵測出的原始 block box，是 `--only-align` 的主要輸入。
 
 格式：
 
@@ -130,21 +132,21 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 
 ## line_trans_map.json
 
-`ctd/line_trans_map.json` 保存 line + trans 混合框資料。
+`ctd/progressing/line_trans_map.json` 保存 line + trans 混合框資料。
 
 這份資料來自原本的 `line-trans-box` 算法，用文字行方向與 mask component 估算更貼近文字像素的文字行框。
 
 視覺化圖輸出到：
 
 ```text
-ctd/line-trans-box/<檔名>.png
+ctd/progressing/line-trans-box/<檔名>.png
 ```
 
 這張圖現在使用原圖作為底圖，不再畫完整文字行方框；每個文字行只在 polygon 最上方的短邊附近畫細卡尺標記，數字表示該文字行短邊寬度（px），可作為字體寬度參考。
 
 ## aligned_box_map.json
 
-`ctd/aligned_box_map.json` 保存 center 重定位後的 block box 結果。
+`ctd/progressing/aligned_box_map.json` 保存 center 重定位後的 block box 結果。
 
 格式：
 
@@ -241,18 +243,18 @@ x/y/w/h
 ctd/measure_preview/<檔名>.png
 ```
 
-這張圖合併 `ctd/align/center/<檔名>.png` 和 `ctd/line-trans-box/<檔名>.png` 的資訊：
+這張圖合併 `ctd/progressing/align/center/<檔名>.png` 和 `ctd/progressing/line-trans-box/<檔名>.png` 的資訊：
 
 - 保留 center 對齊預覽中的 block 陰影、候選區域、中心與結果框。
 - 疊加 line-trans 的短邊卡尺測量標記。
-- 在每個 block 陰影附近標出 `orientation` 和 `font_size`，方便檢查 `measure.json` 是否合理。
+- 在每個 `xyxy_pixel` 框外右下角標出如 `28V` / `20H` 的 block 字體資訊，方便檢查 `measure.json` 是否合理。
 
 ## center 預覽圖
 
 預覽圖位於：
 
 ```text
-ctd/align/center/<檔名>.png
+ctd/progressing/align/center/<檔名>.png
 ```
 
 畫面規則：
@@ -276,7 +278,7 @@ ctd/align/center/<檔名>.png
 重定位流程復用 `建立对齐方框` 子工程的核心邏輯：
 
 1. 讀取 `block_map.json` 中的 block box。
-2. 讀取 `ctd/mask/<檔名>.png`。
+2. 讀取 `ctd/progressing/mask/<檔名>.png`。
 3. 用原圖和 mask 模擬去字圖。
 4. 透過 magic wand / flood fill 找氣泡或可放字區域。
 5. 計算：
@@ -308,7 +310,7 @@ ctd/align/center/<檔名>.png
 
 ## deal_overlap
 
-`ctd/align/deal_overlap/` 用於處理共用氣泡。
+`ctd/progressing/align/deal_overlap/` 用於處理共用氣泡。
 
 流程：
 
@@ -316,7 +318,7 @@ ctd/align/center/<檔名>.png
 2. 如果有重疊，將原圖複製到：
 
 ```text
-ctd/align/deal_overlap/<檔名>.png
+ctd/progressing/align/deal_overlap/<檔名>.png
 ```
 
 3. 如果該檔案已存在，不覆蓋，避免覆蓋人工修改。
@@ -325,7 +327,7 @@ ctd/align/deal_overlap/<檔名>.png
 
 人工使用方式：
 
-- 打開 `ctd/align/deal_overlap/<檔名>.png`。
+- 打開 `ctd/progressing/align/deal_overlap/<檔名>.png`。
 - 在共用氣泡中畫線，把連通區切開。
 - 再執行：
 
@@ -354,7 +356,7 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 查看輸出：
 
 ```text
-/Users/zhongsheng/Downloads/xxxx/ctd/aligned_box_map.json
-/Users/zhongsheng/Downloads/xxxx/ctd/align/center/
-/Users/zhongsheng/Downloads/xxxx/ctd/align/deal_overlap/
+/Users/zhongsheng/Downloads/xxxx/ctd/measure.json
+/Users/zhongsheng/Downloads/xxxx/ctd/measure_preview/
+/Users/zhongsheng/Downloads/xxxx/ctd/progressing/align/center/
 ```
