@@ -36,18 +36,29 @@ from detect_folder import (
     SHRINK_PERCENTILE_LOW,
     SHRINK_PERCENTILE_PADDING,
 )
+from neck_watershed_preview import (
+    bubble_mask_from_group as _neck_bubble_mask_from_group,
+    collect_shared_groups as _neck_collect_shared_groups,
+    prepare_align_gray as _neck_prepare_align_gray,
+    watershed_group as _neck_watershed_group,
+)
 
 
 CTD_DIR = 'ctd'
 PROGRESSING_DIR = 'progressing'
 MASK_DIR = 'mask'
 ALIGN_DIR = 'align'
+NECK_DIR = 'neck'
 MEASURE_PREVIEW_DIR = 'measure_preview'
 BLOCK_MAP_JSON = 'block_map.json'
 LINE_TRANS_MAP_JSON = 'line_trans_map.json'
 ALIGNED_BOX_MAP_JSON = 'aligned_box_map.json'
 MEASURE_JSON = 'measure.json'
 MEASURE_DEBUG_JSON = 'measure.debug.json'
+NECK_IOU_THRESHOLD = 0.92
+NECK_SEED_DILATE = 15
+NECK_LINE_COLOR = (0, 0, 0)
+NECK_MANUAL_DIFF_THRESHOLD = 24
 
 
 def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
@@ -60,6 +71,7 @@ def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
         'align': osp.join(progressing_dir, ALIGN_DIR),
         'center': osp.join(progressing_dir, ALIGN_DIR, CENTER_DIR),
         'deal_overlap': osp.join(progressing_dir, ALIGN_DIR, DEAL_OVERLAP_DIR),
+        'neck': osp.join(progressing_dir, ALIGN_DIR, NECK_DIR),
         'measure_preview': osp.join(ctd_dir, MEASURE_PREVIEW_DIR),
     }
     for path in paths.values():
@@ -116,6 +128,126 @@ def _mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
 
 def _deal_overlap_path_for_page(paths: dict[str, str], page_name: str) -> str:
     return osp.join(paths['deal_overlap'], f'{Path(page_name).stem}.png')
+
+
+def _neck_path_for_page(paths: dict[str, str], page_name: str) -> str:
+    return osp.join(paths['neck'], f'{Path(page_name).stem}.png')
+
+
+def _neck_summary_path_for_page(paths: dict[str, str], page_name: str) -> str:
+    return osp.join(paths['neck'], f'{Path(page_name).stem}.json')
+
+
+def _image_modified(base_img: np.ndarray, candidate_img: np.ndarray | None) -> bool:
+    if candidate_img is None or base_img.shape[:2] != candidate_img.shape[:2]:
+        return False
+    base = base_img[:, :, :3] if len(base_img.shape) == 3 else cv2.cvtColor(base_img, cv2.COLOR_GRAY2BGR)
+    candidate = candidate_img[:, :, :3] if len(candidate_img.shape) == 3 else cv2.cvtColor(candidate_img, cv2.COLOR_GRAY2BGR)
+    diff = cv2.absdiff(base, candidate)
+    diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    changed = diff_gray > NECK_MANUAL_DIFF_THRESHOLD
+    return int(np.count_nonzero(changed)) >= 16
+
+
+def _draw_neck_guides(
+    base_img: np.ndarray,
+    groups: list[dict],
+    line_color: tuple[int, int, int] = NECK_LINE_COLOR,
+) -> np.ndarray:
+    canvas = base_img.copy()
+    line_width = max(3, min(canvas.shape[:2]) // 280)
+    for group in groups:
+        for guide in group.get('guides', []):
+            start = tuple(int(v) for v in guide['start'])
+            end = tuple(int(v) for v in guide['end'])
+            cv2.line(canvas, start, end, line_color, line_width, cv2.LINE_AA)
+    return canvas
+
+
+def _remove_generated_neck_image(path: str) -> None:
+    if osp.exists(path):
+        os.remove(path)
+
+
+def _generate_neck_image(
+    img: np.ndarray,
+    mask: np.ndarray,
+    aligned_items: list[dict],
+    neck_path: str,
+    summary_path: str,
+    page_name: str,
+) -> tuple[np.ndarray | None, dict]:
+    shared_groups = _neck_collect_shared_groups(
+        aligned_items,
+        iou_threshold=NECK_IOU_THRESHOLD,
+        include_contained=False,
+    )
+    summary = {
+        'page': page_name,
+        'generated': False,
+        'groups': [],
+    }
+    if not shared_groups:
+        _remove_generated_neck_image(neck_path)
+        _write_json(summary_path, summary)
+        return None, summary
+
+    gray = _neck_prepare_align_gray(img, mask, base_img=img)
+    accepted_groups = []
+    for group_index, group in enumerate(shared_groups, start=1):
+        bubble_mask = _neck_bubble_mask_from_group(gray, group)
+        result = (
+            _neck_watershed_group(bubble_mask, group, NECK_SEED_DILATE)
+            if bubble_mask is not None
+            else None
+        )
+        ordered = sorted(group, key=lambda entry: (entry['old'][1], entry['old'][0]))
+        group_summary = {
+            'group': group_index,
+            'source_block_indices': [entry['source_block_index'] for entry in ordered],
+            'status': 'no-neck',
+            'neck_ratio': None,
+            'neck_width': None,
+            'smaller_lobe_width': None,
+            'guides': [],
+        }
+        if result is not None:
+            ratio = float(result['neck_ratio'])
+            group_summary.update({
+                'status': 'neck',
+                'neck_ratio': round(ratio, 4) if np.isfinite(ratio) else None,
+                'neck_width': round(float(result['neck_width']), 2),
+                'smaller_lobe_width': round(float(result['smaller_lobe_width']), 2),
+                'guides': [
+                    {
+                        'source_block_indices': guide['source_block_indices'],
+                        'method': guide.get('method'),
+                        'start': guide['start'],
+                        'end': guide['end'],
+                        'center': guide['center'],
+                        'neck_width': round(float(guide['neck_width']), 2),
+                        'neck_ratio': round(float(guide['neck_ratio']), 4)
+                        if np.isfinite(float(guide['neck_ratio']))
+                        else None,
+                    }
+                    for guide in result['guides']
+                ],
+            })
+            accepted_groups.append(group_summary)
+        summary['groups'].append(group_summary)
+
+    if not accepted_groups:
+        os.makedirs(osp.dirname(summary_path), exist_ok=True)
+        _remove_generated_neck_image(neck_path)
+        _write_json(summary_path, summary)
+        return None, summary
+
+    summary['generated'] = True
+    neck_img = _draw_neck_guides(img, accepted_groups)
+    os.makedirs(osp.dirname(neck_path), exist_ok=True)
+    imwrite(neck_path, neck_img)
+    _write_json(summary_path, summary)
+    return neck_img, summary
 
 
 def _xyxy_from_align_item(item: dict) -> list[int]:
@@ -523,6 +655,11 @@ def _align_pages(
         'boxes': 0,
         'accepted': 0,
         'using_deal_overlap': 0,
+        'ignored_unmodified_deal_overlap': 0,
+        'neck_pages': 0,
+        'neck_guides': 0,
+        'neck_shared_pages': 0,
+        'neck_no_guide_groups': 0,
         'overlap_pages': 0,
         'copied': 0,
     }
@@ -537,16 +674,67 @@ def _align_pages(
         img = imread(img_path)
         mask = imread(mask_path)
         overlap_path = _deal_overlap_path_for_page(paths, page_name)
-        calc_img = imread(overlap_path) if osp.exists(overlap_path) else img
-        if osp.exists(overlap_path):
+        overlap_img = imread(overlap_path) if osp.exists(overlap_path) else None
+        overlap_modified = _image_modified(img, overlap_img)
+        if overlap_modified:
+            calc_img = overlap_img
             summary['using_deal_overlap'] += 1
+        else:
+            calc_img = img
+            if overlap_img is not None:
+                summary['ignored_unmodified_deal_overlap'] += 1
 
         block_boxes = _block_boxes_from_items(block_items)
         aligned_items = _align_block_boxes(calc_img, mask, block_boxes, base_img=img)
+        neck_summary = {
+            'page': page_name,
+            'generated': False,
+            'groups': [],
+        }
+        if not overlap_modified:
+            neck_path = _neck_path_for_page(paths, page_name)
+            neck_summary_path = _neck_summary_path_for_page(paths, page_name)
+            neck_img, neck_summary = _generate_neck_image(
+                img,
+                mask,
+                aligned_items,
+                neck_path,
+                neck_summary_path,
+                page_name,
+            )
+            if neck_summary.get('groups'):
+                summary['neck_shared_pages'] += 1
+                summary['neck_no_guide_groups'] += sum(
+                    1
+                    for group in neck_summary['groups']
+                    if not group.get('guides')
+                )
+            if neck_img is not None:
+                summary['neck_pages'] += 1
+                summary['neck_guides'] += sum(
+                    len(group.get('guides', []))
+                    for group in neck_summary.get('groups', [])
+                    if group.get('status') == 'neck'
+                )
+                aligned_items = _align_block_boxes(neck_img, mask, block_boxes, base_img=img)
+        else:
+            neck_summary_path = _neck_summary_path_for_page(paths, page_name)
+            _remove_generated_neck_image(_neck_path_for_page(paths, page_name))
+            _write_json(neck_summary_path, {
+                'page': page_name,
+                'generated': False,
+                'skipped_reason': 'modified_deal_overlap',
+                'groups': [],
+            })
+
         clean_items = _clean_aligned_items(aligned_items)
         aligned_map[page_name] = clean_items
 
-        if _final_boxes_overlap(aligned_items):
+        unresolved_shared_without_guide = any(
+            not group.get('guides')
+            for group in neck_summary.get('groups', [])
+        )
+        if _final_boxes_overlap(aligned_items) or unresolved_shared_without_guide:
             summary['overlap_pages'] += 1
             helper_status = _ensure_deal_overlap_image(img_path, overlap_path)
             if helper_status == 'copied':
@@ -692,12 +880,18 @@ def run(
     print(f'  - {measure_path}')
     print(f'  - {measure_debug_path}')
     print(f'  - {paths["center"]}/<檔名>.png')
+    print(f'  - {paths["neck"]}/<檔名>.png')
     print(f'  - {paths["measure_preview"]}/<檔名>.png')
     print(f'  - {paths["deal_overlap"]}/<檔名>.png')
     print(f"重定位頁數：{align_summary['pages']}")
     print(f"重定位 block 數：{align_summary['boxes']}")
     print(f"accepted：{align_summary['accepted']}")
     print(f"使用 deal_overlap 計算頁數：{align_summary['using_deal_overlap']}")
+    print(f"忽略未修改 deal_overlap 頁數：{align_summary['ignored_unmodified_deal_overlap']}")
+    print(f"neck shared 頁數：{align_summary['neck_shared_pages']}")
+    print(f"neck 自動切割頁數：{align_summary['neck_pages']}")
+    print(f"neck guide 數：{align_summary['neck_guides']}")
+    print(f"neck 無 guide group 數：{align_summary['neck_no_guide_groups']}")
     print(f"偵測到重疊頁數：{align_summary['overlap_pages']}")
     print(f"新複製到 deal_overlap：{align_summary['copied']}")
     return align_summary['pages']

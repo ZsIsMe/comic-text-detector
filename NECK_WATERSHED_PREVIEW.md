@@ -4,6 +4,15 @@
 
 它不會修改 `measure.json`、`measure.debug.json` 或既有偵測結果，只會額外輸出 preview 圖和 summary JSON，方便觀察算法效果。
 
+正式 `new_detect_folder.py` 的 align 流程已經接入同一套 neck guide 算法。每次跑完整流程或 `--only-align` 時，都會對 shared bubble group 嘗試生成：
+
+```text
+<圖片資料夾>/ctd/progressing/align/neck/<檔名>.png
+<圖片資料夾>/ctd/progressing/align/neck/<檔名>.json
+```
+
+正式流程中，只要 shared group 找得到 guide，就會畫入 `align/neck/<檔名>.png` 並重跑 align。`neck_ratio` 只作為 debug/confidence 資訊，不再阻止切割。
+
 ## 執行方式
 
 在專案根目錄執行：
@@ -35,6 +44,8 @@
 ```
 
 如果存在 `deal_overlap/<檔名>.png`，腳本會優先用它作為氣泡計算圖；preview 底圖仍是原圖。
+
+注意：preview 腳本只負責觀察效果，會按 `--neck-ratio-threshold` 標示 `neck` 或 `weak-neck`。正式 `new_detect_folder.py` 不使用這個門檻來阻止切割。
 
 ## 算法思路
 
@@ -127,12 +138,12 @@ neck_ratio = guide_width / smaller_lobe_width
 大致判讀：
 
 ```text
-0.00 - 0.60   明顯窄頸，通常值得自動切
-0.60 - 1.00   有凹陷或連接，但不夠強，需要多看圖
-> 1.00        weak-neck，可能只是同一大氣泡內多段文字，不一定該切
+0.00 - 0.60   明顯窄頸
+0.60 - 1.00   有凹陷或連接，但較弱
+> 1.00        guide 很寬，可能只是同一大氣泡內多段文字
 ```
 
-目前預設 `--neck-ratio-threshold 0.62`。低於這個值會標成 `neck`，高於這個值會標成 `weak-neck`。
+preview 腳本預設 `--neck-ratio-threshold 0.62`。低於這個值會標成 `neck`，高於這個值會標成 `weak-neck`。這只是 preview 標示，不影響正式 align。正式 align 目前是「有 guide 就切」。
 
 ## 常用參數
 
@@ -186,6 +197,8 @@ neck_ratio = guide_width / smaller_lobe_width
 
 門檻越高，越多 group 會被標成 `neck`。
 
+這個參數只影響 `neck_watershed_preview.py` 的標示，不影響 `new_detect_folder.py` 的正式 align 行為。
+
 ## Summary JSON
 
 `neck_watershed_summary.json` 會記錄每頁每組的結果：
@@ -234,7 +247,14 @@ width_scan     fallback，使用多角度最窄橫截面
 .venv/bin/python new_detect_folder.py /path/to/image_folder
 ```
 
-2. 生成 neck preview：
+這一步會自動生成正式計算圖：
+
+```text
+<圖片資料夾>/ctd/progressing/align/neck/<檔名>.png
+<圖片資料夾>/ctd/progressing/align/neck/<檔名>.json
+```
+
+2. 需要觀察算法判斷時，再生成 neck preview：
 
 ```bash
 .venv/bin/python neck_watershed_preview.py /path/to/image_folder
@@ -256,18 +276,25 @@ width_scan     fallback，使用多角度最窄橫截面
 
 ## 目前限制
 
-- 這還是 preview 腳本，尚未把 guide line 寫回 align 流程。
-- `weak-neck` 不代表一定錯，只代表氣泡形態上沒有明顯窄頸。
+- preview 腳本不會修改正式 align 結果；正式流程由 `new_detect_folder.py` 生成 `progressing/align/neck/`。
+- `weak-neck` 不代表正式流程不切；它只代表 preview 門檻下氣泡形態沒有明顯窄頸。
 - 雲朵泡、尾巴很多的氣泡、或人物線條漏進 bubble mask 時，convex defect 可能會產生多個候選凹陷，需要靠 `neck_ratio` 和圖像一起判讀。
-- 對「同一顆大氣泡裡自然排了兩段文字」的情況，不一定應該切割。這類通常會表現為 `neck_ratio` 偏高。
+- 對「同一顆大氣泡裡自然排了兩段文字」的情況，正式流程目前也會在有 guide 時切割，因為策略是「重疊/shared group 有 guide 就切」。
 - 如果 `deal_overlap` 人工切線存在，preview 結果會反映人工切線後的 bubble mask。
 
-## 後續接入方向
+## 正式 align 行為
 
-如果 preview 穩定，下一步可以把 guide line 接入 align：
+`new_detect_folder.py` 的 align 階段目前行為：
 
-1. 偵測 shared bubble group。
-2. 生成 neck guide。
-3. 在氣泡 mask 上臨時畫 guide line，把 shared mask 切成 sub-mask。
-4. 每個文字 block 只在自己的 sub-mask 裡重新計算 `outer_rect`、`inner_rect` 和 center。
-5. `neck_ratio` 高或 guide 不可靠時，仍 fallback 到現有 safety 邏輯或 `deal_overlap`。
+1. 如果 `deal_overlap/<檔名>.png` 存在且已人工修改，使用它作為最高優先計算圖，跳過自動 neck。
+2. 如果沒有人工修改過的 `deal_overlap`，先用原圖做第一次 align。
+3. 收集 shared outer bubble group。
+4. 對每個有 guide 的 shared group，在原圖上畫 guide line，生成 `progressing/align/neck/<檔名>.png`。
+5. 如果生成了 neck 圖，用 neck 圖重跑 align。
+6. 如果仍有 final overlap，或 shared group 沒有 guide，建立或保留 `deal_overlap` helper 交給人工處理。
+
+優先級：
+
+```text
+人工修改過的 deal_overlap > 自動 neck 圖 > 原圖
+```

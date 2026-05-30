@@ -60,6 +60,8 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
 <圖片資料夾>/ctd/measure.json
 <圖片資料夾>/ctd/measure.debug.json
 <圖片資料夾>/ctd/progressing/align/center/<檔名>.png
+<圖片資料夾>/ctd/progressing/align/neck/<檔名>.png       # 自動 neck 切線計算圖，如果有 shared 氣泡 guide
+<圖片資料夾>/ctd/progressing/align/neck/<檔名>.json      # 每頁 neck guide summary
 <圖片資料夾>/ctd/measure_preview/<檔名>.png
 <圖片資料夾>/ctd/progressing/align/deal_overlap/<檔名>.png  # 如果偵測到重疊且檔案不存在
 ```
@@ -90,6 +92,10 @@ python new_detect_folder.py /Users/zhongsheng/Downloads/xxxx --only-align
     align/
       center/
         <檔名>.png
+
+      neck/
+        <檔名>.png
+        <檔名>.json
 
       deal_overlap/
         <檔名>.png
@@ -321,17 +327,82 @@ ctd/progressing/align/center/<檔名>.png
 
 `ctd/progressing/align/deal_overlap/` 用於處理共用氣泡。
 
+優先級：
+
+```text
+人工修改過的 deal_overlap > 自動 neck 圖 > 原圖
+```
+
+注意：程式會比較原圖與 `deal_overlap` 圖。只有 `deal_overlap` 圖真的和原圖有差異時，才視為人工修改並作為最高優先計算圖。單純由程式複製出來、但尚未修改的 helper 會被忽略，仍會嘗試自動 neck 切割。
+
 流程：
 
+1. 每頁先用原圖，或人工修改過的 `deal_overlap` 圖，做第一次重定位。
+2. 如果沒有人工修改過的 `deal_overlap`，程式會檢查 shared outer bubble group。
+3. 對找到 guide 的 shared group，程式會生成：
+
+```text
+ctd/progressing/align/neck/<檔名>.png
+ctd/progressing/align/neck/<檔名>.json
+```
+
+4. 如果有生成 `neck/<檔名>.png`，會用這張自動切線圖重新做一次重定位。
+5. 如果仍有 final boxes 重疊，或 shared group 沒找到 guide，會建立或保留 `deal_overlap` helper，交給人工處理。
+
+## neck 自動切割
+
+`ctd/progressing/align/neck/` 是自動生成的計算輔助圖，用於處理多文段共用同一氣泡。
+
+`neck/<檔名>.png` 是在原圖上畫入黑色 guide line 的計算圖。它不是 preview 圖，會被下一次重定位用來讓 flood fill 被切開。
+
+`neck/<檔名>.json` 記錄每組 shared bubble 的 guide：
+
+```json
+{
+  "page": "267.png",
+  "generated": true,
+  "groups": [
+    {
+      "group": 1,
+      "source_block_indices": [0, 1],
+      "status": "neck",
+      "neck_ratio": 1.1453,
+      "guides": [
+        {
+          "method": "convex_defect",
+          "start": [694, 312],
+          "end": [619, 170]
+        }
+      ]
+    }
+  ]
+}
+```
+
+目前正式 align 流程的策略是：
+
+```text
+只要 shared group 找得到 guide，就畫進 neck 圖並重跑 align。
+neck_ratio 只作為 debug/confidence 資訊，不再阻止切割。
+```
+
+如果某組 shared group 沒找到 guide，`status` 會是 `no-neck`，該頁仍會被視為需要人工檢查，並保留或建立 `deal_overlap` helper。
+
+## deal_overlap 人工處理
+
+`ctd/progressing/align/deal_overlap/` 是人工 override。
+
+helper 建立流程：
+
 1. 每頁重定位完成後，檢查 final boxes 是否重疊。
-2. 如果有重疊，將原圖複製到：
+2. 如果仍有重疊，或 shared group 沒找到 neck guide，將原圖複製到：
 
 ```text
 ctd/progressing/align/deal_overlap/<檔名>.png
 ```
 
 3. 如果該檔案已存在，不覆蓋，避免覆蓋人工修改。
-4. 下次執行完整流程或 `--only-align` 時，如果存在 `deal_overlap/<檔名>.png`，會優先用它作為 magic wand 計算圖。
+4. 下次執行完整流程或 `--only-align` 時，如果 `deal_overlap/<檔名>.png` 已被人工修改，會優先用它作為 magic wand 計算圖。
 5. `center/` 預覽仍然使用原圖作為底圖。
 
 人工使用方式：
