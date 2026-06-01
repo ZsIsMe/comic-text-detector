@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""精簡版資料夾偵測腳本，輸出 block map、line-trans、mask 和 center 對齊結果。"""
+"""精簡版資料夾偵測腳本，輸出偵測、對齊、mask npz 和量測預覽結果。"""
 
 import argparse
 import json
@@ -49,6 +49,7 @@ PROGRESSING_DIR = 'progressing'
 MASK_DIR = 'mask'
 ALIGN_DIR = 'align'
 NECK_DIR = 'neck'
+ALIGN_MASK_DIR = 'masks'
 MEASURE_PREVIEW_DIR = 'measure_preview'
 BLOCK_MAP_JSON = 'block_map.json'
 LINE_TRANS_MAP_JSON = 'line_trans_map.json'
@@ -72,6 +73,7 @@ def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
         'center': osp.join(progressing_dir, ALIGN_DIR, CENTER_DIR),
         'deal_overlap': osp.join(progressing_dir, ALIGN_DIR, DEAL_OVERLAP_DIR),
         'neck': osp.join(progressing_dir, ALIGN_DIR, NECK_DIR),
+        'align_masks': osp.join(progressing_dir, ALIGN_DIR, ALIGN_MASK_DIR),
         'measure_preview': osp.join(ctd_dir, MEASURE_PREVIEW_DIR),
     }
     for path in paths.values():
@@ -136,6 +138,10 @@ def _neck_path_for_page(paths: dict[str, str], page_name: str) -> str:
 
 def _neck_summary_path_for_page(paths: dict[str, str], page_name: str) -> str:
     return osp.join(paths['neck'], f'{Path(page_name).stem}.json')
+
+
+def _align_mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
+    return osp.join(paths['align_masks'], f'{Path(page_name).stem}.npz')
 
 
 def _image_modified(base_img: np.ndarray, candidate_img: np.ndarray | None) -> bool:
@@ -614,7 +620,101 @@ def _draw_measure_center_blocks(
     return canvas
 
 
+def _empty_preview_masks(shape: tuple[int, int]) -> dict[str, np.ndarray]:
+    return {
+        'smoothed_mask': np.zeros(shape, dtype=np.uint8),
+        'outer_body_mask': np.zeros(shape, dtype=np.uint8),
+    }
+
+
+def _preview_masks_from_items(
+    aligned_items: list[dict],
+    image_shape: tuple[int, int],
+) -> tuple[list[np.ndarray], list[np.ndarray], list[bool]]:
+    smoothed_masks = []
+    outer_body_masks = []
+    accepted = []
+    for item in aligned_items:
+        preview_masks = item.get('_preview_masks') or _empty_preview_masks(image_shape)
+        smoothed_masks.append(preview_masks.get('smoothed_mask', np.zeros(image_shape, dtype=np.uint8)))
+        outer_body_masks.append(preview_masks.get('outer_body_mask', np.zeros(image_shape, dtype=np.uint8)))
+        accepted.append(bool(item.get('layout_debug', {}).get('accepted')))
+    return smoothed_masks, outer_body_masks, accepted
+
+
+def _write_align_masks(
+    path: str,
+    aligned_items: list[dict],
+    image_shape: tuple[int, int],
+) -> None:
+    smoothed_masks, outer_body_masks, accepted = _preview_masks_from_items(
+        aligned_items,
+        image_shape,
+    )
+    if smoothed_masks:
+        smoothed_array = np.stack(smoothed_masks).astype(np.uint8)
+        outer_array = np.stack(outer_body_masks).astype(np.uint8)
+    else:
+        height, width = image_shape
+        smoothed_array = np.zeros((0, height, width), dtype=np.uint8)
+        outer_array = np.zeros((0, height, width), dtype=np.uint8)
+
+    os.makedirs(osp.dirname(path), exist_ok=True)
+    np.savez_compressed(
+        path,
+        smoothed_masks=smoothed_array,
+        outer_body_masks=outer_array,
+        accepted=np.asarray(accepted, dtype=np.bool_),
+    )
+
+
+def _load_preview_masks(
+    path: str,
+    count: int,
+    image_shape: tuple[int, int],
+) -> list[dict[str, np.ndarray]]:
+    if not osp.isfile(path):
+        return [_empty_preview_masks(image_shape) for _ in range(count)]
+
+    with np.load(path) as data:
+        outer_body_masks = data.get('outer_body_masks')
+        smoothed_masks = data.get('smoothed_masks')
+        result = []
+        for index in range(count):
+            result.append({
+                'smoothed_mask': (
+                    smoothed_masks[index]
+                    if smoothed_masks is not None and index < len(smoothed_masks)
+                    else np.zeros(image_shape, dtype=np.uint8)
+                ),
+                'outer_body_mask': (
+                    outer_body_masks[index]
+                    if outer_body_masks is not None and index < len(outer_body_masks)
+                    else np.zeros(image_shape, dtype=np.uint8)
+                ),
+            })
+        return result
+
+
+def _draw_aligned_boxes_from_masks(
+    img: np.ndarray,
+    align_items: list[dict],
+    preview_masks: list[dict[str, np.ndarray]],
+) -> np.ndarray:
+    items = []
+    for index, item in enumerate(align_items):
+        draw_item = dict(item)
+        draw_item['_preview_masks'] = (
+            preview_masks[index]
+            if index < len(preview_masks)
+            else _empty_preview_masks(img.shape[:2])
+        )
+        items.append(draw_item)
+    return _draw_aligned_boxes(img, items)
+
+
 def _write_measure_previews(
+    img_dir: str,
     paths: dict[str, str],
     line_trans_map: dict,
     aligned_box_map: dict,
@@ -625,21 +725,24 @@ def _write_measure_previews(
     measure_pages = measure_map.get('pages', {})
 
     for page_name, measure_items in tqdm(measure_pages.items(), desc='measure preview'):
-        center_path = osp.join(paths['center'], f'{Path(page_name).stem}.png')
-        if not osp.isfile(center_path):
-            raise FileNotFoundError(f'找不到 center 預覽圖：{center_path}')
-
-        center_img = imread(center_path)
+        img = imread(_image_path_for_page(img_dir, page_name))
+        align_items = align_pages.get(page_name, [])
+        preview_masks = _load_preview_masks(
+            _align_mask_path_for_page(paths, page_name),
+            len(align_items),
+            img.shape[:2],
+        )
+        center_img = _draw_aligned_boxes_from_masks(img, align_items, preview_masks)
         canvas = _draw_line_width_measurements(center_img, line_pages.get(page_name, []))
         canvas = _draw_measure_center_blocks(
             canvas,
             measure_items,
-            align_pages.get(page_name, []),
+            align_items,
         )
         canvas = _draw_measure_block_labels(
             canvas,
             measure_items,
-            align_pages.get(page_name, []),
+            align_items,
         )
         imwrite(osp.join(paths['measure_preview'], f'{Path(page_name).stem}.png'), canvas)
 
@@ -648,6 +751,7 @@ def _align_pages(
     img_dir: str,
     paths: dict[str, str],
     block_map: dict,
+    save_center_preview: bool = False,
 ) -> tuple[dict, dict]:
     aligned_map = {}
     summary = {
@@ -729,6 +833,11 @@ def _align_pages(
 
         clean_items = _clean_aligned_items(aligned_items)
         aligned_map[page_name] = clean_items
+        _write_align_masks(
+            _align_mask_path_for_page(paths, page_name),
+            aligned_items,
+            img.shape[:2],
+        )
 
         unresolved_shared_without_guide = any(
             not group.get('guides')
@@ -740,8 +849,9 @@ def _align_pages(
             if helper_status == 'copied':
                 summary['copied'] += 1
 
-        center_img = _draw_aligned_boxes(img, aligned_items)
-        imwrite(osp.join(paths['center'], f'{Path(page_name).stem}.png'), center_img)
+        if save_center_preview:
+            center_img = _draw_aligned_boxes(img, aligned_items)
+            imwrite(osp.join(paths['center'], f'{Path(page_name).stem}.png'), center_img)
 
         summary['pages'] += 1
         summary['boxes'] += len(clean_items)
@@ -755,6 +865,7 @@ def _detect_pages(
     model_path: str,
     device: str | None,
     paths: dict[str, str],
+    save_line_trans_preview: bool = False,
 ) -> tuple[dict, dict]:
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -818,8 +929,9 @@ def _detect_pages(
         line_trans_map[page_key] = line_trans_items
 
         imwrite(osp.join(paths['mask'], f'{imname}.png'), mask_refined)
-        line_trans_img = _draw_line_width_measurements(img, line_trans_items)
-        imwrite(osp.join(paths['line_trans_box'], f'{imname}.png'), line_trans_img)
+        if save_line_trans_preview:
+            line_trans_img = _draw_line_width_measurements(img, line_trans_items)
+            imwrite(osp.join(paths['line_trans_box'], f'{imname}.png'), line_trans_img)
 
     return {'blockMap': block_map}, {'transMap': line_trans_map}
 
@@ -829,6 +941,8 @@ def run(
     model_path: str,
     device: str | None = None,
     only_align: bool = False,
+    save_line_trans_preview: bool = False,
+    save_center_preview: bool = False,
 ) -> int:
     img_dir = osp.abspath(img_dir)
     if not osp.isdir(img_dir):
@@ -854,11 +968,22 @@ def run(
         model_path = osp.abspath(model_path)
         if not osp.isfile(model_path):
             raise FileNotFoundError(f'找不到模型檔：{model_path}')
-        block_map, line_trans_map = _detect_pages(img_dir, model_path, device, paths)
+        block_map, line_trans_map = _detect_pages(
+            img_dir,
+            model_path,
+            device,
+            paths,
+            save_line_trans_preview=save_line_trans_preview,
+        )
         _write_json(block_map_path, block_map)
         _write_json(line_trans_map_path, line_trans_map)
 
-    aligned_box_map, align_summary = _align_pages(img_dir, paths, block_map)
+    aligned_box_map, align_summary = _align_pages(
+        img_dir,
+        paths,
+        block_map,
+        save_center_preview=save_center_preview,
+    )
     _write_json(aligned_box_map_path, aligned_box_map)
     measure_map, measure_debug_map = _build_measure_maps(
         img_dir,
@@ -868,18 +993,21 @@ def run(
     )
     _write_json(measure_path, measure_map)
     _write_json(measure_debug_path, measure_debug_map)
-    _write_measure_previews(paths, line_trans_map, aligned_box_map, measure_map)
+    _write_measure_previews(img_dir, paths, line_trans_map, aligned_box_map, measure_map)
 
     print('完成。輸出：')
     print(f'  - {block_map_path}')
     if not only_align:
         print(f'  - {line_trans_map_path}')
         print(f'  - {paths["mask"]}/<檔名>.png')
-        print(f'  - {paths["line_trans_box"]}/<檔名>.png')
+        if save_line_trans_preview:
+            print(f'  - {paths["line_trans_box"]}/<檔名>.png')
     print(f'  - {aligned_box_map_path}')
+    print(f'  - {paths["align_masks"]}/<檔名>.npz')
     print(f'  - {measure_path}')
     print(f'  - {measure_debug_path}')
-    print(f'  - {paths["center"]}/<檔名>.png')
+    if save_center_preview:
+        print(f'  - {paths["center"]}/<檔名>.png')
     print(f'  - {paths["neck"]}/<檔名>.png')
     print(f'  - {paths["measure_preview"]}/<檔名>.png')
     print(f'  - {paths["deal_overlap"]}/<檔名>.png')
@@ -919,6 +1047,16 @@ def main() -> None:
         action='store_true',
         help='不跑模型，只讀 ctd/block_map.json 和 ctd/mask/ 重新生成對齊結果。',
     )
+    parser.add_argument(
+        '--save-line-trans-preview',
+        action='store_true',
+        help='額外輸出 ctd/progressing/line-trans-box/<檔名>.png。',
+    )
+    parser.add_argument(
+        '--save-center-preview',
+        action='store_true',
+        help='額外輸出 ctd/progressing/align/center/<檔名>.png。',
+    )
     args = parser.parse_args()
 
     run(
@@ -926,6 +1064,8 @@ def main() -> None:
         model_path=args.model,
         device=args.device,
         only_align=args.only_align,
+        save_line_trans_preview=args.save_line_trans_preview,
+        save_center_preview=args.save_center_preview,
     )
 
 
