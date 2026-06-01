@@ -52,6 +52,7 @@ NECK_DIR = 'neck'
 ALIGN_MASK_DIR = 'masks'
 MEASURE_PREVIEW_DIR = 'measure_preview'
 ONLY_TEXT_DIR = 'only_text'
+INPAINTED_DIR = 'inpainted'
 BLOCK_MAP_JSON = 'block_map.json'
 LINE_TRANS_MAP_JSON = 'line_trans_map.json'
 ALIGNED_BOX_MAP_JSON = 'aligned_box_map.json'
@@ -63,6 +64,8 @@ NECK_LINE_COLOR = (0, 0, 0)
 NECK_MANUAL_DIFF_THRESHOLD = 24
 ONLY_TEXT_COLOR = (255, 0, 255)
 ONLY_TEXT_OPACITY = 0.4
+INPAINT_RADIUS = 3
+INPAINT_MASK_EXPANSION = 5
 
 
 def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
@@ -79,6 +82,7 @@ def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
         'align_masks': osp.join(progressing_dir, ALIGN_DIR, ALIGN_MASK_DIR),
         'measure_preview': osp.join(ctd_dir, MEASURE_PREVIEW_DIR),
         'only_text': osp.join(ctd_dir, ONLY_TEXT_DIR),
+        'inpainted': osp.join(ctd_dir, INPAINTED_DIR),
     }
     for path in paths.values():
         os.makedirs(path, exist_ok=True)
@@ -134,6 +138,10 @@ def _mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
 
 def _only_text_path_for_page(paths: dict[str, str], page_name: str) -> str:
     return osp.join(paths['only_text'], f'{Path(page_name).stem}.png')
+
+
+def _inpainted_path_for_page(paths: dict[str, str], page_name: str) -> str:
+    return osp.join(paths['inpainted'], f'{Path(page_name).stem}.png')
 
 
 def _deal_overlap_path_for_page(paths: dict[str, str], page_name: str) -> str:
@@ -786,6 +794,15 @@ def _alpha_from_mask(mask: np.ndarray, opacity: float) -> np.ndarray:
     return np.clip(mask_gray.astype(np.float32) * opacity, 0, 255).astype(np.uint8)
 
 
+def _dilate_mask(mask: np.ndarray, size: int) -> np.ndarray:
+    if size <= 1:
+        return mask
+    if size % 2 == 0:
+        size += 1
+    kernel = np.ones((size, size), dtype=np.uint8)
+    return cv2.dilate(mask, kernel, iterations=1)
+
+
 def _write_only_text_images(
     img_dir: str,
     paths: dict[str, str],
@@ -809,6 +826,40 @@ def _write_only_text_images(
         output[text_zone, 2] = color_rgb[0]
         output[:, :, 3] = alpha
         imwrite(_only_text_path_for_page(paths, page_name), output)
+
+
+def _write_inpainted_images(
+    img_dir: str,
+    paths: dict[str, str],
+    page_names: list[str],
+    radius: int = INPAINT_RADIUS,
+    mask_expansion: int = INPAINT_MASK_EXPANSION,
+) -> None:
+    radius = max(1, int(radius))
+    mask_expansion = max(1, int(mask_expansion))
+    for page_name in tqdm(page_names, desc='inpainted'):
+        img = imread(_image_path_for_page(img_dir, page_name), cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise FileNotFoundError(f'找不到原圖：{page_name}')
+
+        mask_path = _mask_path_for_page(paths, page_name)
+        if not osp.isfile(mask_path):
+            raise FileNotFoundError(f'找不到文字 mask：{mask_path}')
+        mask = imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise FileNotFoundError(f'無法讀取文字 mask：{mask_path}')
+
+        inpaint_mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+        inpaint_mask = _dilate_mask(inpaint_mask, mask_expansion)
+        if len(img.shape) == 2:
+            inpainted = cv2.inpaint(img, inpaint_mask, radius, cv2.INPAINT_TELEA)
+        else:
+            color_img = img[:, :, :3]
+            inpainted = cv2.inpaint(color_img, inpaint_mask, radius, cv2.INPAINT_TELEA)
+            if img.shape[2] == 4:
+                inpainted = cv2.cvtColor(inpainted, cv2.COLOR_BGR2BGRA)
+                inpainted[:, :, 3] = img[:, :, 3]
+        imwrite(_inpainted_path_for_page(paths, page_name), inpainted)
 
 
 def _align_pages(
@@ -1009,6 +1060,8 @@ def run(
     save_center_preview: bool = False,
     only_text_color: tuple[int, int, int] = ONLY_TEXT_COLOR,
     only_text_opacity: float = ONLY_TEXT_OPACITY,
+    inpaint_radius: int = INPAINT_RADIUS,
+    inpaint_mask_expansion: int = INPAINT_MASK_EXPANSION,
 ) -> int:
     img_dir = osp.abspath(img_dir)
     if not osp.isdir(img_dir):
@@ -1067,6 +1120,13 @@ def run(
         only_text_color,
         only_text_opacity,
     )
+    _write_inpainted_images(
+        img_dir,
+        paths,
+        list(measure_map.get('pages', {}).keys()),
+        inpaint_radius,
+        inpaint_mask_expansion,
+    )
 
     print('完成。輸出：')
     print(f'  - {block_map_path}')
@@ -1084,6 +1144,7 @@ def run(
     print(f'  - {paths["neck"]}/<檔名>.png')
     print(f'  - {paths["measure_preview"]}/<檔名>.png')
     print(f'  - {paths["only_text"]}/<檔名>.png')
+    print(f'  - {paths["inpainted"]}/<檔名>.png')
     print(f'  - {paths["deal_overlap"]}/<檔名>.png')
     print(f"重定位頁數：{align_summary['pages']}")
     print(f"重定位 block 數：{align_summary['boxes']}")
@@ -1142,6 +1203,18 @@ def main() -> None:
         default=ONLY_TEXT_OPACITY,
         help='純字圖透明度，0.0 到 1.0。',
     )
+    parser.add_argument(
+        '--inpaint-radius',
+        type=int,
+        default=INPAINT_RADIUS,
+        help='inpainted 預覽的周圍顏色填補半徑。',
+    )
+    parser.add_argument(
+        '--inpaint-mask-expansion',
+        type=int,
+        default=INPAINT_MASK_EXPANSION,
+        help='inpainted 預覽先把 mask 向外擴張的像素核大小。',
+    )
     args = parser.parse_args()
     only_text_color = _parse_color_string(args.only_text_color)
 
@@ -1154,6 +1227,8 @@ def main() -> None:
         save_center_preview=args.save_center_preview,
         only_text_color=only_text_color,
         only_text_opacity=args.only_text_opacity,
+        inpaint_radius=args.inpaint_radius,
+        inpaint_mask_expansion=args.inpaint_mask_expansion,
     )
 
 
