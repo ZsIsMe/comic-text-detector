@@ -51,6 +51,7 @@ ALIGN_DIR = 'align'
 NECK_DIR = 'neck'
 ALIGN_MASK_DIR = 'masks'
 MEASURE_PREVIEW_DIR = 'measure_preview'
+ONLY_TEXT_DIR = 'only_text'
 BLOCK_MAP_JSON = 'block_map.json'
 LINE_TRANS_MAP_JSON = 'line_trans_map.json'
 ALIGNED_BOX_MAP_JSON = 'aligned_box_map.json'
@@ -60,6 +61,8 @@ NECK_IOU_THRESHOLD = 0.92
 NECK_SEED_DILATE = 15
 NECK_LINE_COLOR = (0, 0, 0)
 NECK_MANUAL_DIFF_THRESHOLD = 24
+ONLY_TEXT_COLOR = (255, 0, 255)
+ONLY_TEXT_OPACITY = 0.4
 
 
 def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
@@ -75,6 +78,7 @@ def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
         'neck': osp.join(progressing_dir, ALIGN_DIR, NECK_DIR),
         'align_masks': osp.join(progressing_dir, ALIGN_DIR, ALIGN_MASK_DIR),
         'measure_preview': osp.join(ctd_dir, MEASURE_PREVIEW_DIR),
+        'only_text': osp.join(ctd_dir, ONLY_TEXT_DIR),
     }
     for path in paths.values():
         os.makedirs(path, exist_ok=True)
@@ -126,6 +130,10 @@ def _image_path_for_page(img_dir: str, page_name: str) -> str:
 
 def _mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
     return osp.join(paths['mask'], f'{Path(page_name).stem}.png')
+
+
+def _only_text_path_for_page(paths: dict[str, str], page_name: str) -> str:
+    return osp.join(paths['only_text'], f'{Path(page_name).stem}.png')
 
 
 def _deal_overlap_path_for_page(paths: dict[str, str], page_name: str) -> str:
@@ -747,6 +755,62 @@ def _write_measure_previews(
         imwrite(osp.join(paths['measure_preview'], f'{Path(page_name).stem}.png'), canvas)
 
 
+def _parse_color_string(color_str: str) -> tuple[int, int, int]:
+    value = color_str.strip()
+    if value.startswith('#'):
+        value = value[1:]
+
+    if len(value) == 6 and ',' not in value:
+        try:
+            return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
+        except ValueError:
+            pass
+
+    parts = value.split(',')
+    if len(parts) == 3:
+        try:
+            rgb = tuple(int(part.strip()) for part in parts)
+            if all(0 <= channel <= 255 for channel in rgb):
+                return rgb
+        except ValueError:
+            pass
+
+    raise ValueError(f'顏色格式錯誤：{color_str}，請使用 "#ff00ff" 或 "255,0,255"')
+
+
+def _alpha_from_mask(mask: np.ndarray, opacity: float) -> np.ndarray:
+    if len(mask.shape) == 3:
+        mask_gray = cv2.cvtColor(mask[:, :, :3], cv2.COLOR_BGR2GRAY)
+    else:
+        mask_gray = mask
+    return np.clip(mask_gray.astype(np.float32) * opacity, 0, 255).astype(np.uint8)
+
+
+def _write_only_text_images(
+    img_dir: str,
+    paths: dict[str, str],
+    page_names: list[str],
+    color_rgb: tuple[int, int, int],
+    opacity: float,
+) -> None:
+    for page_name in tqdm(page_names, desc='only text'):
+        mask_path = _mask_path_for_page(paths, page_name)
+        if not osp.isfile(mask_path):
+            raise FileNotFoundError(f'找不到文字 mask：{mask_path}')
+        mask = imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise FileNotFoundError(f'無法讀取文字 mask：{mask_path}')
+
+        alpha = _alpha_from_mask(mask, opacity)
+        output = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
+        text_zone = alpha > 0
+        output[text_zone, 0] = color_rgb[2]
+        output[text_zone, 1] = color_rgb[1]
+        output[text_zone, 2] = color_rgb[0]
+        output[:, :, 3] = alpha
+        imwrite(_only_text_path_for_page(paths, page_name), output)
+
+
 def _align_pages(
     img_dir: str,
     paths: dict[str, str],
@@ -943,6 +1007,8 @@ def run(
     only_align: bool = False,
     save_line_trans_preview: bool = False,
     save_center_preview: bool = False,
+    only_text_color: tuple[int, int, int] = ONLY_TEXT_COLOR,
+    only_text_opacity: float = ONLY_TEXT_OPACITY,
 ) -> int:
     img_dir = osp.abspath(img_dir)
     if not osp.isdir(img_dir):
@@ -994,6 +1060,13 @@ def run(
     _write_json(measure_path, measure_map)
     _write_json(measure_debug_path, measure_debug_map)
     _write_measure_previews(img_dir, paths, line_trans_map, aligned_box_map, measure_map)
+    _write_only_text_images(
+        img_dir,
+        paths,
+        list(measure_map.get('pages', {}).keys()),
+        only_text_color,
+        only_text_opacity,
+    )
 
     print('完成。輸出：')
     print(f'  - {block_map_path}')
@@ -1010,6 +1083,7 @@ def run(
         print(f'  - {paths["center"]}/<檔名>.png')
     print(f'  - {paths["neck"]}/<檔名>.png')
     print(f'  - {paths["measure_preview"]}/<檔名>.png')
+    print(f'  - {paths["only_text"]}/<檔名>.png')
     print(f'  - {paths["deal_overlap"]}/<檔名>.png')
     print(f"重定位頁數：{align_summary['pages']}")
     print(f"重定位 block 數：{align_summary['boxes']}")
@@ -1057,7 +1131,19 @@ def main() -> None:
         action='store_true',
         help='額外輸出 ctd/progressing/align/center/<檔名>.png。',
     )
+    parser.add_argument(
+        '--only-text-color',
+        default=','.join(str(value) for value in ONLY_TEXT_COLOR),
+        help='純字圖顏色，支援 "#ff00ff" 或 "255,0,255"。',
+    )
+    parser.add_argument(
+        '--only-text-opacity',
+        type=float,
+        default=ONLY_TEXT_OPACITY,
+        help='純字圖透明度，0.0 到 1.0。',
+    )
     args = parser.parse_args()
+    only_text_color = _parse_color_string(args.only_text_color)
 
     run(
         img_dir=args.img_dir,
@@ -1066,6 +1152,8 @@ def main() -> None:
         only_align=args.only_align,
         save_line_trans_preview=args.save_line_trans_preview,
         save_center_preview=args.save_center_preview,
+        only_text_color=only_text_color,
+        only_text_opacity=args.only_text_opacity,
     )
 
 
