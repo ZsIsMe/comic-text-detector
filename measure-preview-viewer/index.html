@@ -1,0 +1,1279 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Measure Preview Viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f0e8;
+      --panel: #fffaf0;
+      --panel-strong: #f0e4d1;
+      --ink: #1d2524;
+      --muted: #65706e;
+      --line: #d8ccba;
+      --accent: #0f766e;
+      --accent-dark: #0b5d57;
+      --danger: #a33f2f;
+      --shadow: 0 18px 45px rgba(36, 28, 18, 0.13);
+      --radius: 8px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: Avenir Next, "Trebuchet MS", Verdana, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(135deg, rgba(15, 118, 110, 0.08), transparent 28%),
+        linear-gradient(180deg, #f8f3ea 0%, var(--bg) 52%, #ebe2d3 100%);
+      color: var(--ink);
+      font-family: var(--sans);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: #fffdf7;
+      color: var(--ink);
+      border-radius: 7px;
+      min-height: 34px;
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #a99b86;
+      background: #fff8e8;
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+      font-weight: 650;
+    }
+
+    button.primary:hover {
+      background: var(--accent-dark);
+      border-color: var(--accent-dark);
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 285px minmax(0, 1fr) 320px;
+      grid-template-rows: auto minmax(0, 1fr);
+      height: 100vh;
+    }
+
+    header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 64px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 250, 240, 0.88);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .sidebar,
+    .inspector {
+      min-height: 0;
+      overflow: hidden;
+      background: rgba(255, 250, 240, 0.78);
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .inspector {
+      border-left: 1px solid var(--line);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .pane-head {
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .pane-title {
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      font-weight: 750;
+    }
+
+    .search {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: white;
+      color: var(--ink);
+      padding: 7px 9px;
+    }
+
+    .page-list {
+      min-height: 0;
+      overflow: auto;
+      padding: 8px;
+    }
+
+    .page-button {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      width: 100%;
+      gap: 8px;
+      align-items: center;
+      margin: 0 0 5px;
+      text-align: left;
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .page-button.active {
+      background: #e4f2ee;
+      border-color: #9bc9c0;
+    }
+
+    .page-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .page-count {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    main {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      background:
+        linear-gradient(90deg, rgba(29, 37, 36, 0.05) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(29, 37, 36, 0.05) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(244, 240, 232, 0.86);
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(255, 253, 247, 0.9);
+      color: var(--ink);
+      user-select: none;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .toggle input {
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
+    .stage-wrap {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 22px;
+    }
+
+    .stage {
+      position: relative;
+      width: max-content;
+      min-width: 240px;
+      min-height: 180px;
+      margin: 0 auto;
+      background: #d7ccba;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(29, 37, 36, 0.18);
+    }
+
+    canvas {
+      display: block;
+      image-rendering: auto;
+    }
+
+    .empty-state {
+      display: grid;
+      place-items: center;
+      min-height: 100%;
+      padding: 40px 22px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .empty-state strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 18px;
+    }
+
+    .status {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 7px 12px;
+      border-top: 1px solid var(--line);
+      background: rgba(255, 250, 240, 0.9);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status code {
+      font-family: var(--mono);
+      color: var(--ink);
+    }
+
+    .inspector-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 253, 247, 0.82);
+      padding: 9px;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+
+    .metric strong {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .block-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .block-row {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 253, 247, 0.82);
+      padding: 9px;
+      cursor: pointer;
+    }
+
+    .block-row:hover,
+    .block-row.active {
+      border-color: #82bdb3;
+      background: #effaf7;
+    }
+
+    .block-row-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+
+    .block-index {
+      font-family: var(--mono);
+      font-weight: 760;
+      font-size: 12px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #e4f2ee;
+      color: #0b5d57;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .badge.fail {
+      background: #f5e0da;
+      color: var(--danger);
+    }
+
+    .block-row p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .json-box {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #1e2524;
+      color: #e7efe8;
+      overflow: auto;
+      max-height: 280px;
+    }
+
+    .json-box pre {
+      margin: 0;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .notice {
+      padding: 10px;
+      border: 1px solid #e0b99f;
+      border-radius: var(--radius);
+      background: #fff1df;
+      color: #6e3d23;
+      font-size: 12px;
+      line-height: 1.4;
+      margin-bottom: 12px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 1040px) {
+      .app {
+        grid-template-columns: 240px minmax(0, 1fr);
+      }
+
+      .inspector {
+        grid-column: 1 / -1;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        min-height: 240px;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+      }
+
+      header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .header-actions {
+        justify-content: flex-start;
+      }
+
+      .sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+        max-height: 230px;
+      }
+
+      .stage-wrap {
+        padding: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <h1>Measure Preview Viewer</h1>
+        <span id="folderLabel">選擇包含 ctd/measure.json 的圖片資料夾</span>
+      </div>
+      <div class="header-actions">
+        <button class="primary" id="openDirButton" type="button">選擇圖片資料夾</button>
+        <button id="openFilesButton" type="button">手動選檔</button>
+        <input class="hidden" id="filePicker" type="file" multiple accept=".json,image/*">
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="pane-head">
+        <p class="pane-title">Pages</p>
+        <input class="search" id="pageSearch" type="search" placeholder="搜尋頁名">
+      </div>
+      <div class="page-list" id="pageList"></div>
+    </aside>
+
+    <main>
+      <div class="toolbar" id="toolbar"></div>
+      <div class="stage-wrap" id="stageWrap">
+        <div class="empty-state" id="emptyState">
+          <div>
+            <strong>尚未載入圖片資料夾</strong>
+            <span>選擇原圖所在資料夾後，會用 ctd 裡的 JSON 即時重建 preview 疊圖。</span>
+          </div>
+        </div>
+        <div class="stage hidden" id="stage">
+          <canvas id="canvas"></canvas>
+        </div>
+      </div>
+      <div class="status" id="status">
+        <span>等待資料</span>
+        <span></span>
+      </div>
+    </main>
+
+    <aside class="inspector">
+      <div class="pane-head">
+        <p class="pane-title">Inspector</p>
+        <div id="selectedTitle">未選中 block</div>
+      </div>
+      <div class="inspector-body" id="inspector"></div>
+    </aside>
+  </div>
+
+  <script>
+    const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'bmp', 'webp'];
+    const DRAW_ORDER = [
+      'blockShade',
+      'approxBubble',
+      'rawOuter',
+      'outer',
+      'inner',
+      'final',
+      'lineWidth',
+      'center',
+      'labels',
+      'ocr',
+    ];
+    const LAYERS = {
+      blockShade: { label: 'Block', enabled: true },
+      approxBubble: { label: 'Approx bubble', enabled: false },
+      rawOuter: { label: 'Raw outer', enabled: false },
+      outer: { label: 'Outer', enabled: true },
+      inner: { label: 'Inner', enabled: true },
+      final: { label: 'Final', enabled: true },
+      lineWidth: { label: 'Line width', enabled: true },
+      center: { label: 'Center', enabled: true },
+      labels: { label: 'Labels', enabled: true },
+      ocr: { label: 'OCR', enabled: false },
+    };
+
+    const COLORS = {
+      blockShade: 'rgba(0, 0, 0, 0.18)',
+      approxBubble: 'rgba(255, 214, 102, 0.18)',
+      rawOuter: '#667085',
+      outer: '#005bff',
+      inner: '#ff9f1a',
+      finalAccepted: '#00b050',
+      finalFallback: '#050505',
+      lineWidth: '#00ebff',
+      labelBg: '#ffffff',
+      labelText: '#000000',
+      selected: '#ff2d55',
+    };
+
+    const state = {
+      rootHandle: null,
+      fileMap: new Map(),
+      imageFileMap: new Map(),
+      objectUrls: [],
+      measure: null,
+      debug: null,
+      ocr: null,
+      pages: [],
+      currentPage: null,
+      currentImage: null,
+      imageMeta: null,
+      selectedIndex: null,
+      layers: structuredClone(LAYERS),
+      scale: 1,
+    };
+
+    const els = {
+      folderLabel: document.getElementById('folderLabel'),
+      openDirButton: document.getElementById('openDirButton'),
+      openFilesButton: document.getElementById('openFilesButton'),
+      filePicker: document.getElementById('filePicker'),
+      pageSearch: document.getElementById('pageSearch'),
+      pageList: document.getElementById('pageList'),
+      toolbar: document.getElementById('toolbar'),
+      canvas: document.getElementById('canvas'),
+      stage: document.getElementById('stage'),
+      emptyState: document.getElementById('emptyState'),
+      status: document.getElementById('status'),
+      inspector: document.getElementById('inspector'),
+      selectedTitle: document.getElementById('selectedTitle'),
+      stageWrap: document.getElementById('stageWrap'),
+    };
+    const ctx = els.canvas.getContext('2d');
+
+    function setStatus(left, right = '') {
+      els.status.children[0].innerHTML = left;
+      els.status.children[1].textContent = right;
+    }
+
+    function cleanupUrls() {
+      for (const url of state.objectUrls) URL.revokeObjectURL(url);
+      state.objectUrls = [];
+    }
+
+    function trackUrl(url) {
+      state.objectUrls.push(url);
+      return url;
+    }
+
+    function extOf(name) {
+      const match = String(name).toLowerCase().match(/\.([^.]+)$/);
+      return match ? match[1] : '';
+    }
+
+    function stemOf(name) {
+      return String(name).replace(/\.[^.]+$/, '');
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function rectFromDict(rect) {
+      if (!rect || typeof rect !== 'object') return null;
+      const left = Number(rect.left);
+      const top = Number(rect.top);
+      const width = Number(rect.width);
+      const height = Number(rect.height);
+      if (![left, top, width, height].every(Number.isFinite)) return null;
+      return [left, top, left + width, top + height];
+    }
+
+    function normalizeXyxy(xyxy) {
+      if (!Array.isArray(xyxy) || xyxy.length !== 4) return null;
+      const values = xyxy.map(Number);
+      return values.every(Number.isFinite) ? values : null;
+    }
+
+    function pageMeasureItems(pageName = state.currentPage) {
+      return state.measure?.pages?.[pageName] || [];
+    }
+
+    function pageAlignItems(pageName = state.currentPage) {
+      return state.debug?.align?.transMap?.[pageName] || [];
+    }
+
+    function pageBlockItems(pageName = state.currentPage) {
+      return state.debug?.block?.blockMap?.[pageName] || [];
+    }
+
+    function pageLineItems(pageName = state.currentPage) {
+      return state.debug?.line?.transMap?.[pageName] || [];
+    }
+
+    function pageOcrItems(pageName = state.currentPage) {
+      return state.ocr?.pages?.[pageName] || [];
+    }
+
+    function alignBySource(pageName = state.currentPage) {
+      const map = new Map();
+      pageAlignItems(pageName).forEach((item, fallback) => {
+        const parsed = Number(item.source_block_index);
+        const source = Number.isFinite(parsed) ? parsed : fallback;
+        map.set(source, item);
+      });
+      return map;
+    }
+
+    function ocrBySource(pageName = state.currentPage) {
+      const map = new Map();
+      pageOcrItems(pageName).forEach((item, fallback) => {
+        const parsed = Number(item.source_block_index);
+        const source = Number.isFinite(parsed) ? parsed : fallback;
+        map.set(source, item);
+      });
+      return map;
+    }
+
+    function centerModeColor(item) {
+      const debug = item?.layout_debug || {};
+      if (!debug.accepted) return COLORS.finalFallback;
+      const mode = debug.resolved_center_mode || debug.center_mode;
+      if (mode === 'outer') return COLORS.outer;
+      if (mode === 'inner') return COLORS.inner;
+      return COLORS.finalAccepted;
+    }
+
+    function finalColor(item) {
+      return item?.layout_debug?.accepted || item?.accepted ? COLORS.finalAccepted : COLORS.finalFallback;
+    }
+
+    function getFinalXyxy(item) {
+      return normalizeXyxy(item?.final_xyxy_pixel) || normalizeXyxy(item?.new_xyxy_pixel) || null;
+    }
+
+    function getCenterForAlign(item) {
+      const xyxy = getFinalXyxy(item);
+      if (xyxy) return [(xyxy[0] + xyxy[2]) / 2, (xyxy[1] + xyxy[3]) / 2];
+      const x = Number(item?.x || 0);
+      const y = Number(item?.y || 0);
+      const w = Number(item?.w || 0);
+      const h = Number(item?.h || 0);
+      return [x + w / 2, y + h / 2];
+    }
+
+    function imagePathCandidates(pageName) {
+      const stem = stemOf(pageName);
+      const ext = extOf(pageName);
+      const names = [];
+      if (ext) names.push(pageName);
+      for (const candidateExt of IMAGE_EXTS) {
+        names.push(`${stem}.${candidateExt}`);
+      }
+      return [...new Set(names)];
+    }
+
+    async function getChildHandle(parent, name, kind = 'file') {
+      try {
+        return kind === 'directory'
+          ? await parent.getDirectoryHandle(name)
+          : await parent.getFileHandle(name);
+      } catch {
+        return null;
+      }
+    }
+
+    async function readJsonFromDir(root, pathParts, required = true) {
+      let dir = root;
+      for (let index = 0; index < pathParts.length - 1; index += 1) {
+        dir = await getChildHandle(dir, pathParts[index], 'directory');
+        if (!dir) {
+          if (required) throw new Error(`找不到 ${pathParts.join('/')}`);
+          return null;
+        }
+      }
+      const fileHandle = await getChildHandle(dir, pathParts[pathParts.length - 1], 'file');
+      if (!fileHandle) {
+        if (required) throw new Error(`找不到 ${pathParts.join('/')}`);
+        return null;
+      }
+      return JSON.parse(await (await fileHandle.getFile()).text());
+    }
+
+    async function loadImageFromDir(root, pageName) {
+      for (const candidate of imagePathCandidates(pageName)) {
+        const handle = await getChildHandle(root, candidate, 'file');
+        if (!handle) continue;
+        const file = await handle.getFile();
+        return loadImageFromFile(file, candidate);
+      }
+      throw new Error(`找不到原圖：${pageName}`);
+    }
+
+    function loadImageFromFile(file, label = file.name) {
+      return new Promise((resolve, reject) => {
+        const url = trackUrl(URL.createObjectURL(file));
+        const img = new Image();
+        img.onload = () => resolve({ img, url, label, width: img.naturalWidth, height: img.naturalHeight });
+        img.onerror = () => reject(new Error(`圖片載入失敗：${label}`));
+        img.src = url;
+      });
+    }
+
+    async function collectFilesFromPicker(files) {
+      state.fileMap.clear();
+      state.imageFileMap.clear();
+      for (const file of files) {
+        const path = file.webkitRelativePath || file.name;
+        state.fileMap.set(path, file);
+        if (IMAGE_EXTS.includes(extOf(file.name))) {
+          state.imageFileMap.set(file.name, file);
+          state.imageFileMap.set(path, file);
+        }
+      }
+
+      const findFile = (names) => {
+        for (const name of names) {
+          if (state.fileMap.has(name)) return state.fileMap.get(name);
+          const match = [...state.fileMap.entries()].find(([path]) => path.endsWith(`/${name}`) || path === name);
+          if (match) return match[1];
+        }
+        return null;
+      };
+
+      const measureFile = findFile(['ctd/measure.json', 'measure.json']);
+      const debugFile = findFile(['ctd/measure.debug.json', 'measure.debug.json']);
+      const ocrFile = findFile(['ctd/measure_ocr.json', 'measure_ocr.json']);
+      if (!measureFile || !debugFile) {
+        throw new Error('手動選檔至少需要 measure.json、measure.debug.json 和原圖檔案。');
+      }
+      state.measure = JSON.parse(await measureFile.text());
+      state.debug = JSON.parse(await debugFile.text());
+      state.ocr = ocrFile ? JSON.parse(await ocrFile.text()) : null;
+      state.rootHandle = null;
+      state.pages = Object.keys(state.measure?.pages || {});
+      els.folderLabel.textContent = '手動選檔模式';
+    }
+
+    async function loadCurrentImage() {
+      state.currentImage = null;
+      state.imageMeta = null;
+      if (!state.currentPage) return;
+
+      if (state.rootHandle) {
+        state.imageMeta = await loadImageFromDir(state.rootHandle, state.currentPage);
+      } else {
+        const candidates = imagePathCandidates(state.currentPage);
+        let file = null;
+        for (const candidate of candidates) {
+          file = state.imageFileMap.get(candidate) || [...state.imageFileMap.entries()].find(([path]) => path.endsWith(`/${candidate}`))?.[1];
+          if (file) break;
+        }
+        if (!file) throw new Error(`找不到原圖：${state.currentPage}`);
+        state.imageMeta = await loadImageFromFile(file, file.name);
+      }
+      state.currentImage = state.imageMeta.img;
+    }
+
+    async function openDirectory() {
+      if (!window.showDirectoryPicker) {
+        throw new Error('這個瀏覽器不支援資料夾選擇。請用 Chrome / Edge，或改用「手動選檔」。');
+      }
+      cleanupUrls();
+      const root = await window.showDirectoryPicker({ mode: 'read' });
+      state.rootHandle = root;
+      state.measure = await readJsonFromDir(root, ['ctd', 'measure.json'], true);
+      state.debug = await readJsonFromDir(root, ['ctd', 'measure.debug.json'], true);
+      state.ocr = await readJsonFromDir(root, ['ctd', 'measure_ocr.json'], false);
+      state.pages = Object.keys(state.measure?.pages || {});
+      state.currentPage = state.pages[0] || null;
+      state.selectedIndex = null;
+      els.folderLabel.textContent = root.name;
+      await loadCurrentImage();
+      updateAll();
+    }
+
+    async function openManualFiles(files) {
+      cleanupUrls();
+      await collectFilesFromPicker(files);
+      state.currentPage = state.pages[0] || null;
+      state.selectedIndex = null;
+      await loadCurrentImage();
+      updateAll();
+    }
+
+    function drawRect(xyxy, options = {}) {
+      if (!xyxy) return;
+      const [x1, y1, x2, y2] = xyxy;
+      ctx.save();
+      ctx.strokeStyle = options.color || '#000';
+      ctx.lineWidth = options.width || 2;
+      ctx.setLineDash(options.dash || []);
+      if (options.fill) {
+        ctx.fillStyle = options.fill;
+        ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+      }
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.restore();
+    }
+
+    function drawCross(x, y, color, size = 18) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x - size / 2, y);
+      ctx.lineTo(x + size / 2, y);
+      ctx.moveTo(x, y - size / 2);
+      ctx.lineTo(x, y + size / 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function polygonMeasure(poly) {
+      if (!Array.isArray(poly) || poly.length < 4) return null;
+      const points = poly.slice(0, 4).map((point) => [Number(point[0]), Number(point[1])]);
+      if (points.some((point) => point.some((value) => !Number.isFinite(value)))) return null;
+      const edges = points.map((start, index) => {
+        const end = points[(index + 1) % points.length];
+        const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
+        return { index, start, end, length };
+      });
+      const pairA = (edges[0].length + edges[2].length) / 2;
+      const pairB = (edges[1].length + edges[3].length) / 2;
+      const shortIndices = pairA <= pairB ? [0, 2] : [1, 3];
+      const selected = shortIndices
+        .map((index) => edges[index])
+        .sort((a, b) => ((a.start[1] + a.end[1]) / 2 - (b.start[1] + b.end[1]) / 2)
+          || ((a.start[0] + a.end[0]) / 2 - (b.start[0] + b.end[0]) / 2))[0];
+      const dx = selected.end[0] - selected.start[0];
+      const dy = selected.end[1] - selected.start[1];
+      const norm = Math.hypot(dx, dy);
+      if (norm < 1) return null;
+      const shortAxis = [dx / norm, dy / norm];
+      let normal = [-shortAxis[1], shortAxis[0]];
+      if (normal[1] > 0) normal = [-normal[0], -normal[1]];
+      return {
+        start: selected.start,
+        end: selected.end,
+        normal,
+        width: (edges[shortIndices[0]].length + edges[shortIndices[1]].length) / 2,
+      };
+    }
+
+    function fitMeasurementAnnotation(start, end, normal, text, fontSize) {
+      const metrics = ctx.measureText(text);
+      const textW = metrics.width;
+      const textH = fontSize;
+      const candidates = [normal, [-normal[0], -normal[1]]];
+      for (const candidate of candidates) {
+        const lineStart = [start[0] + candidate[0] * 4, start[1] + candidate[1] * 4];
+        const lineEnd = [end[0] + candidate[0] * 4, end[1] + candidate[1] * 4];
+        const labelCenter = [
+          (lineStart[0] + lineEnd[0]) / 2 + candidate[0] * 10,
+          (lineStart[1] + lineEnd[1]) / 2 + candidate[1] * 10,
+        ];
+        const x = labelCenter[0] - textW / 2;
+        const y = labelCenter[1] - textH / 2;
+        if (x >= 1 && x + textW <= els.canvas.width - 1 && y >= 1 && y + textH <= els.canvas.height - 1) {
+          return { lineStart, lineEnd, normal: candidate, labelCenter };
+        }
+      }
+      return {
+        lineStart: [start[0] + normal[0] * 4, start[1] + normal[1] * 4],
+        lineEnd: [end[0] + normal[0] * 4, end[1] + normal[1] * 4],
+        normal,
+        labelCenter: [(start[0] + end[0]) / 2 + normal[0] * 14, (start[1] + end[1]) / 2 + normal[1] * 14],
+      };
+    }
+
+    function drawTextLabel(text, x, y, fontSize, options = {}) {
+      ctx.save();
+      ctx.font = `${fontSize}px Arial, sans-serif`;
+      ctx.textBaseline = 'top';
+      const metrics = ctx.measureText(text);
+      const width = metrics.width;
+      const height = fontSize * 1.15;
+      const pad = options.pad ?? 3;
+      const clampedX = Math.max(1, Math.min(x, els.canvas.width - width - pad * 2 - 1));
+      const clampedY = Math.max(1, Math.min(y, els.canvas.height - height - pad * 2 - 1));
+      ctx.fillStyle = options.background || COLORS.labelBg;
+      ctx.fillRect(clampedX - pad, clampedY - pad, width + pad * 2, height + pad * 2);
+      ctx.fillStyle = options.color || COLORS.labelText;
+      ctx.fillText(text, clampedX, clampedY);
+      ctx.restore();
+    }
+
+    function drawLineWidthLayer() {
+      const fontSize = Math.max(9, Math.min(12, els.canvas.width / 210));
+      ctx.save();
+      ctx.font = `${fontSize}px Arial, sans-serif`;
+      ctx.lineCap = 'round';
+      for (const item of pageLineItems()) {
+        const measure = polygonMeasure(item.polygon);
+        if (!measure || measure.width < 3) continue;
+        const text = String(Math.round(Number(item.font_width_px || measure.width)));
+        const fitted = fitMeasurementAnnotation(measure.start, measure.end, measure.normal, text, fontSize);
+        const tick = 5.5;
+        for (const [color, width] of [['#000000', 2], [COLORS.lineWidth, 1]]) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.moveTo(fitted.lineStart[0], fitted.lineStart[1]);
+          ctx.lineTo(fitted.lineEnd[0], fitted.lineEnd[1]);
+          for (const point of [fitted.lineStart, fitted.lineEnd]) {
+            ctx.moveTo(point[0] - fitted.normal[0] * tick / 2, point[1] - fitted.normal[1] * tick / 2);
+            ctx.lineTo(point[0] + fitted.normal[0] * tick / 2, point[1] + fitted.normal[1] * tick / 2);
+          }
+          ctx.stroke();
+        }
+        drawTextLabel(text, fitted.labelCenter[0] - ctx.measureText(text).width / 2, fitted.labelCenter[1] - fontSize / 2, fontSize, { pad: 2 });
+      }
+      ctx.restore();
+    }
+
+    function fitBlockLabel(box, text, fontSize) {
+      ctx.save();
+      ctx.font = `${fontSize}px Arial, sans-serif`;
+      const textW = ctx.measureText(text).width;
+      ctx.restore();
+      const textH = fontSize * 1.15;
+      const [x1, y1, x2, y2] = box;
+      const pad = 5;
+      const candidates = [
+        [x2 + pad, y2 + pad],
+        [x2 + pad, y1 - textH - pad],
+        [x1 - textW - pad, y2 + pad],
+        [x1 - textW - pad, y1 - textH - pad],
+      ];
+      for (const [x, y] of candidates) {
+        if (x >= 1 && x + textW <= els.canvas.width - 1 && y >= 1 && y + textH <= els.canvas.height - 1) {
+          return [x, y];
+        }
+      }
+      return [
+        Math.max(1, Math.min(x2 + pad, els.canvas.width - textW - 7)),
+        Math.max(1, Math.min(y2 + pad, els.canvas.height - textH - 7)),
+      ];
+    }
+
+    function drawLabelsLayer() {
+      const fontSize = Math.max(12, Math.min(17, els.canvas.width / 100));
+      for (const item of pageMeasureItems()) {
+        const box = normalizeXyxy(item.xyxy_pixel);
+        if (!box) continue;
+        const suffix = item.orientation === 'horizontal' ? 'H' : 'V';
+        const text = `${Math.round(Number(item.font_size || 0))}${suffix}`;
+        const [x, y] = fitBlockLabel(box, text, fontSize);
+        drawTextLabel(text, x, y, fontSize, { pad: 3 });
+      }
+    }
+
+    function drawOcrLayer() {
+      const ocrMap = ocrBySource();
+      const fontSize = Math.max(11, Math.min(15, els.canvas.width / 120));
+      for (const item of pageMeasureItems()) {
+        const box = normalizeXyxy(item.xyxy_pixel);
+        if (!box) continue;
+        const source = Number(item.source_block_index);
+        const ocrText = ocrMap.get(source)?.ocr_text;
+        if (!ocrText) continue;
+        drawTextLabel(String(ocrText).slice(0, 30), box[0], Math.max(1, box[1] - fontSize - 8), fontSize, {
+          pad: 3,
+          background: '#fff7cf',
+        });
+      }
+    }
+
+    function drawCenterLayer() {
+      const alignMap = alignBySource();
+      for (const measureItem of pageMeasureItems()) {
+        const source = Number(measureItem.source_block_index);
+        const alignItem = alignMap.get(source);
+        if (!alignItem) continue;
+        const [cx, cy] = getCenterForAlign(alignItem);
+        const side = Math.max(4, Math.round(Number(measureItem.font_size || 0)));
+        const half = side / 2;
+        ctx.save();
+        ctx.fillStyle = centerModeColor(alignItem);
+        ctx.fillRect(
+          Math.max(0, Math.round(cx - half)),
+          Math.max(0, Math.round(cy - half)),
+          side,
+          side,
+        );
+        ctx.restore();
+      }
+    }
+
+    function drawVectorLayers() {
+      const alignItems = pageAlignItems();
+      const blockItems = pageBlockItems();
+      if (state.layers.blockShade.enabled) {
+        for (const item of blockItems) {
+          const xyxy = normalizeXyxy(item.xyxy_pixel);
+          if (xyxy) drawRect(xyxy, { color: 'transparent', width: 0, fill: COLORS.blockShade });
+        }
+      }
+
+      for (const item of alignItems) {
+        const debug = item.layout_debug || {};
+        if (state.layers.approxBubble.enabled) {
+          drawRect(rectFromDict(debug.outer_rect) || rectFromDict(debug.raw_outer_rect), {
+            color: 'transparent',
+            width: 0,
+            fill: COLORS.approxBubble,
+          });
+        }
+        if (state.layers.rawOuter.enabled) {
+          drawRect(rectFromDict(debug.raw_outer_rect), { color: COLORS.rawOuter, width: 1.5, dash: [10, 7] });
+        }
+        if (state.layers.outer.enabled && debug.accepted) {
+          drawRect(rectFromDict(debug.outer_rect), { color: COLORS.outer, width: 2, dash: [12, 7] });
+        }
+        if (state.layers.inner.enabled && debug.accepted) {
+          drawRect(rectFromDict(debug.inner_rect), { color: COLORS.inner, width: 2, dash: [12, 7] });
+        }
+        if (state.layers.final.enabled) {
+          const box = getFinalXyxy(item);
+          drawRect(box, { color: finalColor(item), width: 2 });
+          if (box) drawCross((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, centerModeColor(item));
+        }
+      }
+
+      if (state.layers.lineWidth.enabled) drawLineWidthLayer();
+      if (state.layers.center.enabled) drawCenterLayer();
+      if (state.layers.labels.enabled) drawLabelsLayer();
+      if (state.layers.ocr.enabled) drawOcrLayer();
+
+      if (state.selectedIndex !== null) {
+        const selected = pageMeasureItems().find((item) => Number(item.source_block_index) === state.selectedIndex);
+        const box = normalizeXyxy(selected?.xyxy_pixel);
+        if (box) drawRect(box, { color: COLORS.selected, width: 4 });
+      }
+    }
+
+    function renderCanvas() {
+      if (!state.currentImage) return;
+      const width = state.currentImage.naturalWidth;
+      const height = state.currentImage.naturalHeight;
+      els.canvas.width = width;
+      els.canvas.height = height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(state.currentImage, 0, 0);
+      drawVectorLayers();
+      fitCanvasToViewport();
+      setStatus(
+        `<code>${escapeHtml(state.currentPage || '')}</code>`,
+        `${width} x ${height} px`
+      );
+    }
+
+    function fitCanvasToViewport() {
+      if (!state.currentImage) return;
+      const available = Math.max(280, els.stageWrap.clientWidth - 54);
+      const scale = Math.min(1, available / state.currentImage.naturalWidth);
+      state.scale = scale;
+      els.canvas.style.width = `${Math.round(state.currentImage.naturalWidth * scale)}px`;
+      els.canvas.style.height = `${Math.round(state.currentImage.naturalHeight * scale)}px`;
+    }
+
+    function renderToolbar() {
+      els.toolbar.innerHTML = '';
+      for (const key of DRAW_ORDER) {
+        const layer = state.layers[key];
+        const label = document.createElement('label');
+        label.className = 'toggle';
+        label.innerHTML = `<input type="checkbox" ${layer.enabled ? 'checked' : ''}> ${escapeHtml(layer.label)}`;
+        label.querySelector('input').addEventListener('change', (event) => {
+          state.layers[key].enabled = event.target.checked;
+          renderCanvas();
+        });
+        els.toolbar.appendChild(label);
+      }
+    }
+
+    function renderPageList() {
+      const query = els.pageSearch.value.trim().toLowerCase();
+      els.pageList.innerHTML = '';
+      const pages = state.pages.filter((page) => page.toLowerCase().includes(query));
+      if (!pages.length) {
+        els.pageList.innerHTML = '<div class="empty-state"><span>沒有符合的頁面</span></div>';
+        return;
+      }
+      for (const page of pages) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `page-button ${page === state.currentPage ? 'active' : ''}`;
+        const count = pageMeasureItems(page).length;
+        button.innerHTML = `<span class="page-name">${escapeHtml(page)}</span><span class="page-count">${count}</span>`;
+        button.addEventListener('click', async () => {
+          state.currentPage = page;
+          state.selectedIndex = null;
+          try {
+            await loadCurrentImage();
+            updateAll();
+          } catch (error) {
+            showError(error);
+          }
+        });
+        els.pageList.appendChild(button);
+      }
+    }
+
+    function renderInspector() {
+      const measureItems = pageMeasureItems();
+      const alignMap = alignBySource();
+      const ocrMap = ocrBySource();
+      const acceptedCount = pageAlignItems().filter((item) => item.accepted || item.layout_debug?.accepted).length;
+      els.selectedTitle.textContent = state.selectedIndex === null
+        ? `${measureItems.length} blocks`
+        : `Block #${state.selectedIndex}`;
+
+      const selectedMeasure = measureItems.find((item) => Number(item.source_block_index) === state.selectedIndex);
+      const selectedAlign = selectedMeasure ? alignMap.get(Number(selectedMeasure.source_block_index)) : null;
+      const selectedOcr = selectedMeasure ? ocrMap.get(Number(selectedMeasure.source_block_index)) : null;
+
+      const rows = measureItems.map((item, fallback) => {
+        const source = Number.isFinite(Number(item.source_block_index)) ? Number(item.source_block_index) : fallback;
+        const align = alignMap.get(source);
+        const accepted = Boolean(align?.accepted || align?.layout_debug?.accepted);
+        const suffix = item.orientation === 'horizontal' ? 'H' : 'V';
+        const ocrText = ocrMap.get(source)?.ocr_text;
+        return `
+          <div class="block-row ${source === state.selectedIndex ? 'active' : ''}" data-source="${source}">
+            <div class="block-row-head">
+              <span class="block-index">#${source}</span>
+              <span class="badge ${accepted ? '' : 'fail'}">${accepted ? 'accepted' : 'fallback'}</span>
+            </div>
+            <p>${Math.round(Number(item.font_size || 0))}${suffix} · ${escapeHtml((align?.method || '').replace(/^block_fallback_/, 'fallback: '))}</p>
+            ${ocrText ? `<p>${escapeHtml(ocrText)}</p>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      els.inspector.innerHTML = `
+        <div class="metric-grid">
+          <div class="metric"><span>Blocks</span><strong>${measureItems.length}</strong></div>
+          <div class="metric"><span>Accepted</span><strong>${acceptedCount}</strong></div>
+          <div class="metric"><span>Lines</span><strong>${pageLineItems().length}</strong></div>
+          <div class="metric"><span>OCR</span><strong>${state.ocr ? 'yes' : 'no'}</strong></div>
+        </div>
+        <div class="notice">
+          Magic wand 的逐像素候選區域沒有保存在 JSON 裡；Approx bubble 只用 outer_rect 做近似。
+        </div>
+        <div class="block-list">${rows || '<div class="empty-state"><span>這頁沒有 block</span></div>'}</div>
+        ${selectedMeasure ? `
+          <div class="json-box">
+            <pre>${escapeHtml(JSON.stringify({
+              measure: selectedMeasure,
+              align: selectedAlign || null,
+              ocr: selectedOcr || null,
+            }, null, 2))}</pre>
+          </div>
+        ` : ''}
+      `;
+
+      els.inspector.querySelectorAll('.block-row').forEach((row) => {
+        row.addEventListener('click', () => {
+          state.selectedIndex = Number(row.dataset.source);
+          renderCanvas();
+          renderInspector();
+        });
+      });
+    }
+
+    function updateAll() {
+      renderToolbar();
+      renderPageList();
+      renderInspector();
+      if (state.currentImage) {
+        els.emptyState.classList.add('hidden');
+        els.stage.classList.remove('hidden');
+        renderCanvas();
+      }
+    }
+
+    function showError(error) {
+      console.error(error);
+      setStatus(`<span style="color: var(--danger)">${escapeHtml(error.message || error)}</span>`);
+      els.inspector.innerHTML = `<div class="notice">${escapeHtml(error.message || error)}</div>`;
+    }
+
+    els.openDirButton.addEventListener('click', async () => {
+      try {
+        await openDirectory();
+      } catch (error) {
+        showError(error);
+      }
+    });
+
+    els.openFilesButton.addEventListener('click', () => {
+      els.filePicker.click();
+    });
+
+    els.filePicker.addEventListener('change', async () => {
+      if (!els.filePicker.files.length) return;
+      try {
+        await openManualFiles(els.filePicker.files);
+      } catch (error) {
+        showError(error);
+      } finally {
+        els.filePicker.value = '';
+      }
+    });
+
+    els.pageSearch.addEventListener('input', renderPageList);
+    window.addEventListener('resize', fitCanvasToViewport);
+    renderToolbar();
+  </script>
+</body>
+</html>
