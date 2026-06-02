@@ -803,6 +803,25 @@ def _dilate_mask(mask: np.ndarray, size: int) -> np.ndarray:
     return cv2.dilate(mask, kernel, iterations=1)
 
 
+def _block_zone_from_items(
+    block_items: list[dict],
+    image_shape: tuple[int, int],
+    padding: int = 0,
+) -> np.ndarray:
+    height, width = image_shape[:2]
+    zone = np.zeros((height, width), dtype=np.uint8)
+    pad = max(0, int(padding))
+    for box in _block_boxes_from_items(block_items):
+        x1, y1, x2, y2 = box
+        x1 = max(0, x1 - pad)
+        y1 = max(0, y1 - pad)
+        x2 = min(width, x2 + pad)
+        y2 = min(height, y2 + pad)
+        if x2 > x1 and y2 > y1:
+            zone[y1:y2, x1:x2] = 255
+    return zone
+
+
 def _write_only_text_images(
     img_dir: str,
     paths: dict[str, str],
@@ -832,11 +851,13 @@ def _write_inpainted_images(
     img_dir: str,
     paths: dict[str, str],
     page_names: list[str],
+    block_map: dict,
     radius: int = INPAINT_RADIUS,
     mask_expansion: int = INPAINT_MASK_EXPANSION,
 ) -> None:
     radius = max(1, int(radius))
     mask_expansion = max(1, int(mask_expansion))
+    block_pages = block_map.get('blockMap', {})
     for page_name in tqdm(page_names, desc='inpainted'):
         img = imread(_image_path_for_page(img_dir, page_name), cv2.IMREAD_UNCHANGED)
         if img is None:
@@ -849,16 +870,23 @@ def _write_inpainted_images(
         if mask is None:
             raise FileNotFoundError(f'無法讀取文字 mask：{mask_path}')
 
-        inpaint_mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+        text_mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+        block_zone = _block_zone_from_items(
+            block_pages.get(page_name, []),
+            mask.shape[:2],
+            padding=mask_expansion,
+        )
+        inpaint_mask = cv2.bitwise_and(text_mask, block_zone)
         inpaint_mask = _dilate_mask(inpaint_mask, mask_expansion)
         if len(img.shape) == 2:
-            inpainted = cv2.inpaint(img, inpaint_mask, radius, cv2.INPAINT_TELEA)
+            color_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         else:
             color_img = img[:, :, :3]
-            inpainted = cv2.inpaint(color_img, inpaint_mask, radius, cv2.INPAINT_TELEA)
-            if img.shape[2] == 4:
-                inpainted = cv2.cvtColor(inpainted, cv2.COLOR_BGR2BGRA)
-                inpainted[:, :, 3] = img[:, :, 3]
+
+        inpainted_bgr = cv2.inpaint(color_img, inpaint_mask, radius, cv2.INPAINT_TELEA)
+        inpainted = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2BGRA)
+        inpainted[:, :, 3] = inpaint_mask
+        inpainted[inpaint_mask == 0, :3] = 0
         imwrite(_inpainted_path_for_page(paths, page_name), inpainted)
 
 
@@ -1124,6 +1152,7 @@ def run(
         img_dir,
         paths,
         list(measure_map.get('pages', {}).keys()),
+        block_map,
         inpaint_radius,
         inpaint_mask_expansion,
     )
