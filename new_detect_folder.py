@@ -71,6 +71,17 @@ INPAINT_RADIUS = 3
 INPAINT_MASK_EXPANSION = 5
 
 
+def _parse_bool(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in {'1', 'true', 'yes', 'y', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'n', 'off'}:
+        return False
+    raise argparse.ArgumentTypeError(f'布林值格式錯誤：{value}，請使用 true 或 false')
+
+
 def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
     progressing_dir = osp.join(ctd_dir, PROGRESSING_DIR)
     paths = {
@@ -225,6 +236,93 @@ def _expand_xyxy(box: list[int], padding: int, img_w: int, img_h: int) -> list[i
 
 def _xyxy_overlap(a: list[int], b: list[int]) -> bool:
     return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
+
+
+def _final_xyxy_for_overlap(item: dict) -> list[int] | None:
+    xyxy = item.get('final_xyxy_pixel') or item.get('new_xyxy_pixel')
+    if isinstance(xyxy, list) and len(xyxy) == 4:
+        return [int(round(value)) for value in xyxy]
+    if all(key in item for key in ('x', 'y', 'w', 'h')):
+        x = int(round(item['x']))
+        y = int(round(item['y']))
+        w = int(round(item['w']))
+        h = int(round(item['h']))
+        return [x, y, x + w, y + h]
+    return None
+
+
+def _xyxy_area(box: list[int]) -> int:
+    return max(0, int(box[2]) - int(box[0])) * max(0, int(box[3]) - int(box[1]))
+
+
+def _final_overlap_indices(aligned_items: list[dict], min_ratio: float = 0.05) -> set[int]:
+    boxes = []
+    for index, item in enumerate(aligned_items):
+        box = _final_xyxy_for_overlap(item)
+        if box is not None:
+            boxes.append((index, box))
+
+    overlap_indices = set()
+    for list_index, (index_a, box_a) in enumerate(boxes):
+        for index_b, box_b in boxes[list_index + 1:]:
+            if not _xyxy_overlap(box_a, box_b):
+                continue
+            overlap_area = _overlap_area(box_a, box_b)
+            smaller_area = min(_xyxy_area(box_a), _xyxy_area(box_b))
+            if smaller_area > 0 and overlap_area / smaller_area >= min_ratio:
+                overlap_indices.add(index_a)
+                overlap_indices.add(index_b)
+    return overlap_indices
+
+
+def _mark_overlap_error_route(
+    aligned_items: list[dict],
+    overlap_indices: set[int],
+    img_shape: tuple[int, int],
+) -> list[dict]:
+    if not overlap_indices:
+        return aligned_items
+
+    img_h, img_w = img_shape
+    result = []
+    for index, item in enumerate(aligned_items):
+        if index not in overlap_indices:
+            result.append(item)
+            continue
+
+        marked = dict(item)
+        debug = dict(marked.get('layout_debug', {}))
+        old_xyxy = debug.get('old_xyxy_pixel')
+        if not isinstance(old_xyxy, list) or len(old_xyxy) != 4:
+            old_xyxy = _final_xyxy_for_overlap(marked)
+        if not isinstance(old_xyxy, list) or len(old_xyxy) != 4:
+            result.append(marked)
+            continue
+
+        old_xyxy = [int(round(value)) for value in old_xyxy]
+        old_center = _center_normalized_from_xyxy(old_xyxy, img_w, img_h)
+        debug['accepted'] = False
+        debug['skip_reason'] = 'final_boxes_overlap'
+        debug['error_route'] = True
+        debug['final_center_pixel'] = [
+            round((old_xyxy[0] + old_xyxy[2]) / 2, 2),
+            round((old_xyxy[1] + old_xyxy[3]) / 2, 2),
+        ]
+        debug['final_xyxy_pixel'] = old_xyxy
+        marked['layout_debug'] = debug
+        marked['x'] = old_xyxy[0]
+        marked['y'] = old_xyxy[1]
+        marked['w'] = max(0, old_xyxy[2] - old_xyxy[0])
+        marked['h'] = max(0, old_xyxy[3] - old_xyxy[1])
+        marked['area'] = _xyxy_area(old_xyxy)
+        marked['final_xyxy_pixel'] = old_xyxy
+        marked['final_center_normalized'] = old_center
+        marked['accepted'] = False
+        marked['method'] = 'block_fallback_final_overlap'
+        marked['error_route'] = True
+        marked['error_reason'] = 'final_boxes_overlap'
+        result.append(marked)
+    return result
 
 
 def _neck_affected_indices(
@@ -1075,6 +1173,7 @@ def _align_pages(
     paths: dict[str, str],
     block_map: dict,
     save_center_preview: bool = False,
+    need_neck: bool = False,
 ) -> tuple[dict, dict]:
     aligned_map = {}
     summary = {
@@ -1088,6 +1187,9 @@ def _align_pages(
         'neck_shared_pages': 0,
         'neck_no_guide_groups': 0,
         'overlap_pages': 0,
+        'final_overlap_pages': 0,
+        'shared_without_guide_pages': 0,
+        'deal_overlap_final_overlap_pages': 0,
         'copied': 0,
     }
 
@@ -1101,14 +1203,14 @@ def _align_pages(
         img = imread(img_path)
         mask = imread(mask_path)
         overlap_path = _deal_overlap_path_for_page(paths, page_name)
-        overlap_img = imread(overlap_path) if osp.exists(overlap_path) else None
-        overlap_modified = _image_modified(img, overlap_img)
+        overlap_img = imread(overlap_path) if need_neck and osp.exists(overlap_path) else None
+        overlap_modified = need_neck and _image_modified(img, overlap_img)
         if overlap_modified:
             calc_img = overlap_img
             summary['using_deal_overlap'] += 1
         else:
             calc_img = img
-            if overlap_img is not None:
+            if need_neck and overlap_img is not None:
                 summary['ignored_unmodified_deal_overlap'] += 1
 
         block_boxes = _block_boxes_from_items(block_items)
@@ -1125,7 +1227,16 @@ def _align_pages(
             'generated': False,
             'groups': [],
         }
-        if not overlap_modified:
+        if not need_neck:
+            neck_summary_path = _neck_summary_path_for_page(paths, page_name)
+            _remove_generated_neck_image(_neck_path_for_page(paths, page_name))
+            _write_json(neck_summary_path, {
+                'page': page_name,
+                'generated': False,
+                'skipped_reason': 'need_neck_false',
+                'groups': [],
+            })
+        elif not overlap_modified:
             neck_path = _neck_path_for_page(paths, page_name)
             neck_summary_path = _neck_summary_path_for_page(paths, page_name)
             neck_img, neck_summary = _generate_neck_image(
@@ -1169,6 +1280,8 @@ def _align_pages(
                 'groups': [],
             })
 
+        overlap_indices = _final_overlap_indices(aligned_items)
+        aligned_items = _mark_overlap_error_route(aligned_items, overlap_indices, img.shape[:2])
         clean_items = _clean_aligned_items(aligned_items)
         aligned_map[page_name] = clean_items
         _write_align_masks(
@@ -1177,12 +1290,20 @@ def _align_pages(
             img.shape[:2],
         )
 
+        final_boxes_overlap = bool(overlap_indices)
         unresolved_shared_without_guide = any(
             not group.get('guides')
             for group in neck_summary.get('groups', [])
         )
-        if _final_boxes_overlap(aligned_items) or unresolved_shared_without_guide:
+        if final_boxes_overlap or unresolved_shared_without_guide:
             summary['overlap_pages'] += 1
+        if final_boxes_overlap:
+            summary['final_overlap_pages'] += 1
+        if unresolved_shared_without_guide:
+            summary['shared_without_guide_pages'] += 1
+
+        if need_neck and final_boxes_overlap:
+            summary['deal_overlap_final_overlap_pages'] += 1
             helper_status = _ensure_deal_overlap_image(img_path, overlap_path)
             if helper_status == 'copied':
                 summary['copied'] += 1
@@ -1279,6 +1400,7 @@ def run(
     model_path: str,
     device: str | None = None,
     only_align: bool = False,
+    need_neck: bool = False,
     save_line_trans_preview: bool = False,
     save_center_preview: bool = False,
     only_text_color: tuple[int, int, int] = ONLY_TEXT_COLOR,
@@ -1325,6 +1447,7 @@ def run(
         paths,
         block_map,
         save_center_preview=save_center_preview,
+        need_neck=need_neck,
     )
     _write_json(aligned_box_map_path, aligned_box_map)
     measure_map, measure_debug_map = _build_measure_maps(
@@ -1365,14 +1488,17 @@ def run(
     print(f'  - {measure_debug_path}')
     if save_center_preview:
         print(f'  - {paths["center"]}/<檔名>.png')
-    print(f'  - {paths["neck"]}/<檔名>.png')
+    if need_neck:
+        print(f'  - {paths["neck"]}/<檔名>.png')
     print(f'  - {paths["measure_preview"]}/<檔名>.png')
     print(f'  - {paths["only_text"]}/<檔名>.png')
     print(f'  - {paths["inpainted"]}/<檔名>.png')
-    print(f'  - {paths["deal_overlap"]}/<檔名>.png')
+    if need_neck:
+        print(f'  - {paths["deal_overlap"]}/<檔名>.png')
     print(f"重定位頁數：{align_summary['pages']}")
     print(f"重定位 block 數：{align_summary['boxes']}")
     print(f"accepted：{align_summary['accepted']}")
+    print(f"need_neck：{need_neck}")
     print(f"使用 deal_overlap 計算頁數：{align_summary['using_deal_overlap']}")
     print(f"忽略未修改 deal_overlap 頁數：{align_summary['ignored_unmodified_deal_overlap']}")
     print(f"neck shared 頁數：{align_summary['neck_shared_pages']}")
@@ -1380,6 +1506,9 @@ def run(
     print(f"neck guide 數：{align_summary['neck_guides']}")
     print(f"neck 無 guide group 數：{align_summary['neck_no_guide_groups']}")
     print(f"偵測到重疊頁數：{align_summary['overlap_pages']}")
+    print(f"final box 重疊頁數：{align_summary['final_overlap_pages']}")
+    print(f"shared 無 guide 頁數：{align_summary['shared_without_guide_pages']}")
+    print(f"deal_overlap final 重疊頁數：{align_summary['deal_overlap_final_overlap_pages']}")
     print(f"新複製到 deal_overlap：{align_summary['copied']}")
     return align_summary['pages']
 
@@ -1405,6 +1534,13 @@ def main() -> None:
         '--only-align',
         action='store_true',
         help='不跑模型，只讀 ctd/block_map.json 和 ctd/mask/ 重新生成對齊結果。',
+    )
+    parser.add_argument(
+        '--need-neck',
+        dest='need_neck',
+        type=_parse_bool,
+        default=False,
+        help='是否啟用自動 neck 與 deal_overlap helper（true/false，預設：false）。',
     )
     parser.add_argument(
         '--save-line-trans-preview',
@@ -1447,6 +1583,7 @@ def main() -> None:
         model_path=args.model,
         device=args.device,
         only_align=args.only_align,
+        need_neck=args.need_neck,
         save_line_trans_preview=args.save_line_trans_preview,
         save_center_preview=args.save_center_preview,
         only_text_color=only_text_color,
