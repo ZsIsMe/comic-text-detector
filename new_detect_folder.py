@@ -19,6 +19,7 @@ from detect_folder import (
     NumpyEncoder,
     REFINEMASK_ANNOTATION,
     TextDetector,
+    _align_block_box,
     _align_block_boxes,
     _clean_aligned_items,
     _draw_aligned_boxes,
@@ -26,6 +27,8 @@ from detect_folder import (
     _ensure_deal_overlap_image,
     _final_boxes_overlap,
     _find_component_boxes,
+    _outer_overlap_indices,
+    _prepare_align_gray,
     _shrink_line_polygons,
     find_all_imgs,
     imread,
@@ -186,6 +189,180 @@ def _draw_neck_guides(
     return canvas
 
 
+def _rect_from_points(points: list[list[int]], padding: int, img_w: int, img_h: int) -> list[int] | None:
+    points = [point for point in points if isinstance(point, list) and len(point) >= 2]
+    if not points:
+        return None
+    xs = [int(point[0]) for point in points]
+    ys = [int(point[1]) for point in points]
+    return [
+        max(0, min(xs) - padding),
+        max(0, min(ys) - padding),
+        min(img_w, max(xs) + padding),
+        min(img_h, max(ys) + padding),
+    ]
+
+
+def _dict_rect_to_xyxy(rect: dict | None) -> list[int] | None:
+    if not rect:
+        return None
+    return [
+        int(round(rect.get('left', 0))),
+        int(round(rect.get('top', 0))),
+        int(round(rect.get('left', 0) + rect.get('width', 0))),
+        int(round(rect.get('top', 0) + rect.get('height', 0))),
+    ]
+
+
+def _expand_xyxy(box: list[int], padding: int, img_w: int, img_h: int) -> list[int]:
+    return [
+        max(0, int(box[0]) - padding),
+        max(0, int(box[1]) - padding),
+        min(img_w, int(box[2]) + padding),
+        min(img_h, int(box[3]) + padding),
+    ]
+
+
+def _xyxy_overlap(a: list[int], b: list[int]) -> bool:
+    return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
+
+
+def _neck_affected_indices(
+    neck_summary: dict,
+    aligned_items: list[dict],
+    img_shape: tuple[int, int],
+) -> set[int]:
+    img_h, img_w = img_shape
+    affected: set[int] = set()
+    guide_rects = []
+
+    for group in neck_summary.get('groups', []):
+        guides = group.get('guides') or []
+        if not guides:
+            continue
+        affected.update(
+            int(index)
+            for index in group.get('source_block_indices', [])
+            if index is not None
+        )
+        for guide in guides:
+            affected.update(
+                int(index)
+                for index in guide.get('source_block_indices', [])
+                if index is not None
+            )
+            rect = _rect_from_points(
+                [guide.get('start'), guide.get('end'), guide.get('center')],
+                padding=max(16, NECK_SEED_DILATE * 2),
+                img_w=img_w,
+                img_h=img_h,
+            )
+            if rect is not None:
+                guide_rects.append(rect)
+
+    if not guide_rects:
+        return affected
+
+    for index, item in enumerate(aligned_items):
+        debug = item.get('layout_debug', {})
+        boxes = [
+            _dict_rect_to_xyxy(debug.get('outer_rect')),
+            _dict_rect_to_xyxy(debug.get('raw_outer_rect')),
+            debug.get('old_xyxy_pixel'),
+            item.get('final_xyxy_pixel'),
+        ]
+        for box in boxes:
+            if not isinstance(box, list) or len(box) != 4:
+                continue
+            expanded = _expand_xyxy([int(round(v)) for v in box], 12, img_w, img_h)
+            if any(_xyxy_overlap(expanded, guide_rect) for guide_rect in guide_rects):
+                affected.add(index)
+                break
+
+    return affected
+
+
+def _item_outer_xyxy(item: dict) -> list[int] | None:
+    debug = item.get('layout_debug', {})
+    return _dict_rect_to_xyxy(debug.get('outer_rect')) or _dict_rect_to_xyxy(debug.get('raw_outer_rect'))
+
+
+def _overlap_indices_near_affected(aligned_items: list[dict], affected: set[int]) -> set[int]:
+    if not affected:
+        return set()
+
+    outer_boxes = []
+    for index, item in enumerate(aligned_items):
+        box = _item_outer_xyxy(item)
+        if box is not None:
+            outer_boxes.append((index, box))
+
+    related = set(affected)
+    changed = True
+    while changed:
+        changed = False
+        for index_a, box_a in outer_boxes:
+            for index_b, box_b in outer_boxes:
+                if index_a == index_b:
+                    continue
+                if index_a not in related and index_b not in related:
+                    continue
+                if not _xyxy_overlap(box_a, box_b):
+                    continue
+                if index_a not in related:
+                    related.add(index_a)
+                    changed = True
+                if index_b not in related:
+                    related.add(index_b)
+                    changed = True
+
+    return related & _outer_overlap_indices(aligned_items)
+
+
+def _realign_affected_blocks(
+    neck_img: np.ndarray,
+    mask: np.ndarray,
+    block_boxes: list[list[int]],
+    aligned_items: list[dict],
+    neck_summary: dict,
+    base_img: np.ndarray,
+) -> list[dict]:
+    affected = _neck_affected_indices(neck_summary, aligned_items, neck_img.shape[:2])
+    if not affected:
+        return aligned_items
+
+    neck_gray, _ = _prepare_align_gray(neck_img, mask, base_img=base_img)
+    merged_items = list(aligned_items)
+    for index in sorted(affected):
+        if index < 0 or index >= len(block_boxes):
+            continue
+        merged_items[index] = _align_block_box(
+            neck_img,
+            mask,
+            block_boxes[index],
+            index,
+            center_mode='auto',
+            base_img=base_img,
+            prepared_gray=neck_gray,
+        )
+
+    for index in sorted(_overlap_indices_near_affected(merged_items, affected)):
+        if index < 0 or index >= len(block_boxes):
+            continue
+        merged_items[index] = _align_block_box(
+            neck_img,
+            mask,
+            block_boxes[index],
+            index,
+            center_mode='outer',
+            base_img=base_img,
+            prepared_gray=neck_gray,
+        )
+        merged_items[index]['outer_overlap_center_mode_override'] = True
+
+    return merged_items
+
+
 def _remove_generated_neck_image(path: str) -> None:
     if osp.exists(path):
         os.remove(path)
@@ -198,6 +375,7 @@ def _generate_neck_image(
     neck_path: str,
     summary_path: str,
     page_name: str,
+    prepared_gray: np.ndarray | None = None,
 ) -> tuple[np.ndarray | None, dict]:
     shared_groups = _neck_collect_shared_groups(
         aligned_items,
@@ -214,7 +392,9 @@ def _generate_neck_image(
         _write_json(summary_path, summary)
         return None, summary
 
-    gray = _neck_prepare_align_gray(img, mask, base_img=img)
+    gray = prepared_gray
+    if gray is None:
+        gray = _neck_prepare_align_gray(img, mask, base_img=img)
     accepted_groups = []
     for group_index, group in enumerate(shared_groups, start=1):
         bubble_mask = _neck_bubble_mask_from_group(gray, group)
@@ -932,7 +1112,14 @@ def _align_pages(
                 summary['ignored_unmodified_deal_overlap'] += 1
 
         block_boxes = _block_boxes_from_items(block_items)
-        aligned_items = _align_block_boxes(calc_img, mask, block_boxes, base_img=img)
+        calc_gray, _ = _prepare_align_gray(calc_img, mask, base_img=img)
+        aligned_items = _align_block_boxes(
+            calc_img,
+            mask,
+            block_boxes,
+            base_img=img,
+            prepared_gray=calc_gray,
+        )
         neck_summary = {
             'page': page_name,
             'generated': False,
@@ -948,6 +1135,7 @@ def _align_pages(
                 neck_path,
                 neck_summary_path,
                 page_name,
+                prepared_gray=calc_gray,
             )
             if neck_summary.get('groups'):
                 summary['neck_shared_pages'] += 1
@@ -963,7 +1151,14 @@ def _align_pages(
                     for group in neck_summary.get('groups', [])
                     if group.get('status') == 'neck'
                 )
-                aligned_items = _align_block_boxes(neck_img, mask, block_boxes, base_img=img)
+                aligned_items = _realign_affected_blocks(
+                    neck_img,
+                    mask,
+                    block_boxes,
+                    aligned_items,
+                    neck_summary,
+                    base_img=img,
+                )
         else:
             neck_summary_path = _neck_summary_path_for_page(paths, page_name)
             _remove_generated_neck_image(_neck_path_for_page(paths, page_name))

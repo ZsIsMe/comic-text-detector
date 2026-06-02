@@ -1034,13 +1034,16 @@ def _align_block_box(
     index: int,
     center_mode: str = 'auto',
     base_img: np.ndarray | None = None,
+    prepared_gray: np.ndarray | None = None,
 ) -> dict:
     height, width = img.shape[:2]
     old_box = _clip_xyxy(block_box, width, height)
     if _rect_area_xyxy(old_box) <= 0:
         return _fallback_aligned_item(old_box, 'block_fallback_invalid_box', index)
 
-    gray, _ = _prepare_align_gray(img, mask, base_img=base_img)
+    gray = prepared_gray
+    if gray is None:
+        gray, _ = _prepare_align_gray(img, mask, base_img=base_img)
     core_item = {
         'xyxy_pixel': old_box,
         'center_normalized': [
@@ -1075,9 +1078,22 @@ def _align_block_boxes(
     block_boxes: list[list[int]],
     center_mode: str = 'auto',
     base_img: np.ndarray | None = None,
+    prepared_gray: np.ndarray | None = None,
 ) -> list[dict]:
+    gray = prepared_gray
+    if gray is None and block_boxes:
+        gray, _ = _prepare_align_gray(img, mask, base_img=base_img)
+
     aligned_items = [
-        _align_block_box(img, mask, block_box, index, center_mode=center_mode, base_img=base_img)
+        _align_block_box(
+            img,
+            mask,
+            block_box,
+            index,
+            center_mode=center_mode,
+            base_img=base_img,
+            prepared_gray=gray,
+        )
         for index, block_box in enumerate(block_boxes)
     ]
     if center_mode != 'auto':
@@ -1091,6 +1107,7 @@ def _align_block_boxes(
             index,
             center_mode='outer',
             base_img=base_img,
+            prepared_gray=gray,
         )
         aligned_items[index]['outer_overlap_center_mode_override'] = True
     return aligned_items

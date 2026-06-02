@@ -321,3 +321,122 @@ page-level gray cache
 只重跑受 neck 影響的 block
 bubble mask/group cache
 ```
+
+## 2026-06-02 實作進度
+
+測試資料：
+
+```text
+/Volumes/zs/comic_data/钱球大联盟篇/9_非单行本/75
+圖片數量：21
+block 數：162
+```
+
+### 已完成：page-level gray/inpaint reuse
+
+`detect_folder.py` 現在支援把同一頁已準備好的 `prepared_gray` 傳入 `_align_block_boxes()` /
+`_align_block_box()`。同一次 align 呼叫內不再對每個 block 重複 `_prepare_align_gray()`。
+
+`new_detect_folder.py` 在每頁第一次 align 前準備一次 `calc_gray`，並同時復用給 neck guide 分析。
+這不是跨執行 cache，不保存舊結果；每次執行仍會依照當前輸入重新計算。
+
+實測：
+
+```text
+原始重定位：21/21 [01:40, 4.80s/it]
+第一階段後：21/21 [01:09, 3.31s/it]
+收益：約 31 秒，約 31%
+```
+
+效果驗證：
+
+```text
+流程正常完成
+neck shared 頁數：11
+neck 自動切割頁數：10
+neck guide 數：20
+neck 無 guide group 數：1
+偵測到重疊頁數：5
+```
+
+### 已完成：neck 後只重跑受影響 block
+
+`new_detect_folder.py` 現在生成 neck 圖後不再整頁重跑 align，而是保守地重跑：
+
+```text
+guide.source_block_indices
+同一個 neck shared group 的所有 block
+與 guide bbox 附近或相交的 block
+與 affected block 有 outer overlap 連通關係的 block
+```
+
+實測：
+
+```text
+第二階段後：21/21 [01:07, 3.23s/it]
+相對第一階段收益：約 2 秒
+```
+
+效果驗證：
+
+```text
+aligned_box_map vs 第一階段：changed_items 0
+measure.json vs 第一階段：measure_equal True
+```
+
+局部重跑覆蓋統計：
+
+```text
+generated neck pages：10
+affected blocks：42 / 83
+```
+
+結論：
+
+```text
+第二階段邏輯安全，但在此測試集收益有限。
+目前慢頁主要仍卡在 neck guide 生成/分析本身，而不是 neck 後二次 align。
+```
+
+### 本次測試中生成 neck 的頁面
+
+```text
+9_45.jpeg        guides=2  groups=[[0, 3, 5]]
+9_45_副本.jpeg   guides=3  groups=[[0, 3, 6, 5]]
+9_46.jpeg        guides=2  groups=[[0, 2, 5, 9]]
+9_47.jpeg        guides=1  groups=[[0, 1]]
+9_49.jpeg        guides=2  groups=[[0, 1], [4, 5]]
+9_55.jpeg        guides=2  groups=[[5, 10, 9]]
+9_56.jpeg        guides=1  groups=[[5, 6]]
+9_57.jpeg        guides=4  groups=[[2, 4, 6, 7, 10]]
+9_58.jpeg        guides=1  groups=[[1, 4]]
+9_64.jpeg        guides=2  groups=[[3, 7, 8]]
+```
+
+shared group 但沒有 guide：
+
+```text
+9_62.jpeg        groups=[[7, 6]]  status=no-neck
+```
+
+### 下一步觀察：不該 neck 的頁面也被分析
+
+目前 `collect_shared_groups()` 只要 outer/raw_outer 高 IoU 就會進入完整 neck 分析。
+這可能包含一些其實不需要 neck 的情況，例如：
+
+```text
+同一個大外框下的普通相鄰文字
+人物線條或背景讓 flood fill 外框異常偏大
+雲朵泡、尾巴、複雜邊界導致 convex defect 過度產生 guide
+block 很近但沒有真正共用連體氣泡
+shared group 面積過大，實際不是單一可切 bubble
+```
+
+下一階段比繼續壓二次 align 更值得做：
+
+```text
+1. 加 per-page/per-group neck profiling，拆出 bubble_mask / distanceTransform / watershed / guide scan 耗時。
+2. 加 cheap prefilter，先跳過明顯不該 neck 的 shared group。
+3. 在 neck json 中記錄 skipped_reason，方便回看是否誤殺。
+4. 對本次生成 neck 的 10 頁逐頁人工看 preview，標記哪些是真正需要 neck、哪些是誤分析。
+```
