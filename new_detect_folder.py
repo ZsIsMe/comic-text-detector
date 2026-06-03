@@ -50,6 +50,8 @@ from neck_watershed_preview import (
 CTD_DIR = 'ctd'
 PROGRESSING_DIR = 'progressing'
 MASK_DIR = 'mask'
+BLOCK_MASK_DIR = 'block_mask'
+OTHER_MASK_DIR = 'other_mask'
 ALIGN_DIR = 'align'
 NECK_DIR = 'neck'
 ALIGN_MASK_DIR = 'masks'
@@ -88,6 +90,8 @@ def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
         'ctd': ctd_dir,
         'progressing': progressing_dir,
         'mask': osp.join(progressing_dir, MASK_DIR),
+        'block_mask': osp.join(progressing_dir, BLOCK_MASK_DIR),
+        'other_mask': osp.join(progressing_dir, OTHER_MASK_DIR),
         'line_trans_box': osp.join(progressing_dir, LINE_TRANS_BOX_DIR),
         'align': osp.join(progressing_dir, ALIGN_DIR),
         'center': osp.join(progressing_dir, ALIGN_DIR, CENTER_DIR),
@@ -148,6 +152,14 @@ def _image_path_for_page(img_dir: str, page_name: str) -> str:
 
 def _mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
     return osp.join(paths['mask'], f'{Path(page_name).stem}.png')
+
+
+def _block_mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
+    return osp.join(paths['block_mask'], f'{Path(page_name).stem}.png')
+
+
+def _other_mask_path_for_page(paths: dict[str, str], page_name: str) -> str:
+    return osp.join(paths['other_mask'], f'{Path(page_name).stem}.png')
 
 
 def _only_text_path_for_page(paths: dict[str, str], page_name: str) -> str:
@@ -1100,6 +1112,39 @@ def _block_zone_from_items(
     return zone
 
 
+def _split_text_mask_by_blocks(
+    mask: np.ndarray,
+    block_items: list[dict],
+) -> tuple[np.ndarray, np.ndarray]:
+    text_mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+    block_zone = _block_zone_from_items(block_items, mask.shape[:2])
+    block_mask = cv2.bitwise_and(text_mask, block_zone)
+    other_mask = cv2.bitwise_and(text_mask, cv2.bitwise_not(block_zone))
+    return block_mask, other_mask
+
+
+def _write_split_mask_images(
+    paths: dict[str, str],
+    page_names: list[str],
+    block_map: dict,
+) -> None:
+    block_pages = block_map.get('blockMap', {})
+    for page_name in tqdm(page_names, desc='split masks'):
+        mask_path = _mask_path_for_page(paths, page_name)
+        if not osp.isfile(mask_path):
+            raise FileNotFoundError(f'找不到文字 mask：{mask_path}')
+        mask = imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise FileNotFoundError(f'無法讀取文字 mask：{mask_path}')
+
+        block_mask, other_mask = _split_text_mask_by_blocks(
+            mask,
+            block_pages.get(page_name, []),
+        )
+        imwrite(_block_mask_path_for_page(paths, page_name), block_mask)
+        imwrite(_other_mask_path_for_page(paths, page_name), other_mask)
+
+
 def _write_only_text_images(
     img_dir: str,
     paths: dict[str, str],
@@ -1459,6 +1504,11 @@ def run(
     _write_json(measure_path, measure_map)
     _write_json(measure_debug_path, measure_debug_map)
     _write_measure_previews(img_dir, paths, line_trans_map, aligned_box_map, measure_map)
+    _write_split_mask_images(
+        paths,
+        list(measure_map.get('pages', {}).keys()),
+        block_map,
+    )
     _write_only_text_images(
         img_dir,
         paths,
@@ -1480,6 +1530,8 @@ def run(
     if not only_align:
         print(f'  - {line_trans_map_path}')
         print(f'  - {paths["mask"]}/<檔名>.png')
+        print(f'  - {paths["block_mask"]}/<檔名>.png')
+        print(f'  - {paths["other_mask"]}/<檔名>.png')
         if save_line_trans_preview:
             print(f'  - {paths["line_trans_box"]}/<檔名>.png')
     print(f'  - {aligned_box_map_path}')
