@@ -720,9 +720,9 @@ def _line_groups_by_block(
     return groups
 
 
-def _lower_median(values: list[float]) -> float:
+def _upper_median(values: list[float]) -> float:
     sorted_values = sorted(values)
-    return sorted_values[(len(sorted_values) - 1) // 2]
+    return sorted_values[len(sorted_values) // 2]
 
 
 def _orientation_from_lines(lines: list[dict]) -> str:
@@ -767,7 +767,7 @@ def _build_measure_maps(
             widths = [_line_width(line) for line in matched_lines]
             widths = [value for value in widths if value > 0]
             if widths:
-                font_size = _lower_median(widths)
+                font_size = _upper_median(widths)
             else:
                 x1, y1, x2, y2 = xyxy
                 font_size = float(min(max(0, x2 - x1), max(0, y2 - y1)))
