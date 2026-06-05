@@ -1,64 +1,194 @@
-# Solid Inpaint Folder
+# Solid Inpaint
 
-Small folder-level pipeline for generating text masks, solid-background inpaint overlays, and fallback masks.
+`solid_inpaint` 是一個資料夾批次工具，用於生成漫畫文字遮罩、純色背景塗白 overlay，以及需要人工處理的 fallback mask。
 
-## Usage
+## 功能
+
+```text
+1. 偵測圖片中的文字，輸出文字 mask
+2. 判斷文字周圍背景是否為可靠純色
+3. 對可靠區域生成透明塗白 overlay
+4. 對不可靠區域生成 other_mask
+5. 生成完整 PDF 預覽報告
+6. 可選用 Photoshop JSX 生成 PSD
+```
+
+## 使用方式
 
 ```bash
 python solid_inpaint/detect_solid_inpaint_folder.py /path/to/image_folder
 ```
 
-Optional arguments:
+此工具固定使用 CPU 推理，不提供 CUDA/GPU 選項。
 
-```bash
---model /path/to/comictextdetector.pt
---device cpu
---device cuda
-```
-
-## Output
-
-For an input folder `/path/to/images`, files are written to:
+模型固定讀取：
 
 ```text
-/path/to/images/ctd_inpainted/mask/<name>.png
-/path/to/images/ctd_inpainted/other_mask/<name>.png
-/path/to/images/ctd_inpainted/inpainted/<name>.png
-/path/to/images/ctd_inpainted/solid_inpaint_report.json
-/path/to/images/ctd_inpainted/preview_report.pdf
+solid_inpaint/models/comictextdetector.pt
 ```
 
-- `mask`: refined text mask from Comic Text Detector.
-- `other_mask`: repair areas whose sampled background is not reliable enough for solid-color filling.
-- `inpainted`: transparent full-canvas BGRA overlay containing only automatically filled solid-background regions.
-- `preview_report.pdf`: page-by-page review PDF with original, composited preview, mask, and other mask.
+## 安裝依賴
 
-## Photoshop PSD Companion
+```bash
+pip install -r solid_inpaint/requirements.txt
+```
 
-After generating the Python outputs, run this JSX in Photoshop:
+## Python 輸出
+
+輸入資料夾：
+
+```text
+/path/to/image_folder
+```
+
+輸出資料夾：
+
+```text
+/path/to/image_folder/ctd_inpainted
+```
+
+輸出檔案：
+
+```text
+ctd_inpainted/mask/<name>.png
+ctd_inpainted/other_mask/<name>.png
+ctd_inpainted/inpainted/<name>.png
+ctd_inpainted/solid_inpaint_report.json
+ctd_inpainted/preview_report.pdf
+```
+
+說明：
+
+```text
+mask
+  偵測後的文字 mask。
+
+inpainted
+  與原圖同尺寸的透明 BGRA overlay。
+  只包含自動判斷為可塗白的區域。
+
+other_mask
+  背景不可靠、非純色、或取樣不足的區域。
+  這些區域需要人工檢查或交給其他修補流程。
+
+solid_inpaint_report.json
+  每頁統計和 debug 資訊。
+
+preview_report.pdf
+  檢查用 PDF。每頁包含 original / preview / mask / other_mask。
+```
+
+## 純色判斷
+
+每個文字區塊會建立兩個區域：
+
+```text
+repair area
+  需要被 overlay 覆蓋的文字修補區。
+
+sample ring
+  repair area 外側的背景取樣環。
+```
+
+腳本會分析 sample ring 的 RGB histogram。
+
+目前有兩類可通過條件：
+
+```text
+strict solid
+  顏色分布足夠集中，且主色比例足夠高。
+
+white dominant
+  主色接近白色，且白色主峰比例足夠高。
+  用於處理白底氣泡、旁白框附近混入少量黑邊的情況。
+```
+
+如果完整 sample ring 不可靠，腳本會嘗試上、下、左、右方向取樣，選擇品質最高的方向作為 fallback。
+
+常用參數在 [detect_solid_inpaint_folder.py](detect_solid_inpaint_folder.py) 前段：
+
+```text
+REPAIR_EXPAND_PX
+SAMPLE_RING_PX
+GROUP_MERGE_PX
+SOLID_P90_P10_MAX
+SOLID_PEAK_RATIO_MIN
+WHITE_DOMINANT_MIN
+WHITE_PEAK_RATIO_MIN
+```
+
+## Photoshop PSD 配套
+
+Python 輸出完成後，可在 Photoshop 中執行：
 
 ```text
 solid_inpaint/create_psds_from_outputs.jsx
 ```
 
-It creates:
+它會生成：
 
 ```text
-/path/to/images/ctd_inpainted/psd/<name>.psd
+ctd_inpainted/psd/<name>.psd
 ```
 
-Each PSD contains two layers:
+每個 PSD 包含兩個圖層：
 
 ```text
 bg
 overlay-manual
 ```
 
-And two alpha channels:
+以及兩個 alpha channels：
 
 ```text
 TEXT_CHANNEL
 OTHER_CHANNEL
 ```
 
-The dialog also includes an optional action runner. If enabled, the selected Photoshop Action is executed after channels/layers are created and before the PSD is saved.
+PSD 腳本可選擇「有 `OTHER_CHANNEL` 時執行 Photoshop Action」。
+
+執行順序：
+
+```text
+打開原圖
+-> 建 bg
+-> 貼入 overlay-manual
+-> 建 TEXT_CHANNEL
+-> 建 OTHER_CHANNEL
+-> 可選執行 Photoshop Action
+-> 保存 PSD
+-> 關閉
+```
+
+## 獨立資料夾內容
+
+此工具的 detector 相關程式放在：
+
+```text
+solid_inpaint/vendor/
+```
+
+完整搬移時，請一起帶走：
+
+```text
+solid_inpaint/detect_solid_inpaint_folder.py
+solid_inpaint/create_psds_from_outputs.jsx
+solid_inpaint/requirements.txt
+solid_inpaint/models/comictextdetector.pt
+solid_inpaint/vendor/
+```
+
+注意：
+
+```text
+solid_inpaint/models/comictextdetector.pt
+```
+
+模型檔約 76 MB。當前主專案 `.gitignore` 會忽略 `*.pt`，所以模型可以放在本地資料夾內，但不會被普通 `git add` 加入。
+
+## 開發注意
+
+- `vendor/` 是 detector 程式的拷貝版本，不會自動跟外部程式同步。
+- `inpainted` 是完整畫布尺寸的透明 PNG，不需要 Photoshop 圖層用的四角 anchor pixel。
+- `other_mask` 只代表不能自動純色填補的 repair area。
+- 每次調整純色判斷參數後，建議先查看 `preview_report.pdf`。

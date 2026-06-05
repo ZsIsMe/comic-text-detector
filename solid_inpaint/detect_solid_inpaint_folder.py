@@ -13,13 +13,13 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
 from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+VENDOR_DIR = SCRIPT_DIR / 'vendor'
+if str(VENDOR_DIR) not in sys.path:
+    sys.path.insert(0, str(VENDOR_DIR))
 
 from inference import TextDetector
 from utils.io_utils import find_all_imgs, imread, imwrite
@@ -32,6 +32,7 @@ OTHER_MASK_DIR = 'other_mask'
 INPAINTED_DIR = 'inpainted'
 REPORT_JSON = 'solid_inpaint_report.json'
 PREVIEW_PDF = 'preview_report.pdf'
+MODEL_PATH = Path(__file__).resolve().parent / 'models' / 'comictextdetector.pt'
 
 REPAIR_EXPAND_PX = 3
 SAMPLE_RING_PX = 6
@@ -446,15 +447,14 @@ def _write_preview_pdf(
     return pdf_path
 
 
-def run(img_dir: str, model_path: str, device: str | None = None) -> int:
+def run(img_dir: str) -> int:
     img_dir = osp.abspath(img_dir)
     if not osp.isdir(img_dir):
         raise FileNotFoundError(f'找不到資料夾：{img_dir}')
-    model_path = osp.abspath(model_path)
+    model_path = osp.abspath(str(MODEL_PATH))
     if not osp.isfile(model_path):
         raise FileNotFoundError(f'找不到模型檔：{model_path}')
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cpu'
 
     paths = _ensure_dirs(img_dir)
     imglist = find_all_imgs(img_dir, abs_path=True)
@@ -531,24 +531,12 @@ def run(img_dir: str, model_path: str, device: str | None = None) -> int:
 
 
 def main() -> None:
-    default_model = REPO_ROOT / 'data' / 'comictextdetector.pt'
     parser = argparse.ArgumentParser(
         description='偵測文字 mask，生成純色背景 inpainted overlay 和 other_mask。',
     )
     parser.add_argument('img_dir', help='輸入圖片資料夾路徑')
-    parser.add_argument(
-        '--model',
-        default=str(default_model),
-        help=f'模型路徑（預設：{default_model}）',
-    )
-    parser.add_argument(
-        '--device',
-        choices=['cpu', 'cuda'],
-        default=None,
-        help='推理裝置（預設：有 GPU 則用 cuda，否則 cpu）',
-    )
     args = parser.parse_args()
-    run(args.img_dir, args.model, args.device)
+    run(args.img_dir)
 
 
 if __name__ == '__main__':
