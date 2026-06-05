@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <style>
+      .bg { fill: #f6f1e8; }
+      .panel { fill: #fffaf1; stroke: #2e3a35; stroke-width: 3; }
+      .panel-soft { fill: #fbf4e6; stroke: #796b5b; stroke-width: 2; }
+      .dark { fill: #202826; }
+      .ink { fill: #23302c; font-family: "PingFang TC", "Noto Sans CJK TC", "Microsoft JhengHei", sans-serif; }
+      .muted { fill: #5f6b64; font-family: "PingFang TC", "Noto Sans CJK TC", "Microsoft JhengHei", sans-serif; }
+      .small { font-size: 26px; }
+      .body { font-size: 30px; }
+      .title { font-size: 58px; font-weight: 800; }
+      .subtitle { font-size: 30px; font-weight: 500; }
+      .section { font-size: 34px; font-weight: 800; }
+      .label { font-size: 25px; font-weight: 700; }
+      .mono { font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; font-size: 25px; }
+      .green { fill: #2f8f67; }
+      .red { fill: #bc4b4b; }
+      .blue { fill: #356fa8; }
+      .yellow { fill: #d69b25; }
+      .line { stroke: #2e3a35; stroke-width: 4; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .thin { stroke: #796b5b; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow { marker-end: url(#arrow); }
+      .dash { stroke-dasharray: 10 9; }
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="12" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L12,7 L2,12 Z" fill="#2e3a35"/>
+    </marker>
+    <pattern id="halftone" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="6" cy="6" r="3.2" fill="#36413c"/>
+      <circle cx="17" cy="17" r="2.5" fill="#36413c"/>
+    </pattern>
+    <linearGradient id="grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e9e2d4"/>
+      <stop offset="1" stop-color="#b9c9d6"/>
+    </linearGradient>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1000"/>
+
+  <text class="ink title" x="70" y="86">Mask Inpaint Overlay JSX：用文字 Mask 生成去字圖層</text>
+  <text class="muted subtitle" x="72" y="132">不依賴 LabelPlus JSON，只使用「原圖 + 文字 mask」，在 Photoshop 內輸出可檢查的 PSD。</text>
+
+  <rect class="panel" x="60" y="175" width="430" height="720" rx="22"/>
+  <text class="ink section" x="92" y="230">1. 輸入</text>
+
+  <rect class="panel-soft" x="95" y="270" width="350" height="210" rx="14"/>
+  <text class="ink label" x="118" y="310">原圖</text>
+  <rect x="125" y="335" width="290" height="105" rx="10" fill="#fefbf5" stroke="#2e3a35" stroke-width="2"/>
+  <ellipse cx="248" cy="388" rx="94" ry="43" fill="#ffffff" stroke="#1e2524" stroke-width="5"/>
+  <text class="dark" x="208" y="399" font-size="34" font-family="serif" font-weight="700">ありがとう</text>
+  <path d="M120 442 C180 414, 224 466, 286 437 C325 419, 360 438, 415 418" class="thin"/>
+  <text class="muted small" x="118" y="462">包含真實背景與文字顏色</text>
+
+  <rect class="panel-soft" x="95" y="520" width="350" height="250" rx="14"/>
+  <text class="ink label" x="118" y="560">文字 mask</text>
+  <rect x="125" y="585" width="290" height="125" rx="10" fill="#111"/>
+  <text x="183" y="628" fill="#fff" font-size="34" font-family="serif" font-weight="800">ありがとう</text>
+  <text x="148" y="676" fill="#fff" font-size="28" font-family="serif" writing-mode="tb">ございます</text>
+  <text class="muted small" x="118" y="742">黑底白字或白底黑字都可</text>
+
+  <path class="line arrow" d="M492 530 C548 530, 564 530, 620 530"/>
+
+  <rect class="panel" x="620" y="175" width="530" height="720" rx="22"/>
+  <text class="ink section" x="652" y="230">2. 分析與判斷</text>
+
+  <rect class="panel-soft" x="655" y="265" width="460" height="160" rx="14"/>
+  <text class="ink label" x="680" y="305">TEXT_CHANNEL</text>
+  <text class="muted small" x="680" y="344">把 mask 統一成「白色 = 文字」。</text>
+  <rect x="935" y="292" width="130" height="88" rx="8" fill="#111"/>
+  <text x="958" y="345" fill="#fff" font-size="34" font-family="serif" font-weight="800">字</text>
+  <path class="thin arrow" d="M798 370 C836 395, 902 395, 936 366"/>
+
+  <rect class="panel-soft" x="655" y="455" width="460" height="215" rx="14"/>
+  <text class="ink label" x="680" y="495">每個文字塊局部處理</text>
+  <rect x="690" y="525" width="155" height="105" rx="8" fill="#fff" stroke="#2e3a35" stroke-width="2"/>
+  <text class="dark" x="722" y="586" font-size="34" font-family="serif" font-weight="800">字</text>
+  <path d="M712 544 H823 V614 H712 Z" class="thin dash"/>
+  <path d="M695 532 H840 V627 H695 Z" class="thin" stroke="#2f8f67"/>
+  <text class="muted small" x="870" y="552">repair area：</text>
+  <text class="muted small" x="870" y="587">文字向外擴張，</text>
+  <text class="muted small" x="870" y="622">覆蓋抗鋸齒邊。</text>
+
+  <rect class="panel-soft" x="655" y="700" width="460" height="150" rx="14"/>
+  <text class="ink label" x="680" y="740">sample ring 純色檢查</text>
+  <circle cx="746" cy="795" r="41" fill="#fff" stroke="#2f8f67" stroke-width="8"/>
+  <circle cx="746" cy="795" r="21" fill="#202826"/>
+  <rect x="832" y="764" width="80" height="62" rx="8" fill="url(#halftone)" stroke="#2e3a35" stroke-width="2"/>
+  <rect x="945" y="764" width="96" height="62" rx="8" fill="url(#grad)" stroke="#2e3a35" stroke-width="2"/>
+  <text class="green small" x="680" y="838">純色：填補</text>
+  <text class="red small" x="827" y="838">網點/漸層：跳過</text>
+
+  <rect class="panel-soft" x="1175" y="175" width="365" height="720" rx="22"/>
+  <text class="ink section" x="1208" y="230">3. 輸出 PSD</text>
+
+  <g transform="translate(1208 282)">
+    <rect x="0" y="0" width="290" height="92" rx="13" fill="#f7fbff" stroke="#356fa8" stroke-width="3"/>
+    <text class="blue label" x="24" y="39">inpainted 圖層</text>
+    <text class="muted small" x="24" y="72">透明覆蓋，只放成功填補區</text>
+  </g>
+
+  <g transform="translate(1208 405)">
+    <rect x="0" y="0" width="290" height="92" rx="13" fill="#fffdf8" stroke="#2e3a35" stroke-width="3"/>
+    <text class="ink label" x="24" y="39">bg 圖層</text>
+    <text class="muted small" x="24" y="72">完整原圖</text>
+  </g>
+
+  <g transform="translate(1208 548)">
+    <rect x="0" y="0" width="290" height="82" rx="13" fill="#f4fff8" stroke="#2f8f67" stroke-width="3"/>
+    <text class="green label" x="24" y="36">TEXT_CHANNEL</text>
+    <text class="muted small" x="24" y="66">保留文字 mask</text>
+  </g>
+
+  <g transform="translate(1208 660)">
+    <rect x="0" y="0" width="290" height="106" rx="13" fill="#fff7f7" stroke="#bc4b4b" stroke-width="3"/>
+    <text class="red label" x="24" y="36">OTHER_CHANNEL</text>
+    <text class="muted small" x="24" y="66">只在有不可靠區域時保留</text>
+    <text class="muted small" x="24" y="92">用於人工或後續 inpaint</text>
+  </g>
+
+  <path class="line arrow" d="M1152 530 C1172 530, 1188 530, 1204 530"/>
+
+  <rect x="70" y="918" width="1460" height="52" rx="18" fill="#23302c"/>
+  <text x="100" y="953" fill="#fffaf1" font-size="25" font-family="PingFang TC, Noto Sans CJK TC, Microsoft JhengHei, sans-serif">
+    純色門檻：SOLID_P90_P10_MAX 控制顏色分散容忍度；SOLID_PEAK_RATIO_MIN 控制主色集中度。越嚴格，越少錯填複雜背景。
+  </text>
+</svg>
