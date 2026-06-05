@@ -13,10 +13,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import requests
 import torch
 import torch.nn as nn
-from PIL import Image
 from torch.cuda import amp
 
 from utils.yolov5_utils import make_divisible, initialize_weights, check_anchor_order, check_version, fuse_conv_and_bn
@@ -285,5 +283,4 @@ class Classify(nn.Module):
     def forward(self, x):
         z = torch.cat([self.aap(y) for y in (x if isinstance(x, list) else [x])], 1)  # cat if list
         return self.flat(self.conv(z))  # flatten to x(b,c2)
-
 

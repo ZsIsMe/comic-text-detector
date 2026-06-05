@@ -1,6 +1,8 @@
-# Solid Inpaint
+# 塗白
 
-`solid_inpaint` 是一個資料夾批次工具，用於生成漫畫文字遮罩、純色背景塗白 overlay，以及需要人工處理的 fallback mask。
+`solid_inpaint` 是一套不打包 App 的 Python 工具。它用於生成漫畫文字遮罩、純色背景塗白 overlay，以及需要人工處理的 `other_mask`。
+
+這個資料夾可以獨立複製到 macOS 或 Windows 使用。模型固定放在本資料夾內，不需要外部傳入模型路徑。
 
 ## 功能
 
@@ -13,23 +15,87 @@
 6. 可選用 Photoshop JSX 生成 PSD
 ```
 
-## 使用方式
+## 安裝依賴
 
-命令行批量處理：
+建議使用 Python 3.10 或 3.11。
+
+macOS：
 
 ```bash
-python solid_inpaint/detect_solid_inpaint_folder.py /path/to/image_folder
+cd /path/to/solid_inpaint
+python3 -m venv .venv
+.venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Windows：
+
+```bat
+cd /d D:\path\to\solid_inpaint
+py -3 -m venv .venv
+.venv\Scripts\python -m pip install -U pip
+.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+依賴明細在：
+
+```text
+requirements.txt
 ```
 
 此工具固定使用 CPU 推理，不提供 CUDA/GPU 選項。
 
-圖形界面：
+## 啟動界面
 
-```bash
-python solid_inpaint/solid_inpaint_ui.py
+macOS 可雙擊：
+
+```text
+啟動塗白.command
 ```
 
-圖形界面提供：
+如果 macOS 提示沒有執行權限，先執行一次：
+
+```bash
+chmod +x 啟動塗白.command
+```
+
+Windows 可雙擊：
+
+```text
+啟動塗白.bat
+```
+
+也可以用命令行啟動：
+
+macOS：
+
+```bash
+cd /path/to/solid_inpaint
+.venv/bin/python solid_inpaint_ui.py
+```
+
+Windows：
+
+```bat
+cd /d D:\path\to\solid_inpaint
+.venv\Scripts\python solid_inpaint_ui.py
+```
+
+## 命令行批量處理
+
+命令行批量處理：
+
+```bash
+.venv/bin/python detect_solid_inpaint_folder.py /path/to/image_folder
+```
+
+Windows：
+
+```bat
+.venv\Scripts\python detect_solid_inpaint_folder.py D:\path\to\image_folder
+```
+
+## 圖形界面功能
 
 ```text
 選擇圖片文件夾
@@ -69,14 +135,10 @@ Ctrl+Shift+Z：重做
 模型固定讀取：
 
 ```text
-solid_inpaint/models/comictextdetector.pt
+models/comictextdetector.pt
 ```
 
-## 安裝依賴
-
-```bash
-pip install -r solid_inpaint/requirements.txt
-```
+如果缺少模型，命令行和圖形界面都會提示找不到模型檔。
 
 ## Python 輸出
 
@@ -168,7 +230,7 @@ WHITE_PEAK_RATIO_MIN
 Python 輸出完成後，可在 Photoshop 中執行：
 
 ```text
-solid_inpaint/create_psds_from_outputs.jsx
+create_psds_from_outputs.jsx
 ```
 
 它會生成：
@@ -211,27 +273,51 @@ PSD 腳本可選擇「有 `OTHER_CHANNEL` 時執行 Photoshop Action」。
 此工具的 detector 相關程式放在：
 
 ```text
-solid_inpaint/vendor/
+vendor/
 ```
 
 完整搬移時，請一起帶走：
 
 ```text
-solid_inpaint/detect_solid_inpaint_folder.py
-solid_inpaint/solid_inpaint_ui.py
-solid_inpaint/create_psds_from_outputs.jsx
-solid_inpaint/requirements.txt
-solid_inpaint/models/comictextdetector.pt
-solid_inpaint/vendor/
+detect_solid_inpaint_folder.py
+solid_inpaint_ui.py
+create_psds_from_outputs.jsx
+requirements.txt
+models/comictextdetector.pt
+icons/
+vendor/
 ```
 
 注意：
 
 ```text
-solid_inpaint/models/comictextdetector.pt
+models/comictextdetector.pt
 ```
 
 模型檔約 76 MB。當前主專案 `.gitignore` 會忽略 `*.pt`，所以模型可以放在本地資料夾內，但不會被普通 `git add` 加入。
+
+建議分發時保留：
+
+```text
+README.md
+requirements.txt
+啟動塗白.command
+啟動塗白.bat
+solid_inpaint_ui.py
+detect_solid_inpaint_folder.py
+create_psds_from_outputs.jsx
+models/comictextdetector.pt
+icons/
+vendor/
+```
+
+不需要分發：
+
+```text
+__pycache__/
+.DS_Store
+ctd_inpainted/
+```
 
 ## 開發注意
 

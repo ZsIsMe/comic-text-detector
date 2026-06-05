@@ -7,4 +7,3 @@ torch
 torchvision
 shapely
 pyclipper
-torchsummary

@@ -10,7 +10,6 @@ import glob
 import torch.nn as nn
 from utils.weight_init import init_weights
 from models.yolov5.common import C3, Conv
-from torchsummary import summary
 import torch.nn.functional as F
 import copy
 
@@ -254,20 +253,3 @@ class TextDetBaseDNN:
         self.model.setInput(blob)
         blks, mask, lines_map  = self.model.forward(self.uoln)
         return blks, mask, lines_map
-
-if __name__ == '__main__':
-    device = 'cuda'
-    weights = r'data/yolov5sblk.ckpt'
-
-    # yolov5s_backbone = load_yolov5_ckpt(weights=weights, map_location='cpu')
-
-    model = TextDetector(weights, map_location=DEVICE)
-    model.to(DEVICE)
-    model.train_mask()
-    summary(model, (3, 640, 640), device=DEVICE)
-
-    # model.initialize_db(unet_weights='data/unet_head.pt')
-    # model.train_db()
-    # summary(model, (3, 640, 640), device=DEVICE)
-
-
