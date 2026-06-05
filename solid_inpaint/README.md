@@ -15,11 +15,37 @@
 
 ## 使用方式
 
+命令行批量處理：
+
 ```bash
 python solid_inpaint/detect_solid_inpaint_folder.py /path/to/image_folder
 ```
 
 此工具固定使用 CPU 推理，不提供 CUDA/GPU 選項。
+
+圖形界面：
+
+```bash
+python solid_inpaint/solid_inpaint_ui.py
+```
+
+UI 第一版提供：
+
+```text
+選擇圖片文件夾
+打開最近列表
+偵測並生成
+顯示進度
+瀏覽圖片列表
+Mask / 原圖白色疊加預覽
+Inpainted 合成預覽，可選淡紅色顯示 other_mask
+用現有 Mask 重算當前頁
+用現有 Mask 重算全部
+打開輸出資料夾
+打開 PDF 預覽
+```
+
+UI 第一版不包含 mask 編輯。矩形框選、圓形筆刷、撤銷/重做放到第二版。
 
 模型固定讀取：
 
@@ -172,6 +198,7 @@ solid_inpaint/vendor/
 
 ```text
 solid_inpaint/detect_solid_inpaint_folder.py
+solid_inpaint/solid_inpaint_ui.py
 solid_inpaint/create_psds_from_outputs.jsx
 solid_inpaint/requirements.txt
 solid_inpaint/models/comictextdetector.pt

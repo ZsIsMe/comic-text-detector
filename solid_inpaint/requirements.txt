@@ -1,6 +1,7 @@
 numpy
 opencv-python
 Pillow
+PySide6
 tqdm
 torch
 torchvision

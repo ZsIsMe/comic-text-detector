@@ -447,6 +447,108 @@ def _write_preview_pdf(
     return pdf_path
 
 
+def image_files_in_folder(img_dir: str) -> list[str]:
+    imglist = find_all_imgs(img_dir, abs_path=True)
+    imglist = [path for path in imglist if not osp.basename(path).startswith('mask-')]
+    imglist.sort(key=lambda path: osp.basename(path).lower())
+    return imglist
+
+
+def create_detector() -> TextDetector:
+    model_path = osp.abspath(str(MODEL_PATH))
+    if not osp.isfile(model_path):
+        raise FileNotFoundError(f'找不到模型檔：{model_path}')
+    return TextDetector(model_path=model_path, input_size=1024, device='cpu', act='leaky')
+
+
+def process_image_with_detector(
+    img_path: str,
+    paths: dict[str, str],
+    detector: TextDetector,
+) -> dict:
+    img = imread(img_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise FileNotFoundError(f'無法讀取原圖：{img_path}')
+    detect_img = img[:, :, :3] if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    _, mask_refined, _ = detector(
+        detect_img,
+        refine_mode=REFINEMASK_ANNOTATION,
+        keep_undetected_mask=True,
+    )
+    mask_refined = np.where(mask_refined > 0, 255, 0).astype(np.uint8)
+    return regenerate_image_from_mask(img_path, paths, mask_refined)
+
+
+def regenerate_image_from_mask(
+    img_path: str,
+    paths: dict[str, str],
+    mask: np.ndarray | None = None,
+) -> dict:
+    img = imread(img_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise FileNotFoundError(f'無法讀取原圖：{img_path}')
+    detect_img = img[:, :, :3] if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    if mask is None:
+        mask_path = _mask_path(paths, img_path)
+        if not osp.isfile(mask_path):
+            raise FileNotFoundError(f'找不到 mask：{mask_path}')
+        mask = imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise FileNotFoundError(f'無法讀取 mask：{mask_path}')
+    mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+
+    overlay, other_mask, page_summary = _solid_overlay_from_mask(detect_img, mask)
+    imwrite(_mask_path(paths, img_path), mask)
+    imwrite(_other_mask_path(paths, img_path), other_mask)
+    imwrite(_output_path(paths, img_path), overlay)
+    return page_summary
+
+
+def build_report(
+    img_dir: str,
+    paths: dict[str, str],
+    imglist: list[str],
+    pages: dict,
+) -> dict:
+    summary = {
+        'total': len(imglist),
+        'processed': 0,
+        'with_other_mask': 0,
+        'failed': 0,
+    }
+    for info in pages.values():
+        if 'error' in info:
+            summary['failed'] += 1
+            continue
+        summary['processed'] += 1
+        if int(info.get('other_pixels', 0)) > 0:
+            summary['with_other_mask'] += 1
+    return {
+        'image_dir': osp.abspath(img_dir),
+        'output_dir': paths['output'],
+        'model': osp.abspath(str(MODEL_PATH)),
+        'device': 'cpu',
+        'pages': pages,
+        'summary': summary,
+    }
+
+
+def write_report(paths: dict[str, str], report: dict) -> str:
+    report_path = osp.join(paths['output'], REPORT_JSON)
+    with open(report_path, 'w', encoding='utf8') as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    return report_path
+
+
+def load_report(paths: dict[str, str]) -> dict:
+    report_path = osp.join(paths['output'], REPORT_JSON)
+    if not osp.isfile(report_path):
+        return {}
+    with open(report_path, 'r', encoding='utf8') as f:
+        return json.load(f)
+
+
 def run(img_dir: str) -> int:
     img_dir = osp.abspath(img_dir)
     if not osp.isdir(img_dir):
@@ -457,9 +559,7 @@ def run(img_dir: str) -> int:
     device = 'cpu'
 
     paths = _ensure_dirs(img_dir)
-    imglist = find_all_imgs(img_dir, abs_path=True)
-    imglist = [path for path in imglist if not osp.basename(path).startswith('mask-')]
-    imglist.sort(key=lambda path: osp.basename(path).lower())
+    imglist = image_files_in_folder(img_dir)
     if not imglist:
         print(f'資料夾內沒有可處理的圖片：{img_dir}')
         return 0
@@ -470,51 +570,18 @@ def run(img_dir: str) -> int:
     print(f'裝置：{device}')
     print(f'圖片數量：{len(imglist)}')
 
-    detector = TextDetector(model_path=model_path, input_size=1024, device=device, act='leaky')
-    report = {
-        'image_dir': img_dir,
-        'output_dir': paths['output'],
-        'model': model_path,
-        'device': device,
-        'pages': {},
-        'summary': {
-            'total': len(imglist),
-            'processed': 0,
-            'with_other_mask': 0,
-            'failed': 0,
-        },
-    }
+    detector = create_detector()
+    pages = {}
 
     for img_path in tqdm(imglist, desc='solid inpaint'):
         img_name = osp.basename(img_path)
         try:
-            img = imread(img_path, cv2.IMREAD_UNCHANGED)
-            if img is None:
-                raise FileNotFoundError(f'無法讀取原圖：{img_path}')
-            detect_img = img[:, :, :3] if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            _, mask_refined, _ = detector(
-                detect_img,
-                refine_mode=REFINEMASK_ANNOTATION,
-                keep_undetected_mask=True,
-            )
-            mask_refined = np.where(mask_refined > 0, 255, 0).astype(np.uint8)
-            overlay, other_mask, page_summary = _solid_overlay_from_mask(detect_img, mask_refined)
-
-            imwrite(_mask_path(paths, img_path), mask_refined)
-            imwrite(_other_mask_path(paths, img_path), other_mask)
-            imwrite(_output_path(paths, img_path), overlay)
-
-            report['summary']['processed'] += 1
-            if page_summary['other_pixels'] > 0:
-                report['summary']['with_other_mask'] += 1
-            report['pages'][img_name] = page_summary
+            pages[img_name] = process_image_with_detector(img_path, paths, detector)
         except Exception as exc:
-            report['summary']['failed'] += 1
-            report['pages'][img_name] = {'error': str(exc)}
+            pages[img_name] = {'error': str(exc)}
 
-    report_path = osp.join(paths['output'], REPORT_JSON)
-    with open(report_path, 'w', encoding='utf8') as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
+    report = build_report(img_dir, paths, imglist, pages)
+    report_path = write_report(paths, report)
     preview_pdf_path = _write_preview_pdf(imglist, paths, report)
 
     print('完成。輸出：')
