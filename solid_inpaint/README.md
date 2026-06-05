@@ -9,7 +9,7 @@
 2. 判斷文字周圍背景是否為可靠純色
 3. 對可靠區域生成透明塗白 overlay
 4. 對不可靠區域生成 other_mask
-5. 生成完整 PDF 預覽報告
+5. 可手動生成完整 PDF 預覽報告
 6. 可選用 Photoshop JSX 生成 PSD
 ```
 
@@ -29,7 +29,7 @@ python solid_inpaint/detect_solid_inpaint_folder.py /path/to/image_folder
 python solid_inpaint/solid_inpaint_ui.py
 ```
 
-UI 第一版提供：
+圖形界面提供：
 
 ```text
 選擇圖片文件夾
@@ -37,15 +37,34 @@ UI 第一版提供：
 偵測並生成
 顯示進度
 瀏覽圖片列表
-Mask / 原圖白色疊加預覽
+Mask / 原圖白色疊加預覽與手動編輯
+矩形工具：左鍵添加 mask，右鍵去掉 mask
+筆刷工具：左鍵添加 mask，右鍵去掉 mask
+撤銷 / 重做
+編輯後自動保存 mask，並自動重新生成當前頁預覽
 Inpainted 合成預覽，可選淡紅色顯示 other_mask
-用現有 Mask 重算當前頁
-用現有 Mask 重算全部
 打開輸出資料夾
+生成 PDF 預覽
 打開 PDF 預覽
+說明頁，包含版本號和快捷鍵
 ```
 
-UI 第一版不包含 mask 編輯。矩形框選、圓形筆刷、撤銷/重做放到第二版。
+紅色的「偵測並生成」會重新跑 detector，覆蓋已有 mask。如果輸出資料夾內已有 mask，UI 會要求確認。
+
+圖形界面默認不生成 PDF。需要檢查整套圖片時，點擊「生成 PDF」手動生成。
+
+快捷鍵：
+
+```text
+B：筆刷
+R：矩形
+[：縮小筆刷
+]：放大筆刷
+← / PageUp：上一頁
+→ / PageDown：下一頁
+Ctrl+Z：撤銷
+Ctrl+Shift+Z：重做
+```
 
 模型固定讀取：
 
@@ -80,7 +99,7 @@ ctd_inpainted/mask/<name>.png
 ctd_inpainted/other_mask/<name>.png
 ctd_inpainted/inpainted/<name>.png
 ctd_inpainted/solid_inpaint_report.json
-ctd_inpainted/preview_report.pdf
+ctd_inpainted/preview_report.pdf  # 圖形界面需手動生成
 ```
 
 說明：
@@ -102,6 +121,7 @@ solid_inpaint_report.json
 
 preview_report.pdf
   檢查用 PDF。每頁包含 original / preview / mask / other_mask。
+  命令行批量處理會自動生成；圖形界面需點擊「生成 PDF」。
 ```
 
 ## 純色判斷
@@ -218,4 +238,4 @@ solid_inpaint/models/comictextdetector.pt
 - `vendor/` 是 detector 程式的拷貝版本，不會自動跟外部程式同步。
 - `inpainted` 是完整畫布尺寸的透明 PNG，不需要 Photoshop 圖層用的四角 anchor pixel。
 - `other_mask` 只代表不能自動純色填補的 repair area。
-- 每次調整純色判斷參數後，建議先查看 `preview_report.pdf`。
+- 每次調整純色判斷參數後，建議手動生成並查看 `preview_report.pdf`。
