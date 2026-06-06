@@ -1039,7 +1039,8 @@ def _write_measure_previews(
             img.shape[:2],
         )
         center_img = _draw_aligned_boxes_from_masks(img, align_items, preview_masks)
-        canvas = _draw_line_width_measurements(center_img, line_pages.get(page_name, []))
+        mask = imread(_mask_path_for_page(paths, page_name), cv2.IMREAD_GRAYSCALE)
+        canvas = _draw_line_width_measurements(center_img, line_pages.get(page_name, []), mask)
         canvas = _draw_measure_center_blocks(
             canvas,
             measure_items,
@@ -1051,6 +1052,19 @@ def _write_measure_previews(
             align_items,
         )
         imwrite(osp.join(paths['measure_preview'], f'{Path(page_name).stem}.png'), canvas)
+
+
+def _write_line_trans_previews(
+    img_dir: str,
+    paths: dict[str, str],
+    line_trans_map: dict,
+) -> None:
+    line_pages = line_trans_map.get('transMap', {})
+    for page_name, line_items in tqdm(line_pages.items(), desc='line trans preview'):
+        img = imread(_image_path_for_page(img_dir, page_name))
+        mask = imread(_mask_path_for_page(paths, page_name), cv2.IMREAD_GRAYSCALE)
+        canvas = _draw_line_width_measurements(img, line_items, mask)
+        imwrite(osp.join(paths['line_trans_box'], f'{Path(page_name).stem}.png'), canvas)
 
 
 def _parse_color_string(color_str: str) -> tuple[int, int, int]:
@@ -1434,7 +1448,7 @@ def _detect_pages(
 
         imwrite(osp.join(paths['mask'], f'{imname}.png'), mask_refined)
         if save_line_trans_preview:
-            line_trans_img = _draw_line_width_measurements(img, line_trans_items)
+            line_trans_img = _draw_line_width_measurements(img, line_trans_items, mask_refined)
             imwrite(osp.join(paths['line_trans_box'], f'{imname}.png'), line_trans_img)
 
     return {'blockMap': block_map}, {'transMap': line_trans_map}
@@ -1473,6 +1487,8 @@ def run(
         block_map = _load_json(block_map_path)
         line_trans_map = _load_json(line_trans_map_path)
         print(f'只重定位：{img_dir}')
+        if save_line_trans_preview:
+            _write_line_trans_previews(img_dir, paths, line_trans_map)
     else:
         model_path = osp.abspath(model_path)
         if not osp.isfile(model_path):

@@ -35,8 +35,9 @@ DEAL_OVERLAP_DIR = 'deal_overlap'
 BLOCK_BOX_COLOR = (0, 255, 0)      # 綠色：文字區塊
 LINE_BOX_COLOR = (0, 128, 255)     # 橘色：文字行
 LINE_TRANS_BOX_COLOR = (255, 0, 255)  # 洋紅色：line + trans 混合結果
-LINE_WIDTH_MEASURE_COLOR = (255, 235, 0)  # 青色：文字短邊測量卡尺
-LINE_WIDTH_TEXT_COLOR = (0, 255, 255)  # 黃色：短邊像素數字
+LINE_WIDTH_MEASURE_COLOR = (255, 235, 0)  # 青色：接近水平尺寸測量卡尺
+LINE_HEIGHT_MEASURE_COLOR = (0, 165, 255)  # 橘色：接近垂直尺寸測量卡尺
+LINE_WIDTH_TEXT_COLOR = (0, 255, 255)  # 黃色：尺寸像素數字
 ALIGNED_BOX_COLOR = (255, 255, 0)  # 青色：氣泡對齊後的文字區塊
 ALIGN_MASK_COLOR = (179, 255, 255)  # 淡黃色：候選氣泡區域
 
@@ -59,6 +60,10 @@ SHRINK_TRANS_MAX_COMPONENT_HEIGHT_RATIO = 1.35
 SHRINK_TRANS_MAX_COMPONENT_AREA_RATIO = 1.8
 SHRINK_TRANS_MIN_COMPONENT_COVERAGE = 0.5
 SHRINK_TRANS_MIN_LINE_COVERAGE = 0.08
+CHAR_MEASURE_PROJECTION_RATIO = 0.04
+CHAR_MEASURE_MERGE_GAP_RATIO = 0.28
+CHAR_MEASURE_TARGET_RATIO = 1.12
+CHAR_MEASURE_SPLIT_RATIO = 1.6
 ALIGN_MASK_DILATE_SIZE = 9
 ALIGN_FLOOD_DIFF = 28
 ALIGN_MASK_SMOOTH_RADIUS = 7
@@ -600,6 +605,242 @@ def _top_short_edge_measure(poly: list | np.ndarray) -> tuple[np.ndarray, np.nda
     return start, end, normal, width
 
 
+def _edge_pair_dimension_measurements(
+    poly: list | np.ndarray,
+) -> list[tuple[str, np.ndarray, np.ndarray, np.ndarray, float]]:
+    pts = np.asarray(poly, dtype=np.float64).reshape(4, 2)
+    edges = []
+    for idx in range(4):
+        start = pts[idx]
+        end = pts[(idx + 1) % 4]
+        direction = end - start
+        length = float(np.linalg.norm(direction))
+        if length < 1:
+            return []
+        edges.append((idx, start, end, direction, length))
+
+    measurements = []
+    for pair in ((0, 2), (1, 3)):
+        pair_edges = [edges[pair[0]], edges[pair[1]]]
+        _, start, end, direction, _ = min(
+            pair_edges,
+            key=lambda edge: ((edge[1][1] + edge[2][1]) / 2.0, (edge[1][0] + edge[2][0]) / 2.0),
+        )
+        axis = direction / np.linalg.norm(direction)
+        normal = np.array([-axis[1], axis[0]], dtype=np.float64)
+        if normal[1] > 0:
+            normal = -normal
+        label = 'W' if abs(direction[0]) >= abs(direction[1]) else 'H'
+        width = (pair_edges[0][4] + pair_edges[1][4]) / 2.0
+        measurements.append((label, start, end, normal, width))
+    return measurements
+
+
+def _line_measure_axes(poly: list | np.ndarray) -> dict | None:
+    pts = np.asarray(poly, dtype=np.float64).reshape(4, 2)
+    edges = []
+    for idx in range(4):
+        start = pts[idx]
+        end = pts[(idx + 1) % 4]
+        direction = end - start
+        length = float(np.linalg.norm(direction))
+        if length < 1:
+            return None
+        edges.append((idx, start, end, direction, length))
+
+    pair_a = (edges[0][4] + edges[2][4]) / 2.0
+    pair_b = (edges[1][4] + edges[3][4]) / 2.0
+    long_pair = (0, 2) if pair_a >= pair_b else (1, 3)
+    short_pair = (1, 3) if long_pair == (0, 2) else (0, 2)
+
+    long_edges = [edges[long_pair[0]], edges[long_pair[1]]]
+    short_edges = [edges[short_pair[0]], edges[short_pair[1]]]
+    _, long_start, long_end, long_direction, _ = min(
+        long_edges,
+        key=lambda edge: ((edge[1][1] + edge[2][1]) / 2.0, (edge[1][0] + edge[2][0]) / 2.0),
+    )
+    _, short_start, short_end, short_direction, _ = min(
+        short_edges,
+        key=lambda edge: ((edge[1][1] + edge[2][1]) / 2.0, (edge[1][0] + edge[2][0]) / 2.0),
+    )
+
+    long_axis = long_direction / np.linalg.norm(long_direction)
+    short_axis = short_direction / np.linalg.norm(short_direction)
+    long_normal = np.array([-long_axis[1], long_axis[0]], dtype=np.float64)
+    short_normal = np.array([-short_axis[1], short_axis[0]], dtype=np.float64)
+    if long_normal[1] > 0:
+        long_normal = -long_normal
+    if short_normal[1] > 0:
+        short_normal = -short_normal
+
+    long_length = (long_edges[0][4] + long_edges[1][4]) / 2.0
+    short_length = (short_edges[0][4] + short_edges[1][4]) / 2.0
+    orientation = 'horizontal' if abs(long_direction[0]) >= abs(long_direction[1]) else 'vertical'
+    return {
+        'origin': pts[0],
+        'long_axis': long_axis,
+        'short_axis': short_axis,
+        'long_start': long_start,
+        'long_end': long_end,
+        'long_normal': long_normal,
+        'long_length': long_length,
+        'short_start': short_start,
+        'short_end': short_end,
+        'short_normal': short_normal,
+        'short_length': short_length,
+        'orientation': orientation,
+    }
+
+
+def _active_segments_from_projection(
+    projection: np.ndarray,
+    threshold: int,
+    merge_gap: int,
+) -> list[tuple[int, int]]:
+    active = projection > threshold
+    segments = []
+    start = None
+    for idx, is_active in enumerate(active):
+        if is_active and start is None:
+            start = idx
+        elif not is_active and start is not None:
+            segments.append((start, idx))
+            start = None
+    if start is not None:
+        segments.append((start, len(active)))
+
+    merged_segments = []
+    for seg_start, seg_end in segments:
+        if not merged_segments:
+            merged_segments.append([seg_start, seg_end])
+            continue
+        gap = seg_start - merged_segments[-1][1]
+        if gap <= merge_gap:
+            merged_segments[-1][1] = seg_end
+        else:
+            merged_segments.append([seg_start, seg_end])
+    return [(start, end) for start, end in merged_segments if end > start]
+
+
+def _equal_segments_from_range(
+    start: float,
+    end: float,
+    target_size: float,
+) -> list[tuple[float, float]]:
+    length = max(0.0, end - start)
+    if target_size <= 1 or length <= 0:
+        return [(start, end)]
+    count = max(1, int(round(length / target_size)))
+    step = length / count
+    return [(start + step * idx, start + step * (idx + 1)) for idx in range(count)]
+
+
+def _split_segment_by_target_size(
+    start: float,
+    end: float,
+    target_size: float,
+) -> list[tuple[float, float]]:
+    if target_size <= 1 or (end - start) <= target_size * CHAR_MEASURE_SPLIT_RATIO:
+        return [(start, end)]
+    return _equal_segments_from_range(start, end, target_size)
+
+
+def _char_measurements_from_line_mask(
+    mask: np.ndarray,
+    poly: list | np.ndarray,
+) -> tuple[dict | None, list[dict]]:
+    axes = _line_measure_axes(poly)
+    if axes is None:
+        return None, []
+
+    if len(mask.shape) == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    poly_arr = np.asarray(poly, dtype=np.int32).reshape(4, 2)
+    poly_mask = np.zeros(mask.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(poly_mask, [poly_arr], 1)
+    text_mask = (mask > SHRINK_LINE_MASK_THRESHOLD) & (poly_mask > 0)
+    ys, xs = np.where(text_mask)
+    if len(xs) == 0:
+        return axes, []
+
+    points = np.stack([xs, ys], axis=1).astype(np.float64)
+    rel_points = points - axes['origin']
+    long_values = rel_points @ axes['long_axis']
+    short_values = rel_points @ axes['short_axis']
+    long_min = float(long_values.min())
+    long_max = float(long_values.max()) + 1.0
+    short_min = float(short_values.min())
+    short_max = float(short_values.max()) + 1.0
+    target_size = max(1.0, float(axes['short_length']) * CHAR_MEASURE_TARGET_RATIO)
+
+    bins = max(1, int(np.ceil(long_max - long_min)))
+    bin_indices = np.clip(np.floor(long_values - long_min).astype(np.int32), 0, bins - 1)
+    projection = np.bincount(bin_indices, minlength=bins).astype(np.int32)
+    peak = int(projection.max()) if projection.size else 0
+    if peak <= 0:
+        return axes, []
+
+    threshold = max(1, int(round(peak * CHAR_MEASURE_PROJECTION_RATIO)))
+    merge_gap = max(1, int(round(target_size * CHAR_MEASURE_MERGE_GAP_RATIO)))
+    active_segments = _active_segments_from_projection(projection, threshold, merge_gap)
+    if len(active_segments) <= 1:
+        value_segments = _equal_segments_from_range(long_min, long_max, target_size)
+    else:
+        value_segments = []
+        for seg_start, seg_end in active_segments:
+            value_segments.extend(
+                _split_segment_by_target_size(
+                    long_min + seg_start,
+                    long_min + seg_end,
+                    target_size,
+                ),
+            )
+
+    measurements = []
+    for seg_start, seg_end in value_segments:
+        in_segment = (long_values >= seg_start) & (long_values < seg_end)
+        if not np.any(in_segment):
+            continue
+        seg_points = points[in_segment]
+        seg_long = long_values[in_segment]
+        seg_short = short_values[in_segment]
+        x1, y1 = seg_points.min(axis=0)
+        x2, y2 = seg_points.max(axis=0)
+        axis_width = float(seg_long.max() - seg_long.min() + 1.0)
+        axis_height = float(seg_short.max() - seg_short.min() + 1.0)
+        image_width = float(x2 - x1 + 1.0)
+        image_height = float(y2 - y1 + 1.0)
+        long_center = (float(seg_long.min()) + float(seg_long.max())) / 2.0
+        short_center = (short_min + short_max) / 2.0
+        center = axes['origin'] + axes['long_axis'] * long_center + axes['short_axis'] * short_center
+        if axes['orientation'] == 'vertical':
+            label = 'H'
+            value = image_height
+            line_start = axes['origin'] + axes['long_axis'] * float(seg_long.min()) + axes['short_axis'] * short_center
+            line_end = axes['origin'] + axes['long_axis'] * float(seg_long.max()) + axes['short_axis'] * short_center
+            normal = axes['short_axis']
+        else:
+            label = 'W'
+            value = image_width
+            line_start = axes['origin'] + axes['long_axis'] * float(seg_long.min()) + axes['short_axis'] * short_center
+            line_end = axes['origin'] + axes['long_axis'] * float(seg_long.max()) + axes['short_axis'] * short_center
+            normal = axes['short_axis']
+        if normal[1] > 0:
+            normal = -normal
+        measurements.append({
+            'label': label,
+            'value': value,
+            'line_start': line_start,
+            'line_end': line_end,
+            'normal': normal,
+            'label_center': center + normal * 10.0,
+            'bbox': [int(x1), int(y1), int(x2) + 1, int(y2) + 1],
+            'axis_width': axis_width,
+            'axis_height': axis_height,
+        })
+    return axes, measurements
+
+
 def _fit_measurement_annotation(
     start: np.ndarray,
     end: np.ndarray,
@@ -655,9 +896,55 @@ def _draw_plain_measurement_text(
     cv2.putText(canvas, text, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
 
 
+def _draw_measurement_caliper(
+    canvas: np.ndarray,
+    line_start: np.ndarray,
+    line_end: np.ndarray,
+    normal: np.ndarray,
+    text: str,
+    font_scale: float,
+    measure_color: tuple[int, int, int],
+    label_center: np.ndarray | None = None,
+) -> None:
+    if label_center is None:
+        line_start, line_end, normal, label_center = _fit_measurement_annotation(
+            line_start,
+            line_end,
+            normal,
+            canvas.shape,
+            text,
+            font_scale,
+        )
+
+    tick = 5.5
+    shadow_color = (0, 0, 0)
+    for color, thickness in ((shadow_color, 2), (measure_color, 1)):
+        cv2.line(
+            canvas,
+            tuple(np.round(line_start).astype(int)),
+            tuple(np.round(line_end).astype(int)),
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+        for point in (line_start, line_end):
+            tick_start = point - normal * tick / 2
+            tick_end = point + normal * tick / 2
+            cv2.line(
+                canvas,
+                tuple(np.round(tick_start).astype(int)),
+                tuple(np.round(tick_end).astype(int)),
+                color,
+                thickness,
+                cv2.LINE_AA,
+            )
+    _draw_plain_measurement_text(canvas, text, label_center, font_scale)
+
+
 def _draw_line_width_measurements(
     img: np.ndarray,
     shrunk_items: list[dict],
+    mask: np.ndarray | None = None,
 ) -> np.ndarray:
     canvas = img.copy()
     if not shrunk_items:
@@ -668,46 +955,42 @@ def _draw_line_width_measurements(
         poly = item.get('polygon')
         if poly is None:
             continue
-        measure = _top_short_edge_measure(poly)
-        if measure is None:
-            continue
 
-        start, end, normal, width = measure
-        if width < 3:
-            continue
-        text = str(int(round(item.get('font_width_px', width))))
-        line_start, line_end, normal, label_center = _fit_measurement_annotation(
-            start,
-            end,
-            normal,
-            canvas.shape,
-            text,
-            font_scale,
-        )
-
-        tick = 5.5
-        shadow_color = (0, 0, 0)
-        for color, thickness in ((shadow_color, 2), (LINE_WIDTH_MEASURE_COLOR, 1)):
-            cv2.line(
-                canvas,
-                tuple(np.round(line_start).astype(int)),
-                tuple(np.round(line_end).astype(int)),
-                color,
-                thickness,
-                cv2.LINE_AA,
-            )
-            for point in (line_start, line_end):
-                tick_start = point - normal * tick / 2
-                tick_end = point + normal * tick / 2
-                cv2.line(
+        if mask is not None:
+            axes, char_measurements = _char_measurements_from_line_mask(mask, poly)
+            if axes is not None and char_measurements:
+                short_label = 'W' if axes['orientation'] == 'vertical' else 'H'
+                short_color = LINE_WIDTH_MEASURE_COLOR if short_label == 'W' else LINE_HEIGHT_MEASURE_COLOR
+                _draw_measurement_caliper(
                     canvas,
-                    tuple(np.round(tick_start).astype(int)),
-                    tuple(np.round(tick_end).astype(int)),
-                    color,
-                    thickness,
-                    cv2.LINE_AA,
+                    axes['short_start'],
+                    axes['short_end'],
+                    axes['short_normal'],
+                    f'{short_label}{int(round(axes["short_length"]))}',
+                    font_scale,
+                    short_color,
                 )
-        _draw_plain_measurement_text(canvas, text, label_center, font_scale)
+                for measure in char_measurements:
+                    label = measure['label']
+                    measure_color = LINE_WIDTH_MEASURE_COLOR if label == 'W' else LINE_HEIGHT_MEASURE_COLOR
+                    _draw_measurement_caliper(
+                        canvas,
+                        measure['line_start'],
+                        measure['line_end'],
+                        measure['normal'],
+                        f'{label}{int(round(measure["value"]))}',
+                        font_scale,
+                        measure_color,
+                        measure['label_center'],
+                    )
+                continue
+
+        for label, start, end, normal, width in _edge_pair_dimension_measurements(poly):
+            if width < 3:
+                continue
+            text = f'{label}{int(round(width))}'
+            measure_color = LINE_WIDTH_MEASURE_COLOR if label == 'W' else LINE_HEIGHT_MEASURE_COLOR
+            _draw_measurement_caliper(canvas, start, end, normal, text, font_scale, measure_color)
 
     return canvas
 
@@ -1158,7 +1441,7 @@ def _save_box_visualizations(
 
     block_img = _draw_rect_boxes(mask, block_boxes, BLOCK_BOX_COLOR)
     line_img = _draw_line_polygons(mask, line_polys, LINE_BOX_COLOR)
-    line_trans_img = _draw_line_width_measurements(img, line_trans_items)
+    line_trans_img = _draw_line_width_measurements(img, line_trans_items, mask)
     center_img = _draw_aligned_boxes(img, aligned_items)
 
     imwrite(osp.join(block_dir, f'{imname}.png'), block_img)
