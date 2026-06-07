@@ -68,10 +68,20 @@ SHRINK_TRANS_MAX_COMPONENT_HEIGHT_RATIO = 1.35
 SHRINK_TRANS_MAX_COMPONENT_AREA_RATIO = 1.8
 SHRINK_TRANS_MIN_COMPONENT_COVERAGE = 0.5
 SHRINK_TRANS_MIN_LINE_COVERAGE = 0.08
-CHAR_MEASURE_PROJECTION_RATIO = 0.04
-CHAR_MEASURE_MERGE_GAP_RATIO = 0.28
 CHAR_MEASURE_TARGET_RATIO = 1.12
 CHAR_MEASURE_SPLIT_RATIO = 1.6
+CHAR_MEASURE_INK_RATIO = 0.025
+CHAR_MEASURE_INTERNAL_GAP_RATIO = 0.18
+CHAR_MEASURE_COMPLETE_RATIO = 0.72
+CHAR_MEASURE_MIN_SEGMENT_RATIO = 0.30
+CHAR_MEASURE_VALLEY_SEARCH_RATIO = 0.36
+CHAR_MEASURE_VALLEY_RATIO = 0.12
+CHAR_MEASURE_INK_TARGET_MIN_RATIO = 0.45
+CHAR_MEASURE_INK_TARGET_MAX_RATIO = 1.15
+CHAR_MEASURE_LANE_INK_RATIO = 0.08
+CHAR_MEASURE_RUBY_LANE_WIDTH_RATIO = 0.55
+CHAR_MEASURE_RUBY_LANE_PIXEL_RATIO = 0.35
+CHAR_MEASURE_MAIN_LANE_PADDING = 1.0
 ALIGN_MASK_DILATE_SIZE = 9
 ALIGN_FLOOD_DIFF = 28
 ALIGN_MASK_SMOOTH_RADIUS = 7
@@ -700,10 +710,9 @@ def _line_measure_axes(poly: list | np.ndarray) -> dict | None:
     }
 
 
-def _active_segments_from_projection(
+def _projection_segments(
     projection: np.ndarray,
     threshold: int,
-    merge_gap: int,
 ) -> list[tuple[int, int]]:
     active = projection > threshold
     segments = []
@@ -716,7 +725,104 @@ def _active_segments_from_projection(
             start = None
     if start is not None:
         segments.append((start, len(active)))
+    return [(seg_start, seg_end) for seg_start, seg_end in segments if seg_end > seg_start]
 
+
+def _split_projection_segment_by_valleys(
+    projection: np.ndarray,
+    start: int,
+    end: int,
+    target_size: float,
+) -> list[tuple[int, int]]:
+    length = end - start
+    if target_size <= 1 or length <= target_size * CHAR_MEASURE_COMPLETE_RATIO:
+        return [(start, end)]
+
+    count = max(1, int(round(length / target_size)))
+    if count <= 1:
+        return [(start, end)]
+
+    local_projection = projection[start:end]
+    peak = int(local_projection.max()) if local_projection.size else 0
+    if peak <= 0:
+        return [(start, end)]
+
+    min_piece = max(3, int(round(target_size * CHAR_MEASURE_MIN_SEGMENT_RATIO)))
+    if length < min_piece * count:
+        return [(start, end)]
+
+    window = max(2, int(round(target_size * CHAR_MEASURE_VALLEY_SEARCH_RATIO)))
+    step = length / count
+    cuts = []
+    found_deep_valley = False
+    previous_cut = start
+    for idx in range(1, count):
+        expected = int(round(start + step * idx))
+        remaining = count - idx
+        lo = max(start + min_piece, previous_cut + min_piece, expected - window)
+        hi = min(end - min_piece * remaining, expected + window + 1)
+        if hi <= lo:
+            cut = max(previous_cut + min_piece, min(expected, end - min_piece * remaining))
+        else:
+            search = projection[lo:hi]
+            valley_offset = int(np.argmin(search))
+            cut = lo + valley_offset
+            if int(search[valley_offset]) <= max(1, int(round(peak * CHAR_MEASURE_VALLEY_RATIO))):
+                found_deep_valley = True
+        cuts.append(cut)
+        previous_cut = cut
+
+    if not found_deep_valley and length <= target_size * CHAR_MEASURE_SPLIT_RATIO:
+        return [(start, end)]
+
+    bounds = [start] + cuts + [end]
+    return [
+        (seg_start, seg_end)
+        for seg_start, seg_end in zip(bounds, bounds[1:])
+        if seg_end - seg_start >= 2
+    ]
+
+
+def _target_size_from_ink_segments(
+    raw_segments: list[tuple[int, int]],
+    fallback_size: float,
+) -> float:
+    lengths = [float(seg_end - seg_start) for seg_start, seg_end in raw_segments if seg_end > seg_start]
+    if not lengths or fallback_size <= 1:
+        return fallback_size
+
+    lower_bound = fallback_size * CHAR_MEASURE_INK_TARGET_MIN_RATIO
+    upper_bound = fallback_size * CHAR_MEASURE_INK_TARGET_MAX_RATIO
+    major_lengths = [length for length in lengths if lower_bound <= length <= upper_bound]
+    if not major_lengths:
+        return fallback_size
+
+    major_lengths.sort()
+    return float(major_lengths[len(major_lengths) // 2])
+
+
+def _short_axis_lanes(
+    short_values: np.ndarray,
+    fallback_target_size: float,
+) -> list[dict[str, float]]:
+    if short_values.size == 0:
+        return []
+
+    short_min = float(short_values.min())
+    short_max = float(short_values.max()) + 1.0
+    bins = max(1, int(np.ceil(short_max - short_min)))
+    bin_indices = np.clip(np.floor(short_values - short_min).astype(np.int32), 0, bins - 1)
+    projection = np.bincount(bin_indices, minlength=bins).astype(np.int32)
+    peak = int(projection.max()) if projection.size else 0
+    if peak <= 0:
+        return []
+
+    threshold = max(1, int(round(peak * CHAR_MEASURE_LANE_INK_RATIO)))
+    segments = _projection_segments(projection, threshold)
+    if not segments:
+        return []
+
+    merge_gap = max(1, int(round(fallback_target_size * 0.06)))
     merged_segments = []
     for seg_start, seg_end in segments:
         if not merged_segments:
@@ -727,30 +833,51 @@ def _active_segments_from_projection(
             merged_segments[-1][1] = seg_end
         else:
             merged_segments.append([seg_start, seg_end])
-    return [(start, end) for start, end in merged_segments if end > start]
+
+    lanes = []
+    for seg_start, seg_end in merged_segments:
+        pixels = int(projection[seg_start:seg_end].sum())
+        width = float(seg_end - seg_start)
+        lanes.append({
+            'start': short_min + float(seg_start),
+            'end': short_min + float(seg_end),
+            'width': width,
+            'pixels': float(pixels),
+        })
+    return lanes
 
 
-def _equal_segments_from_range(
-    start: float,
-    end: float,
-    target_size: float,
-) -> list[tuple[float, float]]:
-    length = max(0.0, end - start)
-    if target_size <= 1 or length <= 0:
-        return [(start, end)]
-    count = max(1, int(round(length / target_size)))
-    step = length / count
-    return [(start + step * idx, start + step * (idx + 1)) for idx in range(count)]
+def _main_text_lane_mask(
+    short_values: np.ndarray,
+    lanes: list[dict[str, float]],
+) -> np.ndarray:
+    keep_all = np.ones(short_values.shape, dtype=np.bool_)
+    if short_values.size == 0 or len(lanes) < 2:
+        return keep_all
 
+    main_lane = max(lanes, key=lambda lane: (lane['width'], lane['pixels']))
+    other_lanes = [lane for lane in lanes if lane is not main_lane]
+    if not other_lanes:
+        return keep_all
 
-def _split_segment_by_target_size(
-    start: float,
-    end: float,
-    target_size: float,
-) -> list[tuple[float, float]]:
-    if target_size <= 1 or (end - start) <= target_size * CHAR_MEASURE_SPLIT_RATIO:
-        return [(start, end)]
-    return _equal_segments_from_range(start, end, target_size)
+    ruby_lanes = [
+        lane
+        for lane in other_lanes
+        if (
+            lane['width'] <= main_lane['width'] * CHAR_MEASURE_RUBY_LANE_WIDTH_RATIO
+            or lane['pixels'] <= main_lane['pixels'] * CHAR_MEASURE_RUBY_LANE_PIXEL_RATIO
+        )
+    ]
+    if len(ruby_lanes) != len(other_lanes):
+        return keep_all
+
+    lane_start = main_lane['start'] - CHAR_MEASURE_MAIN_LANE_PADDING
+    lane_end = main_lane['end'] + CHAR_MEASURE_MAIN_LANE_PADDING
+    lane_mask = (short_values >= lane_start) & (short_values < lane_end)
+    if int(np.count_nonzero(lane_mask)) < SHRINK_LINE_MIN_PIXELS:
+        return keep_all
+
+    return lane_mask
 
 
 def _char_measurements_from_line_mask(
@@ -775,11 +902,21 @@ def _char_measurements_from_line_mask(
     rel_points = points - axes['origin']
     long_values = rel_points @ axes['long_axis']
     short_values = rel_points @ axes['short_axis']
+    fallback_target_size = max(1.0, float(axes['short_length']) * CHAR_MEASURE_TARGET_RATIO)
+
+    lanes = _short_axis_lanes(short_values, fallback_target_size)
+    lane_mask = _main_text_lane_mask(short_values, lanes)
+    if not np.all(lane_mask):
+        points = points[lane_mask]
+        long_values = long_values[lane_mask]
+        short_values = short_values[lane_mask]
+        if points.size == 0:
+            return axes, []
+
     long_min = float(long_values.min())
     long_max = float(long_values.max()) + 1.0
     short_min = float(short_values.min())
     short_max = float(short_values.max()) + 1.0
-    target_size = max(1.0, float(axes['short_length']) * CHAR_MEASURE_TARGET_RATIO)
 
     bins = max(1, int(np.ceil(long_max - long_min)))
     bin_indices = np.clip(np.floor(long_values - long_min).astype(np.int32), 0, bins - 1)
@@ -788,21 +925,43 @@ def _char_measurements_from_line_mask(
     if peak <= 0:
         return axes, []
 
-    threshold = max(1, int(round(peak * CHAR_MEASURE_PROJECTION_RATIO)))
-    merge_gap = max(1, int(round(target_size * CHAR_MEASURE_MERGE_GAP_RATIO)))
-    active_segments = _active_segments_from_projection(projection, threshold, merge_gap)
-    if len(active_segments) <= 1:
-        value_segments = _equal_segments_from_range(long_min, long_max, target_size)
-    else:
-        value_segments = []
-        for seg_start, seg_end in active_segments:
-            value_segments.extend(
-                _split_segment_by_target_size(
-                    long_min + seg_start,
-                    long_min + seg_end,
-                    target_size,
-                ),
-            )
+    threshold = max(1, int(round(peak * CHAR_MEASURE_INK_RATIO)))
+    raw_segments = _projection_segments(projection, threshold)
+    if not raw_segments:
+        return axes, []
+
+    target_size = _target_size_from_ink_segments(raw_segments, fallback_target_size)
+    max_internal_gap = max(2, int(round(target_size * CHAR_MEASURE_INTERNAL_GAP_RATIO)))
+    active_segments = []
+    current_start, current_end = raw_segments[0]
+    for seg_start, seg_end in raw_segments[1:]:
+        gap = seg_start - current_end
+        current_span = current_end - current_start
+        current_complete = current_span >= target_size * CHAR_MEASURE_COMPLETE_RATIO
+        if current_complete and gap > max_internal_gap:
+            active_segments.append((current_start, current_end))
+            current_start, current_end = seg_start, seg_end
+        else:
+            current_end = seg_end
+    active_segments.append((current_start, current_end))
+
+    split_segments = []
+    for seg_start, seg_end in active_segments:
+        split_segments.extend(
+            _split_projection_segment_by_valleys(
+                projection,
+                seg_start,
+                seg_end,
+                target_size,
+            ),
+        )
+    if not split_segments:
+        split_segments = active_segments
+
+    value_segments = [
+        (long_min + seg_start, long_min + seg_end)
+        for seg_start, seg_end in split_segments
+    ]
 
     measurements = []
     for seg_start, seg_end in value_segments:
