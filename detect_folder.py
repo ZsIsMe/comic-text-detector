@@ -38,6 +38,14 @@ LINE_TRANS_BOX_COLOR = (255, 0, 255)  # 洋紅色：line + trans 混合結果
 LINE_WIDTH_MEASURE_COLOR = (255, 235, 0)  # 青色：接近水平尺寸測量卡尺
 LINE_HEIGHT_MEASURE_COLOR = (0, 165, 255)  # 橘色：接近垂直尺寸測量卡尺
 LINE_WIDTH_TEXT_COLOR = (0, 255, 255)  # 黃色：尺寸像素數字
+LINE_HEIGHT_TEXT_SCALE_RATIO = 0.5
+LINE_HEIGHT_CALIPER_GAP = 4.0
+LINE_HEIGHT_LABEL_GAP = 8.0
+LINE_MEASURE_THIN_TEXT_SCALE_RATIO = 2.0
+CHAR_MEASURE_BOX_COLOR = (150, 235, 150)
+CHAR_MEASURE_BOX_OUTLINE_COLOR = (60, 220, 60)
+CHAR_MEASURE_BOX_ALPHA = 0.36
+CHAR_MEASURE_BOX_TEXT_SCALE_RATIO = 0.38
 ALIGNED_BOX_COLOR = (255, 255, 0)  # 青色：氣泡對齊後的文字區塊
 ALIGN_MASK_COLOR = (179, 255, 255)  # 淡黃色：候選氣泡區域
 
@@ -810,34 +818,37 @@ def _char_measurements_from_line_mask(
         axis_height = float(seg_short.max() - seg_short.min() + 1.0)
         image_width = float(x2 - x1 + 1.0)
         image_height = float(y2 - y1 + 1.0)
-        long_center = (float(seg_long.min()) + float(seg_long.max())) / 2.0
-        short_center = (short_min + short_max) / 2.0
-        center = axes['origin'] + axes['long_axis'] * long_center + axes['short_axis'] * short_center
-        if axes['orientation'] == 'vertical':
-            label = 'H'
-            value = image_height
-            line_start = axes['origin'] + axes['long_axis'] * float(seg_long.min()) + axes['short_axis'] * short_center
-            line_end = axes['origin'] + axes['long_axis'] * float(seg_long.max()) + axes['short_axis'] * short_center
-            normal = axes['short_axis']
-        else:
-            label = 'W'
-            value = image_width
-            line_start = axes['origin'] + axes['long_axis'] * float(seg_long.min()) + axes['short_axis'] * short_center
-            line_end = axes['origin'] + axes['long_axis'] * float(seg_long.max()) + axes['short_axis'] * short_center
-            normal = axes['short_axis']
-        if normal[1] > 0:
-            normal = -normal
-        measurements.append({
-            'label': label,
-            'value': value,
-            'line_start': line_start,
-            'line_end': line_end,
-            'normal': normal,
-            'label_center': center + normal * 10.0,
-            'bbox': [int(x1), int(y1), int(x2) + 1, int(y2) + 1],
-            'axis_width': axis_width,
-            'axis_height': axis_height,
-        })
+        bbox = [int(x1), int(y1), int(x2) + 1, int(y2) + 1]
+        measurements.extend([
+            {
+                'label': 'W',
+                'value': image_width,
+                'line_start': np.array([float(x1), float(y1) - LINE_HEIGHT_CALIPER_GAP], dtype=np.float64),
+                'line_end': np.array([float(x2), float(y1) - LINE_HEIGHT_CALIPER_GAP], dtype=np.float64),
+                'normal': np.array([0.0, -1.0], dtype=np.float64),
+                'label_center': np.array(
+                    [(float(x1) + float(x2)) / 2.0, float(y1) - LINE_HEIGHT_LABEL_GAP],
+                    dtype=np.float64,
+                ),
+                'bbox': bbox,
+                'axis_width': axis_width,
+                'axis_height': axis_height,
+            },
+            {
+                'label': 'H',
+                'value': image_height,
+                'line_start': np.array([float(x1) - LINE_HEIGHT_CALIPER_GAP, float(y1)], dtype=np.float64),
+                'line_end': np.array([float(x1) - LINE_HEIGHT_CALIPER_GAP, float(y2)], dtype=np.float64),
+                'normal': np.array([-1.0, 0.0], dtype=np.float64),
+                'label_center': np.array(
+                    [float(x1) - LINE_HEIGHT_LABEL_GAP, (float(y1) + float(y2)) / 2.0],
+                    dtype=np.float64,
+                ),
+                'bbox': bbox,
+                'axis_width': axis_width,
+                'axis_height': axis_height,
+            },
+        ])
     return axes, measurements
 
 
@@ -848,25 +859,26 @@ def _fit_measurement_annotation(
     image_shape: tuple[int, int] | tuple[int, int, int],
     text: str,
     font_scale: float,
+    font_face: int = cv2.FONT_HERSHEY_SIMPLEX,
+    stroke_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     height, width = image_shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, 1)
+    (text_w, text_h), baseline = cv2.getTextSize(text, font_face, font_scale, 1)
 
     # Prefer the outside/top side; flip below the line if the label would be clipped.
     for candidate_normal in (normal, -normal):
-        line_start = start + candidate_normal * 4.0
-        line_end = end + candidate_normal * 4.0
-        label_center = (line_start + line_end) / 2.0 + candidate_normal * 10.0
+        line_start = start + candidate_normal * 4.0 * stroke_scale
+        line_end = end + candidate_normal * 4.0 * stroke_scale
+        label_center = (line_start + line_end) / 2.0 + candidate_normal * 10.0 * stroke_scale
         x = label_center[0] - text_w / 2
         y_top = label_center[1] - text_h / 2
         y_bottom = label_center[1] + text_h / 2 + baseline
         if 1 <= x and x + text_w <= width - 1 and 1 <= y_top and y_bottom <= height - 1:
             return line_start, line_end, candidate_normal, label_center
 
-    line_start = start + normal * 4.0
-    line_end = end + normal * 4.0
-    label_center = (line_start + line_end) / 2.0 + normal * 10.0
+    line_start = start + normal * 4.0 * stroke_scale
+    line_end = end + normal * 4.0 * stroke_scale
+    label_center = (line_start + line_end) / 2.0 + normal * 10.0 * stroke_scale
     return line_start, line_end, normal, label_center
 
 
@@ -876,24 +888,26 @@ def _draw_plain_measurement_text(
     center: np.ndarray,
     font_scale: float,
     color: tuple[int, int, int] = (0, 0, 0),
+    draw_background: bool = True,
+    font_face: int = cv2.FONT_HERSHEY_SIMPLEX,
 ) -> None:
-    font = cv2.FONT_HERSHEY_SIMPLEX
     thickness = 1
-    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    (text_w, text_h), baseline = cv2.getTextSize(text, font_face, font_scale, thickness)
     x = int(round(center[0] - text_w / 2))
     y = int(round(center[1] + text_h / 2))
     height, width = canvas.shape[:2]
     x = max(1, min(x, width - text_w - 2))
     y = max(text_h + 1, min(y, height - baseline - 2))
-    pad = 2
-    cv2.rectangle(
-        canvas,
-        (x - pad, y - text_h - pad),
-        (x + text_w + pad, y + baseline + pad),
-        (255, 255, 255),
-        -1,
-    )
-    cv2.putText(canvas, text, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
+    if draw_background:
+        pad = 2
+        cv2.rectangle(
+            canvas,
+            (x - pad, y - text_h - pad),
+            (x + text_w + pad, y + baseline + pad),
+            (255, 255, 255),
+            -1,
+        )
+    cv2.putText(canvas, text, (x, y), font_face, font_scale, color, thickness, cv2.LINE_AA)
 
 
 def _draw_measurement_caliper(
@@ -905,6 +919,10 @@ def _draw_measurement_caliper(
     font_scale: float,
     measure_color: tuple[int, int, int],
     label_center: np.ndarray | None = None,
+    draw_text_background: bool = True,
+    font_face: int = cv2.FONT_HERSHEY_SIMPLEX,
+    text_color: tuple[int, int, int] = (0, 0, 0),
+    stroke_scale: float = 1.0,
 ) -> None:
     if label_center is None:
         line_start, line_end, normal, label_center = _fit_measurement_annotation(
@@ -914,11 +932,15 @@ def _draw_measurement_caliper(
             canvas.shape,
             text,
             font_scale,
+            font_face,
+            stroke_scale,
         )
 
-    tick = 5.5
+    tick = 5.5 * stroke_scale
     shadow_color = (0, 0, 0)
-    for color, thickness in ((shadow_color, 2), (measure_color, 1)):
+    shadow_thickness = max(1, int(round(2 * stroke_scale)))
+    measure_thickness = max(1, int(round(stroke_scale)))
+    for color, thickness in ((shadow_color, shadow_thickness), (measure_color, measure_thickness)):
         cv2.line(
             canvas,
             tuple(np.round(line_start).astype(int)),
@@ -938,19 +960,115 @@ def _draw_measurement_caliper(
                 thickness,
                 cv2.LINE_AA,
             )
-    _draw_plain_measurement_text(canvas, text, label_center, font_scale)
+    _draw_plain_measurement_text(
+        canvas,
+        text,
+        label_center,
+        font_scale,
+        color=text_color,
+        draw_background=draw_text_background,
+        font_face=font_face,
+    )
+
+
+def _draw_char_measurement_boxes(
+    canvas: np.ndarray,
+    measurements: list[dict],
+    render_scale: float,
+    font_scale: float,
+    font_face: int,
+    text_color: tuple[int, int, int],
+    stroke_scale: float,
+) -> None:
+    grouped: dict[tuple[int, int, int, int], dict[str, float]] = {}
+    for measure in measurements:
+        bbox = measure.get('bbox')
+        label = measure.get('label')
+        if bbox is None or label not in ('W', 'H'):
+            continue
+        key = tuple(int(value) for value in bbox)
+        grouped.setdefault(key, {})[label] = float(measure['value'])
+
+    height, width = canvas.shape[:2]
+    label_font_scale = font_scale * CHAR_MEASURE_BOX_TEXT_SCALE_RATIO
+    outline_color = CHAR_MEASURE_BOX_OUTLINE_COLOR
+    outline_thickness = max(1, int(round(stroke_scale)))
+    for bbox, values in grouped.items():
+        if 'W' not in values and 'H' not in values:
+            continue
+
+        x1, y1, x2, y2 = [int(round(value * render_scale)) for value in bbox]
+        x1 = max(0, min(x1, width - 1))
+        y1 = max(0, min(y1, height - 1))
+        x2 = max(x1 + 1, min(x2, width))
+        y2 = max(y1 + 1, min(y2, height))
+
+        roi = canvas[y1:y2, x1:x2]
+        if roi.size:
+            tint = np.full_like(roi, CHAR_MEASURE_BOX_COLOR, dtype=np.uint8)
+            cv2.addWeighted(tint, CHAR_MEASURE_BOX_ALPHA, roi, 1.0 - CHAR_MEASURE_BOX_ALPHA, 0, roi)
+        cv2.rectangle(canvas, (x1, y1), (x2 - 1, y2 - 1), outline_color, outline_thickness, cv2.LINE_AA)
+
+        label_parts = []
+        if 'W' in values:
+            label_parts.append(f'W{int(round(values["W"]))}')
+        if 'H' in values:
+            label_parts.append(f'H{int(round(values["H"]))}')
+        text = ''.join(label_parts)
+        (text_w, text_h), baseline = cv2.getTextSize(text, font_face, label_font_scale, 1)
+        label_y = y1 + text_h + 1
+        if y1 - baseline - 2 >= text_h:
+            label_y = y1 - baseline - 2
+        center = np.array(
+            [
+                max(text_w / 2 + 1, min((x1 + x2) / 2.0, width - text_w / 2 - 2)),
+                label_y - text_h / 2.0,
+            ],
+            dtype=np.float64,
+        )
+        _draw_plain_measurement_text(
+            canvas,
+            text,
+            center,
+            label_font_scale,
+            color=text_color,
+            draw_background=False,
+            font_face=font_face,
+        )
 
 
 def _draw_line_width_measurements(
     img: np.ndarray,
     shrunk_items: list[dict],
     mask: np.ndarray | None = None,
+    thin_text: bool = False,
+    draw_text_background: bool | None = None,
+    render_scale: float = 1.0,
+    text_color: tuple[int, int, int] = (0, 0, 0),
+    stroke_scale: float | None = None,
+    char_box_measurements: bool = False,
 ) -> np.ndarray:
-    canvas = img.copy()
+    if render_scale == 1.0:
+        canvas = img.copy()
+    else:
+        canvas = cv2.resize(
+            img,
+            None,
+            fx=render_scale,
+            fy=render_scale,
+            interpolation=cv2.INTER_CUBIC,
+        )
     if not shrunk_items:
         return canvas
 
-    font_scale = max(0.26, min(0.34, canvas.shape[1] / 2500))
+    font_scale = max(0.26, min(0.34, img.shape[1] / 2500)) * render_scale
+    font_face = cv2.FONT_HERSHEY_PLAIN if thin_text else cv2.FONT_HERSHEY_SIMPLEX
+    if thin_text:
+        font_scale *= LINE_MEASURE_THIN_TEXT_SCALE_RATIO
+    if draw_text_background is None:
+        draw_text_background = not thin_text
+    if stroke_scale is None:
+        stroke_scale = render_scale
     for item in shrunk_items:
         poly = item.get('polygon')
         if poly is None:
@@ -958,30 +1076,35 @@ def _draw_line_width_measurements(
 
         if mask is not None:
             axes, char_measurements = _char_measurements_from_line_mask(mask, poly)
+            if char_box_measurements:
+                if axes is not None and char_measurements:
+                    _draw_char_measurement_boxes(
+                        canvas,
+                        char_measurements,
+                        render_scale,
+                        font_scale,
+                        font_face,
+                        text_color,
+                        stroke_scale,
+                    )
+                continue
             if axes is not None and char_measurements:
-                short_label = 'W' if axes['orientation'] == 'vertical' else 'H'
-                short_color = LINE_WIDTH_MEASURE_COLOR if short_label == 'W' else LINE_HEIGHT_MEASURE_COLOR
-                _draw_measurement_caliper(
-                    canvas,
-                    axes['short_start'],
-                    axes['short_end'],
-                    axes['short_normal'],
-                    f'{short_label}{int(round(axes["short_length"]))}',
-                    font_scale,
-                    short_color,
-                )
                 for measure in char_measurements:
                     label = measure['label']
                     measure_color = LINE_WIDTH_MEASURE_COLOR if label == 'W' else LINE_HEIGHT_MEASURE_COLOR
                     _draw_measurement_caliper(
                         canvas,
-                        measure['line_start'],
-                        measure['line_end'],
+                        measure['line_start'] * render_scale,
+                        measure['line_end'] * render_scale,
                         measure['normal'],
                         f'{label}{int(round(measure["value"]))}',
-                        font_scale,
+                        font_scale * LINE_HEIGHT_TEXT_SCALE_RATIO if label == 'H' else font_scale,
                         measure_color,
-                        measure['label_center'],
+                        measure['label_center'] * render_scale,
+                        draw_text_background=draw_text_background and label != 'H',
+                        font_face=font_face,
+                        text_color=text_color,
+                        stroke_scale=stroke_scale,
                     )
                 continue
 
@@ -990,7 +1113,19 @@ def _draw_line_width_measurements(
                 continue
             text = f'{label}{int(round(width))}'
             measure_color = LINE_WIDTH_MEASURE_COLOR if label == 'W' else LINE_HEIGHT_MEASURE_COLOR
-            _draw_measurement_caliper(canvas, start, end, normal, text, font_scale, measure_color)
+            _draw_measurement_caliper(
+                canvas,
+                start * render_scale,
+                end * render_scale,
+                normal,
+                text,
+                font_scale * LINE_HEIGHT_TEXT_SCALE_RATIO if label == 'H' else font_scale,
+                measure_color,
+                draw_text_background=draw_text_background and label != 'H',
+                font_face=font_face,
+                text_color=text_color,
+                stroke_scale=stroke_scale,
+            )
 
     return canvas
 

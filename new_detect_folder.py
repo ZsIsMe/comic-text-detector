@@ -56,6 +56,7 @@ ALIGN_DIR = 'align'
 NECK_DIR = 'neck'
 ALIGN_MASK_DIR = 'masks'
 MEASURE_PREVIEW_DIR = 'measure_preview'
+MEASURE_WH_PREVIEW_DIR = 'measure_wh_preview'
 ONLY_TEXT_DIR = 'only_text'
 INPAINTED_DIR = 'inpainted'
 BLOCK_MAP_JSON = 'block_map.json'
@@ -99,6 +100,7 @@ def _ensure_dirs(ctd_dir: str) -> dict[str, str]:
         'neck': osp.join(progressing_dir, ALIGN_DIR, NECK_DIR),
         'align_masks': osp.join(progressing_dir, ALIGN_DIR, ALIGN_MASK_DIR),
         'measure_preview': osp.join(ctd_dir, MEASURE_PREVIEW_DIR),
+        'measure_wh_preview': osp.join(ctd_dir, MEASURE_WH_PREVIEW_DIR),
         'only_text': osp.join(ctd_dir, ONLY_TEXT_DIR),
         'inpainted': osp.join(ctd_dir, INPAINTED_DIR),
     }
@@ -1054,6 +1056,32 @@ def _write_measure_previews(
         imwrite(osp.join(paths['measure_preview'], f'{Path(page_name).stem}.png'), canvas)
 
 
+def _write_measure_wh_previews(
+    img_dir: str,
+    paths: dict[str, str],
+    line_trans_map: dict,
+    measure_map: dict,
+) -> None:
+    line_pages = line_trans_map.get('transMap', {})
+    measure_pages = measure_map.get('pages', {})
+
+    for page_name in tqdm(measure_pages.keys(), desc='measure W/H preview'):
+        img = imread(_image_path_for_page(img_dir, page_name))
+        mask = imread(_mask_path_for_page(paths, page_name), cv2.IMREAD_GRAYSCALE)
+        canvas = _draw_line_width_measurements(
+            img,
+            line_pages.get(page_name, []),
+            mask,
+            thin_text=True,
+            draw_text_background=False,
+            render_scale=2.0,
+            text_color=(0, 255, 0),
+            stroke_scale=1.0,
+            char_box_measurements=True,
+        )
+        imwrite(osp.join(paths['measure_wh_preview'], f'{Path(page_name).stem}.png'), canvas)
+
+
 def _write_line_trans_previews(
     img_dir: str,
     paths: dict[str, str],
@@ -1459,6 +1487,7 @@ def run(
     model_path: str,
     device: str | None = None,
     only_align: bool = False,
+    only_measure_wh_preview: bool = False,
     need_neck: bool = False,
     save_line_trans_preview: bool = False,
     save_center_preview: bool = False,
@@ -1478,6 +1507,19 @@ def run(
     aligned_box_map_path = osp.join(paths['progressing'], ALIGNED_BOX_MAP_JSON)
     measure_path = osp.join(ctd_dir, MEASURE_JSON)
     measure_debug_path = osp.join(ctd_dir, MEASURE_DEBUG_JSON)
+
+    if only_measure_wh_preview:
+        if not osp.isfile(line_trans_map_path):
+            raise FileNotFoundError(f'--only-measure-wh-preview 需要既有 line trans map：{line_trans_map_path}')
+        if not osp.isfile(measure_path):
+            raise FileNotFoundError(f'--only-measure-wh-preview 需要既有 measure.json：{measure_path}')
+        line_trans_map = _load_json(line_trans_map_path)
+        measure_map = _load_json(measure_path)
+        print(f'只輸出 measure_wh_preview：{img_dir}')
+        _write_measure_wh_previews(img_dir, paths, line_trans_map, measure_map)
+        print('完成。輸出：')
+        print(f'  - {paths["measure_wh_preview"]}/<檔名>.png')
+        return len(measure_map.get('pages', {}))
 
     if only_align:
         if not osp.isfile(block_map_path):
@@ -1520,6 +1562,7 @@ def run(
     _write_json(measure_path, measure_map)
     _write_json(measure_debug_path, measure_debug_map)
     _write_measure_previews(img_dir, paths, line_trans_map, aligned_box_map, measure_map)
+    _write_measure_wh_previews(img_dir, paths, line_trans_map, measure_map)
     _write_split_mask_images(
         paths,
         list(measure_map.get('pages', {}).keys()),
@@ -1559,6 +1602,7 @@ def run(
     if need_neck:
         print(f'  - {paths["neck"]}/<檔名>.png')
     print(f'  - {paths["measure_preview"]}/<檔名>.png')
+    print(f'  - {paths["measure_wh_preview"]}/<檔名>.png')
     print(f'  - {paths["only_text"]}/<檔名>.png')
     print(f'  - {paths["inpainted"]}/<檔名>.png')
     if need_neck:
@@ -1602,6 +1646,11 @@ def main() -> None:
         '--only-align',
         action='store_true',
         help='不跑模型，只讀 ctd/block_map.json 和 ctd/mask/ 重新生成對齊結果。',
+    )
+    parser.add_argument(
+        '--only-measure-wh-preview',
+        action='store_true',
+        help='只讀既有 line_trans_map.json、measure.json 和 mask，重新輸出 ctd/measure_wh_preview。',
     )
     parser.add_argument(
         '--need-neck',
@@ -1651,6 +1700,7 @@ def main() -> None:
         model_path=args.model,
         device=args.device,
         only_align=args.only_align,
+        only_measure_wh_preview=args.only_measure_wh_preview,
         need_neck=args.need_neck,
         save_line_trans_preview=args.save_line_trans_preview,
         save_center_preview=args.save_center_preview,
