@@ -1011,6 +1011,42 @@ def _char_measurements_from_line_mask(
     return axes, measurements
 
 
+def _char_boxes_from_line_mask(
+    mask: np.ndarray,
+    poly: list | np.ndarray,
+) -> tuple[dict | None, list[dict]]:
+    axes, measurements = _char_measurements_from_line_mask(mask, poly)
+    if axes is None or not measurements:
+        return axes, []
+
+    grouped: dict[tuple[int, int, int, int], dict] = {}
+    for measure in measurements:
+        bbox = measure.get('bbox')
+        label = measure.get('label')
+        if bbox is None or label not in ('W', 'H'):
+            continue
+        key = tuple(int(value) for value in bbox)
+        item = grouped.setdefault(
+            key,
+            {
+                'bbox': [int(value) for value in bbox],
+                'axis_width': float(measure.get('axis_width') or 0),
+                'axis_height': float(measure.get('axis_height') or 0),
+            },
+        )
+        if label == 'W':
+            item['width'] = float(measure['value'])
+        elif label == 'H':
+            item['height'] = float(measure['value'])
+
+    boxes = [
+        item
+        for item in grouped.values()
+        if float(item.get('width') or 0) > 0 and float(item.get('height') or 0) > 0
+    ]
+    return axes, boxes
+
+
 def _fit_measurement_annotation(
     start: np.ndarray,
     end: np.ndarray,

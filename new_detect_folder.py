@@ -21,6 +21,7 @@ from detect_folder import (
     TextDetector,
     _align_block_box,
     _align_block_boxes,
+    _char_boxes_from_line_mask,
     _clean_aligned_items,
     _draw_aligned_boxes,
     _draw_line_width_measurements,
@@ -727,6 +728,98 @@ def _upper_median(values: list[float]) -> float:
     return sorted_values[len(sorted_values) // 2]
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    sorted_values = sorted(float(value) for value in values if float(value) > 0)
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    pos = (len(sorted_values) - 1) * percentile / 100.0
+    lower = int(np.floor(pos))
+    upper = int(np.ceil(pos))
+    if lower == upper:
+        return sorted_values[lower]
+    weight = pos - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
+def _dominant_dimension_values(values: list[float]) -> list[float]:
+    valid = [float(value) for value in values if float(value) > 0]
+    if not valid:
+        return []
+    upper = _percentile(valid, 75)
+    threshold = max(1.0, upper * 0.55)
+    selected = [value for value in valid if value >= threshold]
+    return selected or valid
+
+
+def _paragraph_font_size_from_char_boxes(
+    char_boxes: list[dict],
+    orientation: str,
+) -> tuple[float | None, dict]:
+    widths = [float(box.get('width') or 0) for box in char_boxes if float(box.get('width') or 0) > 0]
+    heights = [float(box.get('height') or 0) for box in char_boxes if float(box.get('height') or 0) > 0]
+    if not widths or not heights:
+        return None, {
+            'method': 'char_box_dual_signal',
+            'accepted': False,
+            'reason': 'no_char_boxes',
+            'char_count': len(char_boxes),
+        }
+
+    primary_values = _dominant_dimension_values(widths if orientation == 'vertical' else heights)
+    secondary_values = _dominant_dimension_values(heights if orientation == 'vertical' else widths)
+    if not primary_values or not secondary_values:
+        return None, {
+            'method': 'char_box_dual_signal',
+            'accepted': False,
+            'reason': 'no_dominant_values',
+            'char_count': len(char_boxes),
+            'widths': widths,
+            'heights': heights,
+        }
+
+    primary_size = _percentile(primary_values, 60)
+    secondary_limit = max(primary_size * 1.6, primary_size + 8.0)
+    secondary_filtered = [value for value in secondary_values if value <= secondary_limit]
+    if not secondary_filtered:
+        secondary_filtered = secondary_values
+    secondary_size = _percentile(secondary_filtered, 75)
+    font_size = max(primary_size, secondary_size)
+    return font_size, {
+        'method': 'char_box_dual_signal',
+        'accepted': True,
+        'orientation': orientation,
+        'char_count': len(char_boxes),
+        'widths': widths,
+        'heights': heights,
+        'primary_values': primary_values,
+        'secondary_values': secondary_values,
+        'secondary_filtered': secondary_filtered,
+        'primary_percentile': 60,
+        'secondary_percentile': 75,
+        'primary_size': primary_size,
+        'secondary_size': secondary_size,
+        'font_size': font_size,
+    }
+
+
+def _char_boxes_for_lines(mask: np.ndarray | None, lines: list[dict]) -> list[dict]:
+    if mask is None:
+        return []
+    char_boxes = []
+    for line_index, line in enumerate(lines):
+        poly = line.get('polygon')
+        if poly is None:
+            continue
+        _, boxes = _char_boxes_from_line_mask(mask, poly)
+        for box in boxes:
+            item = dict(box)
+            item['line_index'] = line_index
+            char_boxes.append(item)
+    return char_boxes
+
+
 def _orientation_from_lines(lines: list[dict]) -> str:
     if not lines:
         return 'vertical'
@@ -743,11 +836,13 @@ def _orientation_from_lines(lines: list[dict]) -> str:
 
 def _build_measure_maps(
     img_dir: str,
+    paths: dict[str, str],
     block_map: dict,
     line_trans_map: dict,
     aligned_box_map: dict,
 ) -> tuple[dict, dict]:
     pages = {}
+    debug_pages = {}
     block_pages = block_map.get('blockMap', {})
     line_pages = line_trans_map.get('transMap', {})
     align_pages = aligned_box_map.get('transMap', {})
@@ -755,37 +850,61 @@ def _build_measure_maps(
     for page_name, align_items in align_pages.items():
         img = imread(_image_path_for_page(img_dir, page_name))
         img_h, img_w = img.shape[:2]
+        mask_path = _mask_path_for_page(paths, page_name)
+        mask = imread(mask_path, cv2.IMREAD_GRAYSCALE) if osp.isfile(mask_path) else None
         block_items = block_pages.get(page_name, [])
         line_items = line_pages.get(page_name, [])
         line_groups = _line_groups_by_block(block_items, line_items)
 
         page_items = []
+        page_debug_items = []
         for item in align_items:
             source_index = int(item.get('source_block_index', len(page_items)))
             xyxy = _xyxy_from_align_item(item)
             center = _center_from_align_item(item, xyxy, img_w, img_h)
 
             matched_lines = line_groups.get(source_index, [])
-            widths = [_line_width(line) for line in matched_lines]
-            widths = [value for value in widths if value > 0]
-            if widths:
-                font_size = _upper_median(widths)
+            orientation = _orientation_from_lines(matched_lines)
+            char_boxes = _char_boxes_for_lines(mask, matched_lines)
+            font_size, font_debug = _paragraph_font_size_from_char_boxes(char_boxes, orientation)
+            if font_size is not None:
+                font_method = 'char_box_dual_signal'
             else:
-                x1, y1, x2, y2 = xyxy
-                font_size = float(min(max(0, x2 - x1), max(0, y2 - y1)))
+                widths = [_line_width(line) for line in matched_lines]
+                widths = [value for value in widths if value > 0]
+                if widths:
+                    font_size = _upper_median(widths)
+                    font_method = 'line_width_upper_median_fallback'
+                else:
+                    x1, y1, x2, y2 = xyxy
+                    font_size = float(min(max(0, x2 - x1), max(0, y2 - y1)))
+                    font_method = 'block_short_side_fallback'
+                font_debug = {
+                    **font_debug,
+                    'fallback_method': font_method,
+                    'line_widths': widths,
+                }
 
             page_items.append({
                 'source_block_index': source_index,
                 'xyxy_pixel': xyxy,
                 'center_normalized': center,
-                'orientation': _orientation_from_lines(matched_lines),
+                'orientation': orientation,
                 'font_size': round(float(font_size), 1),
+                'font_size_method': font_method,
+            })
+            page_debug_items.append({
+                'source_block_index': source_index,
+                'font_size_debug': font_debug,
+                'char_boxes': char_boxes,
             })
         pages[page_name] = page_items
+        debug_pages[page_name] = page_debug_items
 
     measure = {'pages': pages}
     measure_debug = {
         'pages': pages,
+        'font_size': debug_pages,
         'block': block_map,
         'line': line_trans_map,
         'align': aligned_box_map,
@@ -875,6 +994,68 @@ def _draw_measure_block_labels(
             -1,
         )
         _draw_black_text(canvas, text, (x, y + text_h - baseline), font_scale)
+    return canvas
+
+
+def _draw_paragraph_font_size_markers(
+    canvas: np.ndarray,
+    measure_items: list[dict],
+    render_scale: float = 1.0,
+) -> np.ndarray:
+    if not measure_items:
+        return canvas
+
+    height, width = canvas.shape[:2]
+    font_scale = max(0.42, min(0.62, canvas.shape[1] / 1900))
+    font_face = cv2.FONT_HERSHEY_SIMPLEX
+    marker_color = (0, 210, 255)
+    fill_color = (210, 250, 255)
+    text_color = (0, 0, 0)
+    thickness = max(1, int(round(render_scale)))
+    for item in measure_items:
+        box = _label_box_for_measure_item(item)
+        x1, y1, x2, y2 = [int(round(value * render_scale)) for value in box]
+        x1 = max(0, min(x1, width - 1))
+        y1 = max(0, min(y1, height - 1))
+        x2 = max(x1 + 1, min(x2, width))
+        y2 = max(y1 + 1, min(y2, height))
+        font_size = int(round(float(item.get('font_size') or 0)))
+        if font_size <= 0:
+            continue
+
+        side = max(12, int(round(font_size * render_scale)))
+        marker_x2 = min(width, x2)
+        marker_x1 = max(0, marker_x2 - side)
+        marker_y1 = max(0, y1)
+        marker_y2 = min(height, marker_y1 + side)
+        if marker_y2 - marker_y1 < side and marker_y2 == height:
+            marker_y1 = max(0, marker_y2 - side)
+        if marker_x2 <= marker_x1 or marker_y2 <= marker_y1:
+            continue
+
+        roi = canvas[marker_y1:marker_y2, marker_x1:marker_x2]
+        if roi.size:
+            fill = np.full_like(roi, fill_color, dtype=np.uint8)
+            cv2.addWeighted(fill, 0.55, roi, 0.45, 0, roi)
+        cv2.rectangle(canvas, (marker_x1, marker_y1), (marker_x2 - 1, marker_y2 - 1), marker_color, thickness, cv2.LINE_AA)
+
+        text = f'FS{font_size}'
+        (text_w, text_h), baseline = cv2.getTextSize(text, font_face, font_scale, 1)
+        label_x = marker_x1 + max(0, (side - text_w) // 2)
+        label_y = marker_y1 - 4
+        if label_y - text_h - baseline < 1:
+            label_y = marker_y2 + text_h + 2
+        if label_y + baseline >= height:
+            label_y = marker_y1 + text_h + 2
+        label_x = max(1, min(label_x, width - text_w - 1))
+        cv2.rectangle(
+            canvas,
+            (label_x - 2, label_y - text_h - 2),
+            (label_x + text_w + 2, label_y + baseline + 2),
+            (255, 255, 255),
+            -1,
+        )
+        cv2.putText(canvas, text, (label_x, label_y), font_face, font_scale, text_color, 1, cv2.LINE_AA)
     return canvas
 
 
@@ -1048,6 +1229,10 @@ def _write_measure_previews(
             measure_items,
             align_items,
         )
+        canvas = _draw_paragraph_font_size_markers(
+            canvas,
+            measure_items,
+        )
         canvas = _draw_measure_block_labels(
             canvas,
             measure_items,
@@ -1078,6 +1263,11 @@ def _write_measure_wh_previews(
             text_color=(0, 255, 0),
             stroke_scale=1.0,
             char_box_measurements=True,
+        )
+        canvas = _draw_paragraph_font_size_markers(
+            canvas,
+            measure_pages.get(page_name, []),
+            render_scale=2.0,
         )
         imwrite(osp.join(paths['measure_wh_preview'], f'{Path(page_name).stem}.png'), canvas)
 
@@ -1509,15 +1699,31 @@ def run(
     measure_debug_path = osp.join(ctd_dir, MEASURE_DEBUG_JSON)
 
     if only_measure_wh_preview:
+        if not osp.isfile(block_map_path):
+            raise FileNotFoundError(f'--only-measure-wh-preview 需要既有 block map：{block_map_path}')
         if not osp.isfile(line_trans_map_path):
             raise FileNotFoundError(f'--only-measure-wh-preview 需要既有 line trans map：{line_trans_map_path}')
-        if not osp.isfile(measure_path):
-            raise FileNotFoundError(f'--only-measure-wh-preview 需要既有 measure.json：{measure_path}')
+        if not osp.isfile(aligned_box_map_path):
+            raise FileNotFoundError(f'--only-measure-wh-preview 需要既有 aligned box map：{aligned_box_map_path}')
+        block_map = _load_json(block_map_path)
         line_trans_map = _load_json(line_trans_map_path)
-        measure_map = _load_json(measure_path)
-        print(f'只輸出 measure_wh_preview：{img_dir}')
+        aligned_box_map = _load_json(aligned_box_map_path)
+        measure_map, measure_debug_map = _build_measure_maps(
+            img_dir,
+            paths,
+            block_map,
+            line_trans_map,
+            aligned_box_map,
+        )
+        _write_json(measure_path, measure_map)
+        _write_json(measure_debug_path, measure_debug_map)
+        print(f'重新計算 measure 並輸出 measure preview：{img_dir}')
+        _write_measure_previews(img_dir, paths, line_trans_map, aligned_box_map, measure_map)
         _write_measure_wh_previews(img_dir, paths, line_trans_map, measure_map)
         print('完成。輸出：')
+        print(f'  - {measure_path}')
+        print(f'  - {measure_debug_path}')
+        print(f'  - {paths["measure_preview"]}/<檔名>.png')
         print(f'  - {paths["measure_wh_preview"]}/<檔名>.png')
         return len(measure_map.get('pages', {}))
 
@@ -1555,6 +1761,7 @@ def run(
     _write_json(aligned_box_map_path, aligned_box_map)
     measure_map, measure_debug_map = _build_measure_maps(
         img_dir,
+        paths,
         block_map,
         line_trans_map,
         aligned_box_map,
@@ -1650,7 +1857,7 @@ def main() -> None:
     parser.add_argument(
         '--only-measure-wh-preview',
         action='store_true',
-        help='只讀既有 line_trans_map.json、measure.json 和 mask，重新輸出 ctd/measure_wh_preview。',
+        help='只讀既有 maps 和 mask，重新計算 measure.json 並輸出 measure_preview/measure_wh_preview。',
     )
     parser.add_argument(
         '--need-neck',
