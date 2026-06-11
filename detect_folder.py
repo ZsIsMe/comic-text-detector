@@ -1085,8 +1085,9 @@ def _draw_plain_measurement_text(
     color: tuple[int, int, int] = (0, 0, 0),
     draw_background: bool = True,
     font_face: int = cv2.FONT_HERSHEY_SIMPLEX,
+    thickness: int = 1,
+    line_type: int = cv2.LINE_AA,
 ) -> None:
-    thickness = 1
     (text_w, text_h), baseline = cv2.getTextSize(text, font_face, font_scale, thickness)
     x = int(round(center[0] - text_w / 2))
     y = int(round(center[1] + text_h / 2))
@@ -1102,7 +1103,7 @@ def _draw_plain_measurement_text(
             (255, 255, 255),
             -1,
         )
-    cv2.putText(canvas, text, (x, y), font_face, font_scale, color, thickness, cv2.LINE_AA)
+    cv2.putText(canvas, text, (x, y), font_face, font_scale, color, thickness, line_type)
 
 
 def _draw_measurement_caliper(
@@ -1174,6 +1175,10 @@ def _draw_char_measurement_boxes(
     font_face: int,
     text_color: tuple[int, int, int],
     stroke_scale: float,
+    text_thickness: int = 1,
+    text_line_type: int = cv2.LINE_AA,
+    draw_text_background: bool = False,
+    text_scale_ratio: float = CHAR_MEASURE_BOX_TEXT_SCALE_RATIO,
 ) -> None:
     grouped: dict[tuple[int, int, int, int], dict[str, float]] = {}
     for measure in measurements:
@@ -1185,7 +1190,7 @@ def _draw_char_measurement_boxes(
         grouped.setdefault(key, {})[label] = float(measure['value'])
 
     height, width = canvas.shape[:2]
-    label_font_scale = font_scale * CHAR_MEASURE_BOX_TEXT_SCALE_RATIO
+    label_font_scale = font_scale * text_scale_ratio
     outline_color = CHAR_MEASURE_BOX_OUTLINE_COLOR
     outline_thickness = max(1, int(round(stroke_scale)))
     for bbox, values in grouped.items():
@@ -1227,8 +1232,10 @@ def _draw_char_measurement_boxes(
             center,
             label_font_scale,
             color=text_color,
-            draw_background=False,
+            draw_background=draw_text_background,
             font_face=font_face,
+            thickness=text_thickness,
+            line_type=text_line_type,
         )
 
 
@@ -1242,6 +1249,10 @@ def _draw_line_width_measurements(
     text_color: tuple[int, int, int] = (0, 0, 0),
     stroke_scale: float | None = None,
     char_box_measurements: bool = False,
+    char_box_text_thickness: int = 1,
+    char_box_text_line_type: int = cv2.LINE_AA,
+    char_box_text_background: bool = False,
+    char_box_text_scale_ratio: float = CHAR_MEASURE_BOX_TEXT_SCALE_RATIO,
 ) -> np.ndarray:
     if render_scale == 1.0:
         canvas = img.copy()
@@ -1281,6 +1292,10 @@ def _draw_line_width_measurements(
                         font_face,
                         text_color,
                         stroke_scale,
+                        text_thickness=char_box_text_thickness,
+                        text_line_type=char_box_text_line_type,
+                        draw_text_background=char_box_text_background,
+                        text_scale_ratio=char_box_text_scale_ratio,
                     )
                 continue
             if axes is not None and char_measurements:

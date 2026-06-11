@@ -32,9 +32,9 @@ For each paragraph:
 3. Select dominant values for each dimension by dropping very small values below `0.55 * P75`.
 4. For vertical text:
    - `primary_size = P60(valid W)`
-   - `secondary_size = P75(valid H, capped by primary_size * 1.6 or primary_size + 8)`
+   - `secondary_size = P100(valid H, capped by primary_size * 1.6 or primary_size + 8)`
 5. For horizontal text, swap W/H:
-   - `primary_size = P60(valid H)`
+   - `primary_size = P100(valid H)`
    - `secondary_size = P75(valid W, capped by primary_size * 1.6 or primary_size + 8)`
 6. `font_size = max(primary_size, secondary_size)`.
 

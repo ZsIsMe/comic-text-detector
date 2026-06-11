@@ -779,12 +779,19 @@ def _paragraph_font_size_from_char_boxes(
             'heights': heights,
         }
 
-    primary_size = _percentile(primary_values, 60)
+    primary_percentile = 60
+    secondary_percentile = 75
+    if orientation == 'horizontal':
+        primary_percentile = 100
+    else:
+        secondary_percentile = 100
+
+    primary_size = _percentile(primary_values, primary_percentile)
     secondary_limit = max(primary_size * 1.6, primary_size + 8.0)
     secondary_filtered = [value for value in secondary_values if value <= secondary_limit]
     if not secondary_filtered:
         secondary_filtered = secondary_values
-    secondary_size = _percentile(secondary_filtered, 75)
+    secondary_size = _percentile(secondary_filtered, secondary_percentile)
     font_size = max(primary_size, secondary_size)
     return font_size, {
         'method': 'char_box_dual_signal',
@@ -793,11 +800,13 @@ def _paragraph_font_size_from_char_boxes(
         'char_count': len(char_boxes),
         'widths': widths,
         'heights': heights,
+        'primary_dimension': 'H' if orientation == 'horizontal' else 'W',
+        'secondary_dimension': 'W' if orientation == 'horizontal' else 'H',
         'primary_values': primary_values,
         'secondary_values': secondary_values,
         'secondary_filtered': secondary_filtered,
-        'primary_percentile': 60,
-        'secondary_percentile': 75,
+        'primary_percentile': primary_percentile,
+        'secondary_percentile': secondary_percentile,
         'primary_size': primary_size,
         'secondary_size': secondary_size,
         'font_size': font_size,
@@ -1001,6 +1010,7 @@ def _draw_paragraph_font_size_markers(
     canvas: np.ndarray,
     measure_items: list[dict],
     render_scale: float = 1.0,
+    draw_label: bool = True,
 ) -> np.ndarray:
     if not measure_items:
         return canvas
@@ -1039,6 +1049,8 @@ def _draw_paragraph_font_size_markers(
             cv2.addWeighted(fill, 0.55, roi, 0.45, 0, roi)
         cv2.rectangle(canvas, (marker_x1, marker_y1), (marker_x2 - 1, marker_y2 - 1), marker_color, thickness, cv2.LINE_AA)
 
+        if not draw_label:
+            continue
         text = f'FS{font_size}'
         (text_w, text_h), baseline = cv2.getTextSize(text, font_face, font_scale, 1)
         label_x = marker_x1 + max(0, (side - text_w) // 2)
@@ -1209,7 +1221,6 @@ def _write_measure_previews(
     aligned_box_map: dict,
     measure_map: dict,
 ) -> None:
-    line_pages = line_trans_map.get('transMap', {})
     align_pages = aligned_box_map.get('transMap', {})
     measure_pages = measure_map.get('pages', {})
 
@@ -1222,16 +1233,11 @@ def _write_measure_previews(
             img.shape[:2],
         )
         center_img = _draw_aligned_boxes_from_masks(img, align_items, preview_masks)
-        mask = imread(_mask_path_for_page(paths, page_name), cv2.IMREAD_GRAYSCALE)
-        canvas = _draw_line_width_measurements(center_img, line_pages.get(page_name, []), mask)
+        canvas = center_img.copy()
         canvas = _draw_measure_center_blocks(
             canvas,
             measure_items,
             align_items,
-        )
-        canvas = _draw_paragraph_font_size_markers(
-            canvas,
-            measure_items,
         )
         canvas = _draw_measure_block_labels(
             canvas,
@@ -1260,14 +1266,19 @@ def _write_measure_wh_previews(
             thin_text=True,
             draw_text_background=False,
             render_scale=2.0,
-            text_color=(0, 255, 0),
+            text_color=(0, 150, 0),
             stroke_scale=1.0,
             char_box_measurements=True,
+            char_box_text_thickness=1,
+            char_box_text_line_type=cv2.LINE_AA,
+            char_box_text_background=True,
+            char_box_text_scale_ratio=0.62,
         )
         canvas = _draw_paragraph_font_size_markers(
             canvas,
             measure_pages.get(page_name, []),
             render_scale=2.0,
+            draw_label=True,
         )
         imwrite(osp.join(paths['measure_wh_preview'], f'{Path(page_name).stem}.png'), canvas)
 
