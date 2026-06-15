@@ -536,6 +536,8 @@ if QT_IMPORT_ERROR is None:
         def _draw_aligned_boxes(self, painter: QPainter) -> None:
             if self.page is None:
                 return
+            height = int(painter.device().height())
+            width = int(painter.device().width())
             painter.setBrush(Qt.BrushStyle.NoBrush)
             for box in self.page.boxes:
                 color = QColor(20, 175, 95)
@@ -547,7 +549,22 @@ if QT_IMPORT_ERROR is None:
                 x1, y1, x2, y2 = box.xyxy_pixel
                 painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
                 cx, cy = box.center_pixel
-                painter.fillRect(QRectF(cx - 3, cy - 3, 6, 6), color)
+                side = max(4, int(round(float(box.font_size or 0))))
+                half = side / 2.0
+                marker_x1 = max(0, int(round(cx - half)))
+                marker_y1 = max(0, int(round(cy - half)))
+                marker_x2 = min(width, int(round(cx + half)))
+                marker_y2 = min(height, int(round(cy + half)))
+                if marker_x2 > marker_x1 and marker_y2 > marker_y1:
+                    painter.fillRect(
+                        QRectF(
+                            marker_x1,
+                            marker_y1,
+                            marker_x2 - marker_x1,
+                            marker_y2 - marker_y1,
+                        ),
+                        color,
+                    )
 
         def _draw_line_polygons(self, painter: QPainter) -> None:
             if self.page is None:
