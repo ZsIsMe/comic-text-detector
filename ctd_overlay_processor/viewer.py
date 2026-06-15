@@ -678,24 +678,6 @@ if QT_IMPORT_ERROR is None:
                     continue
                 x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
                 painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
-                width_text = compact_int_px(item.get('width'))
-                height_text = compact_int_px(item.get('height'))
-                if width_text is None or height_text is None:
-                    continue
-
-                label = f'W{width_text}H{height_text}'
-                text_w = metrics.horizontalAdvance(label)
-                text_h = metrics.ascent() + metrics.descent()
-                label_x = int(round((x1 + x2) / 2 - text_w / 2))
-                label_y = y1 - 2
-                if label_y - text_h < 1:
-                    label_y = y2 + text_h + 1
-                label_x = max(1, min(label_x, max(1, image_width - text_w - 1)))
-                label_y = max(text_h + 1, min(label_y, image_height - 1))
-
-                painter.setPen(QPen(QColor(85, 48, 12), 1))
-                painter.drawText(QPointF(label_x, label_y), label)
-                painter.setPen(QPen(QColor(245, 170, 35), 1))
             if self.hover_char_box is not None:
                 bbox = self.hover_char_box.get('bbox')
                 if isinstance(bbox, list) and len(bbox) == 4:
@@ -703,6 +685,19 @@ if QT_IMPORT_ERROR is None:
                     painter.setPen(QPen(QColor(255, 40, 120), 3))
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
+                    width_text = compact_int_px(self.hover_char_box.get('width'))
+                    height_text = compact_int_px(self.hover_char_box.get('height'))
+                    if width_text is not None and height_text is not None:
+                        label = f'W{width_text}H{height_text}'
+                        text_w = metrics.horizontalAdvance(label)
+                        text_h = metrics.ascent() + metrics.descent()
+                        label_x = int(round((x1 + x2) / 2 - text_w / 2))
+                        label_y = y1 - 2
+                        label_x = max(1, min(label_x, max(1, image_width - text_w - 1)))
+                        label_y = max(text_h + 1, min(label_y, image_height - 1))
+
+                        painter.setPen(QPen(QColor(85, 48, 12), 1))
+                        painter.drawText(QPointF(label_x, label_y), label)
 
         def _draw_font_labels(self, painter: QPainter, image_width: int, image_height: int) -> None:
             if self.page is None:
