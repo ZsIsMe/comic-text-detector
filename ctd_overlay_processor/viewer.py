@@ -194,6 +194,16 @@ if QT_IMPORT_ERROR is None:
         return f'{number:.1f}'
 
 
+    def compact_int_px(value) -> str | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number <= 0:
+            return None
+        return str(int(round(number)))
+
+
     class CtdOverlayViewer(QMainWindow):
         def __init__(self, image_dir: str | None = None) -> None:
             super().__init__()
@@ -652,6 +662,14 @@ if QT_IMPORT_ERROR is None:
         def _draw_char_boxes(self, painter: QPainter) -> None:
             if self.page is None:
                 return
+            image_height = int(painter.device().height())
+            image_width = int(painter.device().width())
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            font = QFont('Helvetica Neue', max(6, min(8, image_width // 240)))
+            font.setWeight(getattr(QFont.Weight, 'Thin', QFont.Weight.Light))
+            font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
             painter.setPen(QPen(QColor(245, 170, 35), 1))
             painter.setBrush(QColor(245, 170, 35, 32))
             for item in self.page.char_boxes:
@@ -660,6 +678,24 @@ if QT_IMPORT_ERROR is None:
                     continue
                 x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
                 painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
+                width_text = compact_int_px(item.get('width'))
+                height_text = compact_int_px(item.get('height'))
+                if width_text is None or height_text is None:
+                    continue
+
+                label = f'W{width_text}H{height_text}'
+                text_w = metrics.horizontalAdvance(label)
+                text_h = metrics.ascent() + metrics.descent()
+                label_x = int(round((x1 + x2) / 2 - text_w / 2))
+                label_y = y1 - 2
+                if label_y - text_h < 1:
+                    label_y = y2 + text_h + 1
+                label_x = max(1, min(label_x, max(1, image_width - text_w - 1)))
+                label_y = max(text_h + 1, min(label_y, image_height - 1))
+
+                painter.setPen(QPen(QColor(85, 48, 12), 1))
+                painter.drawText(QPointF(label_x, label_y), label)
+                painter.setPen(QPen(QColor(245, 170, 35), 1))
             if self.hover_char_box is not None:
                 bbox = self.hover_char_box.get('bbox')
                 if isinstance(bbox, list) and len(bbox) == 4:
