@@ -23,6 +23,7 @@ except ImportError:
 
 
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tif', '.tiff')
+CUSTOM_MEASURE_JSON = 'measure.custom.json'
 
 
 @dataclass(slots=True)
@@ -45,6 +46,7 @@ class BoxOverlay:
     block_xyxy_pixel: tuple[int, int, int, int] | None = None
     raw_align: dict[str, Any] = field(default_factory=dict)
     raw_measure: dict[str, Any] = field(default_factory=dict)
+    measure_item_index: int | None = None
 
     @property
     def width(self) -> int:
@@ -257,6 +259,19 @@ def load_char_boxes(measure_debug: dict[str, Any], page_name: str) -> list[dict[
     return result
 
 
+def normalize_measure_map(measure: dict[str, Any]) -> None:
+    pages = measure.get('pages') or {}
+    for items in pages.values():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get('text_has_stroke') is None and item.get('has_outline') is not None:
+                item['text_has_stroke'] = bool(item.get('has_outline'))
+            item.pop('has_outline', None)
+
+
 class CtdOverlayProcessor:
     """Read a folder produced by new_detect_folder.py and build overlay state."""
 
@@ -270,13 +285,15 @@ class CtdOverlayProcessor:
         self.block_map_path = self.progressing_dir / 'block_map.json'
         self.line_trans_map_path = self.progressing_dir / 'line_trans_map.json'
         self.aligned_box_map_path = self.progressing_dir / 'aligned_box_map.json'
-        self.measure_path = self.ctd_dir / 'measure.json'
+        self.ctd_measure_path = self.ctd_dir / 'measure.json'
+        self.measure_path = self.image_dir / CUSTOM_MEASURE_JSON
         self.measure_debug_path = self.ctd_dir / 'measure.debug.json'
 
         self.block_map = load_json(self.block_map_path, required=False)
         self.line_trans_map = load_json(self.line_trans_map_path, required=False)
         self.aligned_box_map = load_json(self.aligned_box_map_path, required=False)
         self.measure = load_json(self.measure_path, required=False)
+        normalize_measure_map(self.measure)
         self.measure_debug = load_json(self.measure_debug_path, required=False)
         self.source_images = find_source_images(self.image_dir)
 
@@ -306,7 +323,7 @@ class CtdOverlayProcessor:
         if self.source_images and not (self.aligned_box_map.get('transMap') or {}):
             issues.append('aligned_box_map.json 沒有任何頁面資料')
         if self.source_images and not (self.measure.get('pages') or {}):
-            issues.append('measure.json 沒有任何頁面資料')
+            issues.append(f'{CUSTOM_MEASURE_JSON} 沒有任何頁面資料')
         return issues
 
     def has_overlay_data(self) -> bool:
@@ -397,6 +414,7 @@ class CtdOverlayProcessor:
                     block_xyxy_pixel=blocks_by_source.get(source_index),
                     raw_align=dict(align_item),
                     raw_measure=dict(measure_item),
+                    measure_item_index=index if measure_items else None,
                 )
             )
 
@@ -456,7 +474,55 @@ class CtdOverlayProcessor:
             'has_measure_debug': self.measure_debug_path.is_file(),
             'has_line_trans_map': self.line_trans_map_path.is_file(),
             'has_align_masks_dir': self.align_mask_dir.is_dir(),
+            'measure_path': str(self.measure_path),
         }
+
+    def save_measure(self) -> None:
+        normalize_measure_map(self.measure)
+        self.measure_path.write_text(
+            json.dumps(self.measure, ensure_ascii=False, indent=2) + '\n',
+            encoding='utf-8',
+        )
+
+    def measure_items_for_page(self, page_name: str) -> list[Any]:
+        pages = self.measure.setdefault('pages', {})
+        items = pages.setdefault(page_name, [])
+        return items if isinstance(items, list) else []
+
+    def find_measure_item(
+        self,
+        page_name: str,
+        source_block_index: int,
+        fallback_index: int | None = None,
+    ) -> tuple[int, dict[str, Any]] | None:
+        items = self.measure_items_for_page(page_name)
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            if source_index_from_item(item, index) == source_block_index:
+                return index, item
+
+        if fallback_index is not None and 0 <= fallback_index < len(items) and isinstance(items[fallback_index], dict):
+            return fallback_index, items[fallback_index]
+        return None
+
+    def update_measure_item(
+        self,
+        page_name: str,
+        source_block_index: int,
+        updates: dict[str, Any],
+        fallback_index: int | None = None,
+    ) -> dict[str, Any] | None:
+        result = self.find_measure_item(page_name, source_block_index, fallback_index)
+        if result is None:
+            return None
+        _, item = result
+
+        item.update(updates)
+        if item.get('text_has_stroke') is None and item.get('has_outline') is not None:
+            item['text_has_stroke'] = bool(item.get('has_outline'))
+        item.pop('has_outline', None)
+        return item
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

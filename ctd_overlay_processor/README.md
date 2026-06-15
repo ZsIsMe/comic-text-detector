@@ -4,7 +4,7 @@
 
 ## 目標
 
-- 用 Python 處理器讀取 `ctd/` 內的 JSON/NPZ。
+- 用 Python 處理器讀取圖片資料夾同級的 `measure.custom.json`，並搭配 `ctd/` 內的 JSON/NPZ。
 - 讓 PySide6 程序即時控制方框、mask、字級、line polygon、char boxes 的顯示。
 - 保留 `mask` 作為資料來源，但顯示效果由程序動態疊圖。
 - 新圖片資料夾沒有 `ctd/` 時，可在 GUI 內按「生成/更新 CTD」建立資料。
@@ -13,7 +13,6 @@
 
 ```text
 <圖片資料夾>/ctd/
-  measure.json
   measure.debug.json
   progressing/
     block_map.json
@@ -21,6 +20,7 @@
     aligned_box_map.json
     mask/<檔名>.png
     align/masks/<檔名>.npz
+<圖片資料夾>/measure.custom.json
 ```
 
 ## 命令列生成資料
@@ -41,7 +41,10 @@ ctd/progressing/mask/<檔名>.png
 ctd/progressing/align/masks/<檔名>.npz
 ctd/measure.json
 ctd/measure.debug.json
+measure.custom.json
 ```
+
+`ctd/measure.json` 是偵測流程的原始量測結果；GUI 顯示與編輯只讀寫圖片資料夾同級的 `measure.custom.json`。「生成/更新 CTD」會用最新結果覆蓋 `measure.custom.json`。
 
 它不會生成 `measure_preview/`、`measure_wh_preview/`、`only_text/`、`inpainted/` 等靜態預覽圖。
 
@@ -92,4 +95,11 @@ ctd_overlay_processor/.venv/
 - char boxes
 - font labels
 
-目前它是檢視器，不會回寫 JSON。後續如果要做拖曳方框、調整字級、保存修改，可以直接擴展 `processor.py` 的資料結構和 `viewer.py` 的互動層。
+目前第一階段可編輯並保存到 `measure.custom.json`。普通修改會先暫存在當前頁；按「保存修改」或 `Command+S` 才寫入，切換頁面前也會先保存當前頁。`Command+Z` 只撤銷當前頁的普通修改，不跨頁撤銷；「字體取偶數」會對全部頁面立即保存，不支持撤銷。
+
+- 單框字體大小
+- 單框位置與大小
+- 文字黑/白
+- 原字描邊
+- 需要修復/描邊
+- 全部頁面「字體取偶數」

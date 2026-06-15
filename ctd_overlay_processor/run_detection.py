@@ -16,6 +16,7 @@ from pathlib import Path
 
 
 IMAGE_EXTENSIONS = {'.bmp', '.jpg', '.png', '.jpeg'}
+CUSTOM_MEASURE_JSON = 'measure.custom.json'
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -141,6 +142,7 @@ def run_detection(
     line_trans_map_path = osp.join(paths['progressing'], api['LINE_TRANS_MAP_JSON'])
     aligned_box_map_path = osp.join(paths['progressing'], api['ALIGNED_BOX_MAP_JSON'])
     measure_path = osp.join(ctd_dir, api['MEASURE_JSON'])
+    custom_measure_path = osp.join(image_dir, CUSTOM_MEASURE_JSON)
     measure_debug_path = osp.join(ctd_dir, api['MEASURE_DEBUG_JSON'])
 
     if only_align:
@@ -187,6 +189,7 @@ def run_detection(
     )
     enriched_count, enrich_errors = enrich_measure_map(Path(image_dir), measure_map)
     write_json(measure_path, measure_map)
+    write_json(custom_measure_path, measure_map)
     write_json(measure_debug_path, measure_debug_map)
 
     print('完成。已生成 GUI 所需資料：', flush=True)
@@ -196,6 +199,7 @@ def run_detection(
     print(f'  - {aligned_box_map_path}', flush=True)
     print(f'  - {paths["align_masks"]}/<檔名>.npz', flush=True)
     print(f'  - {measure_path}', flush=True)
+    print(f'  - {custom_measure_path}', flush=True)
     print(f'  - {measure_debug_path}', flush=True)
     print(f'文字顏色/描邊分析：{enriched_count} 個區塊', flush=True)
     if enrich_errors:
