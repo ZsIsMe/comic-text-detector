@@ -16,7 +16,7 @@ import numpy as np
 
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 try:
-    from PySide6.QtCore import QPointF, QProcess, QRectF, Qt, Signal
+    from PySide6.QtCore import QPointF, QProcess, QRectF, QSettings, Qt, Signal
     from PySide6.QtGui import QAction, QColor, QFont, QImage, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
@@ -209,10 +209,12 @@ if QT_IMPORT_ERROR is None:
             super().__init__()
             self.setWindowTitle('CTD 疊圖檢視器')
             self.resize(1280, 860)
+            self.settings = QSettings('comic-text-detector', 'ctd-overlay-processor')
+            startup_image_dir = image_dir or self._last_existing_image_dir()
             self.processor: CtdOverlayProcessor | None = None
             self.page: PageOverlay | None = None
             self.page_names: list[str] = []
-            self.current_image_dir: str | None = image_dir
+            self.current_image_dir: str | None = startup_image_dir
             self.detect_process: QProcess | None = None
             self.detect_output_chunks: list[str] = []
             self.detect_command: list[str] = []
@@ -250,8 +252,22 @@ if QT_IMPORT_ERROR is None:
             self._build_side_panel()
             self._connect_signals()
 
-            if image_dir:
-                self.load_folder(image_dir)
+            if startup_image_dir:
+                self.load_folder(startup_image_dir)
+
+        def _last_existing_image_dir(self) -> str | None:
+            value = self.settings.value('last_image_dir', '', str)
+            if not value:
+                return None
+            path = Path(value).expanduser()
+            if not path.is_dir():
+                return None
+            return str(path.resolve())
+
+        def _save_last_image_dir(self, image_dir: str) -> None:
+            path = Path(image_dir).expanduser()
+            if path.is_dir():
+                self.settings.setValue('last_image_dir', str(path.resolve()))
 
         def _build_toolbar(self) -> None:
             toolbar = QToolBar('主工具列')
@@ -327,11 +343,13 @@ if QT_IMPORT_ERROR is None:
             self.view.imageMouseLeft.connect(self.clear_hover_char_box)
 
         def choose_folder(self) -> None:
-            folder = QFileDialog.getExistingDirectory(self, '選擇包含原圖和 ctd 的圖片資料夾')
+            start_dir = self.current_image_dir or self._last_existing_image_dir() or str(Path.home())
+            folder = QFileDialog.getExistingDirectory(self, '選擇包含原圖和 ctd 的圖片資料夾', start_dir)
             if folder:
                 self.load_folder(folder)
 
         def load_folder(self, image_dir: str) -> None:
+            image_dir = str(Path(image_dir).expanduser().resolve())
             self.current_image_dir = image_dir
             self.clear_hover_char_box(render=False)
             try:
@@ -341,6 +359,7 @@ if QT_IMPORT_ERROR is None:
                 show_exception_details(self, '載入失敗', '無法載入資料夾。下方是完整可複製的出錯信息。', exc)
                 return
 
+            self._save_last_image_dir(image_dir)
             self.page_list.clear()
             self.page_list.addItems(self.page_names)
             summary = self.processor.summary()
@@ -665,10 +684,10 @@ if QT_IMPORT_ERROR is None:
             image_height = int(painter.device().height())
             image_width = int(painter.device().width())
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-            font = QFont('Helvetica Neue', max(6, min(8, image_width // 240)))
-            font.setWeight(getattr(QFont.Weight, 'Thin', QFont.Weight.Light))
-            font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-            painter.setFont(font)
+            normal_font = QFont('Helvetica Neue', max(6, min(8, image_width // 240)))
+            normal_font.setWeight(getattr(QFont.Weight, 'Thin', QFont.Weight.Light))
+            normal_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+            painter.setFont(normal_font)
             metrics = painter.fontMetrics()
             painter.setPen(QPen(QColor(245, 170, 35), 1))
             painter.setBrush(QColor(245, 170, 35, 32))
@@ -678,6 +697,26 @@ if QT_IMPORT_ERROR is None:
                     continue
                 x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
                 painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
+                if item is self.hover_char_box:
+                    continue
+                width_text = compact_int_px(item.get('width'))
+                height_text = compact_int_px(item.get('height'))
+                if width_text is None or height_text is None:
+                    continue
+
+                label = f'W{width_text}H{height_text}'
+                text_w = metrics.horizontalAdvance(label)
+                text_h = metrics.ascent() + metrics.descent()
+                label_x = int(round((x1 + x2) / 2 - text_w / 2))
+                label_y = y1 - 2
+                if label_y - text_h < 1:
+                    label_y = y2 + text_h + 1
+                label_x = max(1, min(label_x, max(1, image_width - text_w - 1)))
+                label_y = max(text_h + 1, min(label_y, image_height - 1))
+
+                painter.setPen(QPen(QColor(85, 48, 12), 1))
+                painter.drawText(QPointF(label_x, label_y), label)
+                painter.setPen(QPen(QColor(245, 170, 35), 1))
             if self.hover_char_box is not None:
                 bbox = self.hover_char_box.get('bbox')
                 if isinstance(bbox, list) and len(bbox) == 4:
@@ -689,15 +728,33 @@ if QT_IMPORT_ERROR is None:
                     height_text = compact_int_px(self.hover_char_box.get('height'))
                     if width_text is not None and height_text is not None:
                         label = f'W{width_text}H{height_text}'
-                        text_w = metrics.horizontalAdvance(label)
-                        text_h = metrics.ascent() + metrics.descent()
-                        label_x = int(round((x1 + x2) / 2 - text_w / 2))
-                        label_y = y1 - 2
-                        label_x = max(1, min(label_x, max(1, image_width - text_w - 1)))
-                        label_y = max(text_h + 1, min(label_y, image_height - 1))
+                        view_scale = 1.0
+                        if hasattr(self, 'view'):
+                            transform = self.view.transform()
+                            view_scale = max(0.05, min(abs(transform.m11()), abs(transform.m22())))
+                        hover_font = QFont('Helvetica Neue')
+                        hover_font.setPixelSize(max(14, int(round(24 / view_scale))))
+                        hover_font.setWeight(QFont.Weight.Bold)
+                        hover_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+                        painter.setFont(hover_font)
+                        hover_metrics = painter.fontMetrics()
+                        pad_x = max(3, int(round(7 / view_scale)))
+                        pad_y = max(2, int(round(4 / view_scale)))
+                        offset_y = max(2, int(round(4 / view_scale)))
+                        text_w = hover_metrics.horizontalAdvance(label)
+                        text_h = hover_metrics.ascent() + hover_metrics.descent()
+                        label_w = text_w + pad_x * 2
+                        label_h = text_h + pad_y * 2
+                        box_x = int(round((x1 + x2) / 2 - label_w / 2))
+                        box_y = y1 - label_h - offset_y
+                        box_x = max(2, min(box_x, max(2, image_width - label_w - 2)))
+                        box_y = max(2, min(box_y, max(2, image_height - label_h - 2)))
 
-                        painter.setPen(QPen(QColor(85, 48, 12), 1))
-                        painter.drawText(QPointF(label_x, label_y), label)
+                        painter.setPen(QPen(QColor(20, 20, 20), 2))
+                        painter.setBrush(QColor(255, 255, 245, 245))
+                        painter.drawRect(QRectF(box_x, box_y, label_w, label_h))
+                        painter.setPen(QPen(QColor(0, 0, 0), 1))
+                        painter.drawText(QRectF(box_x, box_y, label_w, label_h), Qt.AlignmentFlag.AlignCenter, label)
 
         def _draw_font_labels(self, painter: QPainter, image_width: int, image_height: int) -> None:
             if self.page is None:
