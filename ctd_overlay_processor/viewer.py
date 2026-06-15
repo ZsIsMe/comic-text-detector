@@ -16,7 +16,7 @@ import numpy as np
 
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 try:
-    from PySide6.QtCore import QPointF, QProcess, QRectF, Qt
+    from PySide6.QtCore import QPointF, QProcess, QRectF, Qt, Signal
     from PySide6.QtGui import QAction, QColor, QFont, QImage, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
@@ -88,6 +88,9 @@ if QT_IMPORT_ERROR is None:
 
 
     class ImageView(QGraphicsView):
+        imageMouseMoved = Signal(float, float)
+        imageMouseLeft = Signal()
+
         def __init__(self) -> None:
             super().__init__()
             self.setScene(QGraphicsScene(self))
@@ -98,21 +101,37 @@ if QT_IMPORT_ERROR is None:
             self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
             self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
             self.setBackgroundBrush(QColor(32, 34, 36))
+            self.setMouseTracking(True)
+            self.viewport().setMouseTracking(True)
             self._zoom = 1.0
 
-        def set_pixmap(self, pixmap: QPixmap) -> None:
-            self.scene().clear()
-            self.pixmap_item = QGraphicsPixmapItem(pixmap)
-            self.scene().addItem(self.pixmap_item)
+        def set_pixmap(self, pixmap: QPixmap, fit: bool = True) -> None:
+            if self.pixmap_item.scene() is None:
+                self.scene().addItem(self.pixmap_item)
+            self.pixmap_item.setPixmap(pixmap)
             self.scene().setSceneRect(QRectF(pixmap.rect()))
-            self._zoom = 1.0
-            self.resetTransform()
-            self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            if fit:
+                self._zoom = 1.0
+                self.resetTransform()
+                self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
         def wheelEvent(self, event) -> None:
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
             self._zoom *= factor
             self.scale(factor, factor)
+
+        def mouseMoveEvent(self, event) -> None:
+            super().mouseMoveEvent(event)
+            scene_point = self.mapToScene(event.position().toPoint())
+            pixmap_rect = QRectF(self.pixmap_item.pixmap().rect())
+            if pixmap_rect.contains(scene_point):
+                self.imageMouseMoved.emit(scene_point.x(), scene_point.y())
+            else:
+                self.imageMouseLeft.emit()
+
+        def leaveEvent(self, event) -> None:
+            self.imageMouseLeft.emit()
+            super().leaveEvent(event)
 
 
     class ErrorDetailsDialog(QDialog):
@@ -187,6 +206,7 @@ if QT_IMPORT_ERROR is None:
             self.detect_process: QProcess | None = None
             self.detect_output_chunks: list[str] = []
             self.detect_command: list[str] = []
+            self.hover_char_box: dict | None = None
 
             self.view = ImageView()
             self.setCentralWidget(self.view)
@@ -204,6 +224,8 @@ if QT_IMPORT_ERROR is None:
             self.show_font_labels = QCheckBox('字級標籤')
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
+            self.char_info_label = QLabel('游標單字框：未選中')
+            self.char_info_label.setWordWrap(True)
 
             for checkbox in (
                 self.show_align_boxes,
@@ -264,6 +286,7 @@ if QT_IMPORT_ERROR is None:
             opacity_row.addWidget(self.opacity_slider)
             layout.addLayout(opacity_row)
             layout.addWidget(self.status_label)
+            layout.addWidget(self.char_info_label)
 
             reload_button = QPushButton('重新載入目前頁')
             reload_button.clicked.connect(self.reload_current_page)
@@ -290,6 +313,8 @@ if QT_IMPORT_ERROR is None:
             ):
                 widget.stateChanged.connect(self.render_current_page)
             self.opacity_slider.valueChanged.connect(self.render_current_page)
+            self.view.imageMouseMoved.connect(self.update_hover_char_box)
+            self.view.imageMouseLeft.connect(self.clear_hover_char_box)
 
         def choose_folder(self) -> None:
             folder = QFileDialog.getExistingDirectory(self, '選擇包含原圖和 ctd 的圖片資料夾')
@@ -298,6 +323,7 @@ if QT_IMPORT_ERROR is None:
 
         def load_folder(self, image_dir: str) -> None:
             self.current_image_dir = image_dir
+            self.clear_hover_char_box(render=False)
             try:
                 self.processor = CtdOverlayProcessor(image_dir)
                 self.page_names = self.processor.page_names()
@@ -438,18 +464,65 @@ if QT_IMPORT_ERROR is None:
                 return
             page_name = self.page_names[row]
             try:
+                self.clear_hover_char_box(render=False)
                 image_size = qimage_size(self.processor.image_dir / page_name)
                 self.page = self.processor.load_page(page_name, image_size=image_size)
                 self.render_current_page()
             except Exception as exc:
                 show_exception_details(self, '頁面載入失敗', '無法載入此頁。下方是完整可複製的出錯信息。', exc)
 
+        def update_hover_char_box(self, x: float, y: float) -> None:
+            if self.page is None or not self.show_char_boxes.isChecked():
+                self.clear_hover_char_box()
+                return
+
+            matches = []
+            for item in self.page.char_boxes:
+                bbox = item.get('bbox')
+                if not isinstance(bbox, list) or len(bbox) != 4:
+                    continue
+                x1, y1, x2, y2 = [float(value) for value in bbox]
+                if x1 <= x <= x2 and y1 <= y <= y2:
+                    matches.append((max(0.0, x2 - x1) * max(0.0, y2 - y1), item))
+
+            if not matches:
+                self.clear_hover_char_box()
+                return
+
+            item = min(matches, key=lambda entry: entry[0])[1]
+            if item is self.hover_char_box:
+                return
+            self.hover_char_box = item
+            self.char_info_label.setText(self._char_info_text(item))
+            self.render_current_page(refit=False)
+
+        def clear_hover_char_box(self, render: bool = True) -> None:
+            had_hover = self.hover_char_box is not None
+            self.hover_char_box = None
+            self.char_info_label.setText('游標單字框：未選中')
+            if render and had_hover:
+                self.render_current_page(refit=False)
+
+        def _char_info_text(self, item: dict) -> str:
+            bbox = item.get('bbox')
+            width_text = compact_px(item.get('width')) or '-'
+            height_text = compact_px(item.get('height')) or '-'
+            source_index = item.get('source_block_index', '-')
+            line_index = item.get('line_index', '-')
+            bbox_text = ', '.join(str(int(round(float(value)))) for value in bbox) if isinstance(bbox, list) else '-'
+            return (
+                '游標單字框：\n'
+                f'寬：{width_text}px  高：{height_text}px\n'
+                f'區塊：{source_index}  行：{line_index}\n'
+                f'bbox：{bbox_text}'
+            )
+
         def reload_current_page(self) -> None:
             row = self.page_list.currentRow()
             if row >= 0:
                 self.load_page_at_row(row)
 
-        def render_current_page(self) -> None:
+        def render_current_page(self, *_, refit: bool = True) -> None:
             if self.page is None:
                 return
             image = QImage(str(self.page.image_path))
@@ -484,7 +557,7 @@ if QT_IMPORT_ERROR is None:
                 self._draw_font_labels(painter, image.width(), image.height())
 
             painter.end()
-            self.view.set_pixmap(QPixmap.fromImage(image))
+            self.view.set_pixmap(QPixmap.fromImage(image), fit=refit)
             if self.processor is not None and not self.processor.has_overlay_data():
                 self.status_label.setText(
                     f'{self.page.page_name}\n'
@@ -579,12 +652,6 @@ if QT_IMPORT_ERROR is None:
         def _draw_char_boxes(self, painter: QPainter) -> None:
             if self.page is None:
                 return
-            height = int(painter.device().height())
-            width = int(painter.device().width())
-            font = QFont('Helvetica', max(8, min(13, width // 120)))
-            font.setBold(True)
-            painter.setFont(font)
-            metrics = painter.fontMetrics()
             painter.setPen(QPen(QColor(245, 170, 35), 1))
             painter.setBrush(QColor(245, 170, 35, 32))
             for item in self.page.char_boxes:
@@ -593,31 +660,13 @@ if QT_IMPORT_ERROR is None:
                     continue
                 x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
                 painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
-                width_text = compact_px(item.get('width'))
-                height_text = compact_px(item.get('height'))
-                if width_text is None or height_text is None:
-                    continue
-
-                label = f'寬{width_text} 高{height_text}'
-                text_rect = metrics.boundingRect(label)
-                pad_x = 3
-                pad_y = 2
-                label_w = text_rect.width() + pad_x * 2
-                label_h = text_rect.height() + pad_y * 2
-                label_x = int(round((x1 + x2) / 2 - label_w / 2))
-                label_y = y1 - 3
-                if label_y - label_h < 1:
-                    label_y = y2 + label_h + 3
-                label_y = max(label_h + 1, min(label_y, height - 1))
-                label_x = max(1, min(label_x, max(1, width - label_w - 1)))
-
-                painter.fillRect(
-                    QRectF(label_x, label_y - label_h, label_w, label_h),
-                    QColor(255, 255, 255, 225),
-                )
-                painter.setPen(QPen(QColor(70, 45, 0), 1))
-                painter.drawText(QPointF(label_x + pad_x, label_y - pad_y), label)
-                painter.setPen(QPen(QColor(245, 170, 35), 1))
+            if self.hover_char_box is not None:
+                bbox = self.hover_char_box.get('bbox')
+                if isinstance(bbox, list) and len(bbox) == 4:
+                    x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
+                    painter.setPen(QPen(QColor(255, 40, 120), 3))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
 
         def _draw_font_labels(self, painter: QPainter, image_width: int, image_height: int) -> None:
             if self.page is None:
