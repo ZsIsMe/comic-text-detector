@@ -23,6 +23,8 @@ LAYOUT_HELPER_DIR = PROJECT_ROOT / '建立对齐方框'
 if LAYOUT_HELPER_DIR.is_dir() and str(LAYOUT_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(LAYOUT_HELPER_DIR))
 
+from ctd_overlay_processor.analyze_text_core import enrich_measure_map
+
 
 def patch_numpy_compat() -> None:
     try:
@@ -183,6 +185,7 @@ def run_detection(
         line_trans_map,
         aligned_box_map,
     )
+    enriched_count, enrich_errors = enrich_measure_map(Path(image_dir), measure_map)
     write_json(measure_path, measure_map)
     write_json(measure_debug_path, measure_debug_map)
 
@@ -194,6 +197,11 @@ def run_detection(
     print(f'  - {paths["align_masks"]}/<檔名>.npz', flush=True)
     print(f'  - {measure_path}', flush=True)
     print(f'  - {measure_debug_path}', flush=True)
+    print(f'文字顏色/描邊分析：{enriched_count} 個區塊', flush=True)
+    if enrich_errors:
+        print('部分頁面無法分析文字顏色/描邊：', flush=True)
+        for error in enrich_errors:
+            print(f'  - {error}', flush=True)
     print(f'重定位頁數：{align_summary["pages"]}', flush=True)
     print(f'重定位區塊數：{align_summary["boxes"]}', flush=True)
     print(f'採用重定位：{align_summary["accepted"]}', flush=True)

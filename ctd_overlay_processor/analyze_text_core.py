@@ -39,6 +39,12 @@ WHITE_CLOSE_DELTA_MAX = 10
 WHITE_CLOSE_RATIO_MIN = 0.78
 DIRECTIONAL_WHITE_CLOSE_RATIO_MIN = 0.84
 WHITE_P95_DELTA_MAX = 18
+TEXT_DARK_MAX = 96
+TEXT_BRIGHT_MIN = 200
+TEXT_TONE_MARGIN = 0.06
+OUTLINE_OUTER_MARGIN_MIN = 0.18
+OUTLINE_INNER_MARGIN_MIN = 0.06
+MIN_TONE_PIXELS = 20
 
 
 @dataclass
@@ -54,6 +60,17 @@ class SolidQuality:
     white_p95_delta: int
     sample_pixels: int
     mode: str
+
+
+@dataclass
+class ToneStats:
+    color: str
+    pixels: int
+    dark_ratio: float
+    bright_ratio: float
+    margin: float
+    median: float
+    mean: float
 
 
 def _clamp_xyxy(xyxy: list[Any], width: int, height: int) -> tuple[int, int, int, int] | None:
@@ -224,39 +241,93 @@ def _best_quality(color_img: np.ndarray, repair_area: np.ndarray, sample_ring: n
     return max(solid_directionals, key=lambda item: item.score)
 
 
-def _binary_text_color(image_bgr: np.ndarray, text_mask: np.ndarray) -> tuple[int, int, int] | None:
+def _tone_stats(gray: np.ndarray, sample_mask: np.ndarray) -> ToneStats | None:
+    values = gray[sample_mask > 0]
+    if values.size < MIN_TONE_PIXELS:
+        return None
+
+    dark_ratio = float(np.count_nonzero(values < TEXT_DARK_MAX) / values.size)
+    bright_ratio = float(np.count_nonzero(values > TEXT_BRIGHT_MIN) / values.size)
+    median = float(np.median(values))
+    mean = float(values.mean())
+    margin = abs(bright_ratio - dark_ratio)
+
+    if bright_ratio >= dark_ratio + TEXT_TONE_MARGIN:
+        color = 'white'
+    elif dark_ratio >= bright_ratio + TEXT_TONE_MARGIN:
+        color = 'black'
+    else:
+        color = 'white' if median >= 128 else 'black'
+
+    return ToneStats(
+        color=color,
+        pixels=int(values.size),
+        dark_ratio=dark_ratio,
+        bright_ratio=bright_ratio,
+        margin=margin,
+        median=median,
+        mean=mean,
+    )
+
+
+def _rgb_from_text_color(text_color: str) -> tuple[int, int, int]:
+    return (255, 255, 255) if text_color == 'white' else (0, 0, 0)
+
+
+def _text_style(image_bgr: np.ndarray, text_mask: np.ndarray) -> dict[str, Any] | None:
     text_mask = np.where(text_mask > 0, 255, 0).astype(np.uint8)
     if int(text_mask.sum()) == 0:
         return None
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     mask_pixels = int(np.count_nonzero(text_mask))
+    raw_stats = _tone_stats(gray, text_mask)
+    if raw_stats is None:
+        return None
 
     closed = cv2.morphologyEx(text_mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
     dist = cv2.distanceTransform(closed, cv2.DIST_L2, 3)
     max_dist = float(dist.max())
-    core_mask = np.zeros_like(text_mask)
+    outer_stats = None
+    inner_stats = None
     if max_dist > 0:
-        core_threshold = max(1.2, max_dist * 0.42)
-        core_mask = np.where(dist >= core_threshold, 255, 0).astype(np.uint8)
-        core_mask = cv2.bitwise_and(core_mask, text_mask)
+        outer_limit = max(1.0, max_dist * 0.25)
+        inner_limit = max(outer_limit + 0.1, max_dist * 0.55)
+        outer_mask = np.where((dist > 0) & (dist <= outer_limit) & (text_mask > 0), 255, 0).astype(np.uint8)
+        inner_mask = np.where((dist >= outer_limit) & (dist <= inner_limit) & (text_mask > 0), 255, 0).astype(np.uint8)
+        outer_stats = _tone_stats(gray, outer_mask)
+        inner_stats = _tone_stats(gray, inner_mask)
 
-    core_pixels = int(np.count_nonzero(core_mask))
-    use_mask = core_mask if core_pixels >= max(20, int(mask_pixels * 0.08)) else text_mask
-    values = gray[use_mask == 255]
-    if values.size == 0:
+        if inner_stats is None:
+            core_limit = max(1.2, max_dist * 0.42)
+            core_mask = np.where((dist >= core_limit) & (text_mask > 0), 255, 0).astype(np.uint8)
+            inner_stats = _tone_stats(gray, core_mask)
+
+    text_has_stroke = False
+    if outer_stats is not None and inner_stats is not None:
+        min_inner_pixels = max(MIN_TONE_PIXELS, int(mask_pixels * 0.03))
+        text_has_stroke = (
+            outer_stats.color != inner_stats.color
+            and outer_stats.margin >= OUTLINE_OUTER_MARGIN_MIN
+            and inner_stats.margin >= OUTLINE_INNER_MARGIN_MIN
+            and inner_stats.pixels >= min_inner_pixels
+        )
+
+    text_color = inner_stats.color if text_has_stroke and inner_stats is not None else raw_stats.color
+    return {
+        'fg_color_rgb': list(_rgb_from_text_color(text_color)),
+        'text_color': text_color,
+        'text_has_stroke': text_has_stroke,
+    }
+
+
+def _binary_text_color(image_bgr: np.ndarray, text_mask: np.ndarray) -> tuple[int, int, int] | None:
+    style = _text_style(image_bgr, text_mask)
+    if style is None:
         return None
-
-    dark_ratio = float(np.count_nonzero(values < 96) / values.size)
-    bright_ratio = float(np.count_nonzero(values > 200) / values.size)
-    p20 = float(np.percentile(values, 20))
-    p80 = float(np.percentile(values, 80))
-    if dark_ratio >= 0.18 or p20 < 96:
-        return (0, 0, 0)
-    if bright_ratio >= 0.18 or p80 > 200:
-        return (255, 255, 255)
-
-    fallback_gray = gray[use_mask == 255]
-    return (255, 255, 255) if float(np.median(fallback_gray)) >= 128 else (0, 0, 0)
+    color = style.get('text_color')
+    if color not in {'black', 'white'}:
+        return None
+    return _rgb_from_text_color(color)
 
 
 def calculate_block_colors(image_bgr: np.ndarray, mask: np.ndarray, xyxy: list[Any]) -> dict[str, Any] | None:
@@ -277,13 +348,14 @@ def calculate_block_colors(image_bgr: np.ndarray, mask: np.ndarray, xyxy: list[A
     sample_ring = cv2.bitwise_and(sample_ring, cv2.bitwise_not(text_mask))
     quality = _best_quality(image_bgr, repair_area, sample_ring)
 
-    fg_color = _binary_text_color(image_bgr[y1:y2, x1:x2], local_text[y1:y2, x1:x2])
-    if fg_color is None:
+    style = _text_style(image_bgr[y1:y2, x1:x2], local_text[y1:y2, x1:x2])
+    if style is None:
         return None
 
     return {
-        'fg_color_rgb': list(fg_color),
-        'text_color': 'white' if fg_color == (255, 255, 255) else 'black',
+        'fg_color_rgb': style['fg_color_rgb'],
+        'text_color': style['text_color'],
+        'text_has_stroke': style['text_has_stroke'],
         'need_inpaint': not quality.is_solid,
     }
 
@@ -294,6 +366,13 @@ def read_image(path: Path, mode: int) -> np.ndarray:
     if image is None:
         raise FileNotFoundError(f'無法讀取：{path}')
     return image
+
+
+def resolve_image_path(image_dir: Path, page_name: str) -> Path:
+    direct = image_dir / page_name
+    if direct.is_file():
+        return direct
+    return image_dir / resolve_page_name(image_dir, page_name)
 
 
 def page_key_candidates(page: str) -> list[str]:
@@ -318,19 +397,15 @@ def resolve_page_name(image_dir: Path, page: str) -> str:
     raise FileNotFoundError(f'找不到頁面圖片：{page}')
 
 
-def analyze_page(image_dir: Path, page_name: str) -> list[dict]:
+def analyze_measure_items(image_dir: Path, page_name: str, items: list[Any]) -> list[dict]:
     ctd_dir = image_dir / 'ctd'
-    measure_path = ctd_dir / 'measure.json'
+    image_path = resolve_image_path(image_dir, page_name)
     mask_path = ctd_dir / 'progressing' / 'mask' / f'{Path(page_name).stem}.png'
-    if not measure_path.is_file():
-        raise FileNotFoundError(f'找不到 measure.json：{measure_path}')
     if not mask_path.is_file():
         raise FileNotFoundError(f'找不到 CTD mask：{mask_path}')
 
-    image = read_image(image_dir / page_name, cv2.IMREAD_COLOR)
+    image = read_image(image_path, cv2.IMREAD_COLOR)
     mask = read_image(mask_path, cv2.IMREAD_GRAYSCALE)
-    measure = json.loads(measure_path.read_text(encoding='utf-8'))
-    items = measure.get('pages', {}).get(page_name, [])
     result = []
     for fallback_index, item in enumerate(items):
         if not isinstance(item, dict):
@@ -344,10 +419,60 @@ def analyze_page(image_dir: Path, page_name: str) -> list[dict]:
             'font_size': item.get('font_size'),
             'text_color': None if color_info is None else color_info.get('text_color'),
             'fg_color_rgb': None if color_info is None else color_info.get('fg_color_rgb'),
+            'text_has_stroke': None if color_info is None else color_info.get('text_has_stroke'),
             'need_inpaint': None if color_info is None else color_info.get('need_inpaint'),
         }
         result.append(row)
     return result
+
+
+def enrich_measure_items(image_dir: Path, page_name: str, items: list[Any]) -> int:
+    rows = analyze_measure_items(image_dir, page_name, items)
+    rows_by_source = {row.get('source_block_index'): row for row in rows}
+    changed = 0
+    for fallback_index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        source_index = item.get('source_block_index', fallback_index)
+        row = rows_by_source.get(source_index)
+        if (
+            row is None
+            or row.get('text_color') is None
+            or row.get('text_has_stroke') is None
+            or row.get('need_inpaint') is None
+        ):
+            continue
+        item['fg_color_rgb'] = row.get('fg_color_rgb')
+        item['text_color'] = row.get('text_color')
+        item['text_has_stroke'] = row.get('text_has_stroke')
+        item['need_inpaint'] = row.get('need_inpaint')
+        changed += 1
+    return changed
+
+
+def enrich_measure_map(image_dir: Path, measure: dict[str, Any]) -> tuple[int, list[str]]:
+    pages = measure.get('pages') or {}
+    total = 0
+    errors = []
+    for page_name, items in pages.items():
+        if not isinstance(items, list):
+            continue
+        try:
+            total += enrich_measure_items(image_dir, page_name, items)
+        except Exception as exc:
+            errors.append(f'{page_name}: {exc}')
+    return total, errors
+
+
+def analyze_page(image_dir: Path, page_name: str) -> list[dict]:
+    ctd_dir = image_dir / 'ctd'
+    measure_path = ctd_dir / 'measure.json'
+    if not measure_path.is_file():
+        raise FileNotFoundError(f'找不到 measure.json：{measure_path}')
+
+    measure = json.loads(measure_path.read_text(encoding='utf-8'))
+    items = measure.get('pages', {}).get(page_name, [])
+    return analyze_measure_items(image_dir, page_name, items)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -372,6 +497,7 @@ def main() -> None:
         print(
             f'區塊 {row["source_block_index"]}: '
             f'文字={row["text_color"] or "-"} '
+            f'原字描邊={row["text_has_stroke"]} '
             f'需要修復={row["need_inpaint"]} '
             f'字級={row["font_size"]} '
             f'框={row["xyxy_pixel"]}'

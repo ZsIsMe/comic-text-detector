@@ -16,6 +16,11 @@ from typing import Any
 
 import numpy as np
 
+try:
+    from .analyze_text_core import enrich_measure_items
+except ImportError:
+    from analyze_text_core import enrich_measure_items
+
 
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tif', '.tiff')
 
@@ -30,6 +35,9 @@ class BoxOverlay:
     orientation: str = 'vertical'
     font_size: float | None = None
     font_size_method: str | None = None
+    text_color: str | None = None
+    text_has_stroke: bool | None = None
+    need_inpaint: bool | None = None
     accepted: bool | None = None
     method: str | None = None
     error_route: bool = False
@@ -56,10 +64,22 @@ class BoxOverlay:
         return 'H' if self.orientation == 'horizontal' else 'V'
 
     @property
+    def needs_stroke(self) -> bool:
+        return self.text_has_stroke is True or self.need_inpaint is True
+
+    @property
     def font_label(self) -> str:
         if self.font_size is None:
-            return self.direction_suffix
-        return f'{int(round(self.font_size))}{self.direction_suffix}'
+            parts = [self.direction_suffix]
+        else:
+            parts = [f'{int(round(self.font_size))}{self.direction_suffix}']
+        if self.text_color == 'black':
+            parts.append('黑')
+        elif self.text_color == 'white':
+            parts.append('白')
+        if self.needs_stroke:
+            parts.append('描邊')
+        return ','.join(parts)
 
 
 @dataclass(slots=True)
@@ -302,6 +322,23 @@ class CtdOverlayProcessor:
         align_items = self.aligned_box_map.get('transMap', {}).get(page_name, [])
         measure_items = self.measure.get('pages', {}).get(page_name, [])
         line_items = self.line_trans_map.get('transMap', {}).get(page_name, [])
+        if (
+            isinstance(measure_items, list)
+            and mask_path.is_file()
+            and any(
+                isinstance(item, dict)
+                and (
+                    item.get('text_color') is None
+                    or (item.get('text_has_stroke') is None and item.get('has_outline') is None)
+                    or item.get('need_inpaint') is None
+                )
+                for item in measure_items
+            )
+        ):
+            try:
+                enrich_measure_items(self.image_dir, page_name, measure_items)
+            except Exception:
+                pass
 
         blocks_by_source = {
             source_index_from_item(item, index): xyxy_from_item(item)
@@ -342,6 +379,17 @@ class CtdOverlayProcessor:
                         else None
                     ),
                     font_size_method=measure_item.get('font_size_method'),
+                    text_color=measure_item.get('text_color'),
+                    text_has_stroke=(
+                        bool(measure_item.get('text_has_stroke', measure_item.get('has_outline')))
+                        if measure_item.get('text_has_stroke') is not None or measure_item.get('has_outline') is not None
+                        else None
+                    ),
+                    need_inpaint=(
+                        bool(measure_item['need_inpaint'])
+                        if measure_item.get('need_inpaint') is not None
+                        else None
+                    ),
                     accepted=align_item.get('accepted'),
                     method=align_item.get('method'),
                     error_route=bool(align_item.get('error_route')),

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import traceback
 from pathlib import Path
@@ -17,7 +18,7 @@ import numpy as np
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 try:
     from PySide6.QtCore import QPointF, QProcess, QRectF, QSettings, Qt, Signal
-    from PySide6.QtGui import QAction, QColor, QFont, QImage, QPainter, QPen, QPixmap
+    from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -36,6 +37,8 @@ try:
         QPlainTextEdit,
         QPushButton,
         QSlider,
+        QTableWidget,
+        QTableWidgetItem,
         QToolBar,
         QVBoxLayout,
         QWidget,
@@ -165,6 +168,32 @@ if QT_IMPORT_ERROR is None:
             QApplication.clipboard().setText(self.details)
 
 
+    class ConfirmPreviewDialog(QDialog):
+        def __init__(self, title: str, summary: str, preview: str, parent=None) -> None:
+            super().__init__(parent)
+            self.setWindowTitle(title)
+            self.resize(520, 640)
+
+            layout = QVBoxLayout(self)
+            label = QLabel(summary)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+
+            text = QPlainTextEdit()
+            text.setPlainText(preview)
+            text.setReadOnly(True)
+            layout.addWidget(text, 1)
+
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            )
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setText('確定修改')
+            buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+            buttons.accepted.connect(self.accept)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+
+
     def show_error_details(parent, title: str, summary: str, details: str) -> None:
         dialog = ErrorDetailsDialog(title, summary, details, parent)
         dialog.exec()
@@ -204,6 +233,18 @@ if QT_IMPORT_ERROR is None:
         return str(int(round(number)))
 
 
+    def even_font_size(value) -> int | None:
+        try:
+            size = int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+        if size <= 0:
+            return None
+        if size % 2:
+            size += 1
+        return size
+
+
     class CtdOverlayViewer(QMainWindow):
         def __init__(self, image_dir: str | None = None) -> None:
             super().__init__()
@@ -224,6 +265,7 @@ if QT_IMPORT_ERROR is None:
             self.setCentralWidget(self.view)
 
             self.page_list = QListWidget()
+            self.font_size_table = QTableWidget()
             self.status_label = QLabel('尚未選擇資料夾')
             self.status_label.setWordWrap(True)
             self.show_mask = QCheckBox('文字遮罩')
@@ -236,6 +278,7 @@ if QT_IMPORT_ERROR is None:
             self.show_font_labels = QCheckBox('字級標籤')
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
+            self.even_font_button = QPushButton('字體取偶數')
             self.char_info_label = QLabel('游標單字框：未選中')
             self.char_info_label.setWordWrap(True)
 
@@ -250,6 +293,7 @@ if QT_IMPORT_ERROR is None:
 
             self._build_toolbar()
             self._build_side_panel()
+            self._build_font_size_panel()
             self._connect_signals()
 
             if startup_image_dir:
@@ -325,6 +369,58 @@ if QT_IMPORT_ERROR is None:
             dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
+        def _build_font_size_panel(self) -> None:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(10, 10, 10, 10)
+            layout.setSpacing(8)
+
+            title = QLabel('全部字級')
+            title.setWordWrap(True)
+            layout.addWidget(title)
+            list_font = QFont('Menlo', 13)
+            list_font.setBold(True)
+            list_font.setStyleHint(QFont.StyleHint.Monospace)
+            self.font_size_table.setFont(list_font)
+            self.font_size_table.setColumnCount(2)
+            self.font_size_table.setHorizontalHeaderLabels(['字級', '數目'])
+            self.font_size_table.verticalHeader().setVisible(False)
+            self.font_size_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            self.font_size_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+            self.font_size_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.font_size_table.setAlternatingRowColors(True)
+            self.font_size_table.setShowGrid(False)
+            self.font_size_table.horizontalHeader().setStretchLastSection(True)
+            self.font_size_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.font_size_table.setColumnWidth(0, 86)
+            self.font_size_table.setStyleSheet(
+                'QTableWidget {'
+                '  background: #101214;'
+                '  alternate-background-color: #181a1d;'
+                '  color: #e9ecef;'
+                '  border: 1px solid #33383d;'
+                '}'
+                'QHeaderView::section {'
+                '  background: #2a2e33;'
+                '  color: #f4f6f8;'
+                '  border: 0;'
+                '  border-bottom: 1px solid #454b52;'
+                '  padding: 6px 4px;'
+                '  font-weight: 700;'
+                '}'
+                'QTableWidget::item {'
+                '  padding: 5px 8px;'
+                '}'
+            )
+            layout.addWidget(self.font_size_table, 1)
+            self.even_font_button.clicked.connect(self.preview_even_font_sizes)
+            layout.addWidget(self.even_font_button)
+
+            dock = QDockWidget('字級列表', self)
+            dock.setWidget(panel)
+            dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
         def _connect_signals(self) -> None:
             self.page_list.currentRowChanged.connect(self.load_page_at_row)
             for widget in (
@@ -352,6 +448,7 @@ if QT_IMPORT_ERROR is None:
             image_dir = str(Path(image_dir).expanduser().resolve())
             self.current_image_dir = image_dir
             self.clear_hover_char_box(render=False)
+            self.page = None
             try:
                 self.processor = CtdOverlayProcessor(image_dir)
                 self.page_names = self.processor.page_names()
@@ -362,6 +459,7 @@ if QT_IMPORT_ERROR is None:
             self._save_last_image_dir(image_dir)
             self.page_list.clear()
             self.page_list.addItems(self.page_names)
+            self.update_font_size_list()
             summary = self.processor.summary()
             self.status_label.setText(self._summary_text(summary))
             if self.page_names:
@@ -369,7 +467,164 @@ if QT_IMPORT_ERROR is None:
             else:
                 self.page = None
                 self.view.scene().clear()
+                self.update_font_size_list()
                 self.status_label.setText(f'{self.status_label.text()}\n此資料夾沒有可顯示的圖片。')
+
+        def font_size_counts(self) -> dict[int, int]:
+            if self.processor is None:
+                return {}
+            counts = {}
+            for items in (self.processor.measure.get('pages') or {}).values():
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict) or item.get('font_size') is None:
+                        continue
+                    try:
+                        size = int(round(float(item['font_size'])))
+                    except (TypeError, ValueError):
+                        continue
+                    if size > 0:
+                        counts[size] = counts.get(size, 0) + 1
+            return counts
+
+        def even_font_size_preview(self) -> tuple[dict[int, int], int]:
+            if self.processor is None:
+                return {}, 0
+            counts = {}
+            changed = 0
+            for items in (self.processor.measure.get('pages') or {}).values():
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict) or item.get('font_size') is None:
+                        continue
+                    new_size = even_font_size(item.get('font_size'))
+                    if new_size is None:
+                        continue
+                    try:
+                        old_size = int(round(float(item['font_size'])))
+                    except (TypeError, ValueError):
+                        old_size = new_size
+                    if new_size != old_size:
+                        changed += 1
+                    counts[new_size] = counts.get(new_size, 0) + 1
+            return counts, changed
+
+        def format_font_size_counts(self, counts: dict[int, int]) -> str:
+            if not counts:
+                return '沒有可預覽的字級資料。'
+            lines = ['字級  數目', '----------']
+            for size in sorted(counts):
+                lines.append(f'{size:>4}  {counts[size]:>4}')
+            return '\n'.join(lines)
+
+        def preview_even_font_sizes(self) -> None:
+            if self.processor is None:
+                QMessageBox.information(self, '尚未載入資料', '請先選擇圖片資料夾。')
+                return
+            if not self.processor.measure_path.is_file():
+                QMessageBox.information(self, '找不到 measure.json', '目前資料夾沒有可修改的 measure.json。')
+                return
+
+            counts, changed = self.even_font_size_preview()
+            if not counts:
+                QMessageBox.information(self, '沒有字級資料', 'measure.json 裡沒有可修改的 font_size。')
+                return
+            if changed == 0:
+                QMessageBox.information(self, '不需要修改', '全部 font_size 取整後已經是偶數。')
+                return
+
+            dialog = ConfirmPreviewDialog(
+                '字體取偶數',
+                f'將修改 {changed} 個區塊的 font_size。下方是修改後全部字級的數目，確定後才會寫入 measure.json。',
+                self.format_font_size_counts(counts),
+                self,
+            )
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.apply_even_font_sizes()
+
+        def apply_even_font_sizes(self) -> None:
+            if self.processor is None:
+                return
+            changed = 0
+            pages = self.processor.measure.get('pages') or {}
+            for items in pages.values():
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict) or item.get('font_size') is None:
+                        continue
+                    new_size = even_font_size(item.get('font_size'))
+                    if new_size is None:
+                        continue
+                    try:
+                        old_size = int(round(float(item['font_size'])))
+                    except (TypeError, ValueError):
+                        old_size = new_size
+                    if new_size != old_size:
+                        item['font_size'] = new_size
+                        changed += 1
+
+            try:
+                with self.processor.measure_path.open('w', encoding='utf-8') as f:
+                    json.dump(self.processor.measure, f, ensure_ascii=False, indent=2)
+                    f.write('\n')
+            except Exception as exc:
+                show_exception_details(self, '保存失敗', '無法寫入 measure.json。下方是完整可複製的出錯信息。', exc)
+                return
+
+            QMessageBox.information(self, '修改完成', f'已修改並保存 {changed} 個區塊。')
+            if self.current_image_dir:
+                current_page = self.page.page_name if self.page is not None else None
+                self.processor = CtdOverlayProcessor(self.current_image_dir)
+                self.page_names = self.processor.page_names()
+                self.page_list.blockSignals(True)
+                self.page_list.clear()
+                self.page_list.addItems(self.page_names)
+                row = self.page_names.index(current_page) if current_page in self.page_names else 0
+                self.page_list.setCurrentRow(row if self.page_names else -1)
+                self.page_list.blockSignals(False)
+                if self.page_names:
+                    self.load_page_at_row(self.page_list.currentRow())
+                else:
+                    self.page = None
+                    self.update_font_size_list()
+
+        def current_page_font_sizes(self) -> set[int]:
+            if self.page is None:
+                return set()
+            sizes = set()
+            for box in self.page.boxes:
+                if box.font_size is None:
+                    continue
+                size = int(round(float(box.font_size)))
+                if size > 0:
+                    sizes.add(size)
+            return sizes
+
+        def update_font_size_list(self) -> None:
+            current_sizes = self.current_page_font_sizes()
+            counts = self.font_size_counts()
+            self.font_size_table.setRowCount(0)
+            for row, size in enumerate(sorted(counts)):
+                self.font_size_table.insertRow(row)
+                size_item = QTableWidgetItem(str(size))
+                count_item = QTableWidgetItem(str(counts[size]))
+                for item in (size_item, count_item):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if size in current_sizes:
+                    for item in (size_item, count_item):
+                        item.setBackground(QBrush(QColor(255, 220, 92)))
+                        item.setForeground(QBrush(QColor(0, 0, 0)))
+                        item.setToolTip('目前頁面使用')
+                else:
+                    for item in (size_item, count_item):
+                        item.setForeground(QBrush(QColor(225, 229, 233)))
+                self.font_size_table.setItem(row, 0, size_item)
+                self.font_size_table.setItem(row, 1, count_item)
+            self.font_size_table.resizeRowsToContents()
 
         def _summary_text(self, summary: dict) -> str:
             if summary.get('has_overlay_data'):
@@ -496,6 +751,7 @@ if QT_IMPORT_ERROR is None:
                 self.clear_hover_char_box(render=False)
                 image_size = qimage_size(self.processor.image_dir / page_name)
                 self.page = self.processor.load_page(page_name, image_size=image_size)
+                self.update_font_size_list()
                 self.render_current_page()
             except Exception as exc:
                 show_exception_details(self, '頁面載入失敗', '無法載入此頁。下方是完整可複製的出錯信息。', exc)
