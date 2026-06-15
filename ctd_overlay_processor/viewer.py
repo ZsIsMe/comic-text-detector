@@ -163,6 +163,18 @@ if QT_IMPORT_ERROR is None:
         show_error_details(parent, title, summary, details)
 
 
+    def compact_px(value) -> str | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number <= 0:
+            return None
+        if abs(number - round(number)) < 0.05:
+            return str(int(round(number)))
+        return f'{number:.1f}'
+
+
     class CtdOverlayViewer(QMainWindow):
         def __init__(self, image_dir: str | None = None) -> None:
             super().__init__()
@@ -550,6 +562,12 @@ if QT_IMPORT_ERROR is None:
         def _draw_char_boxes(self, painter: QPainter) -> None:
             if self.page is None:
                 return
+            height = int(painter.device().height())
+            width = int(painter.device().width())
+            font = QFont('Helvetica', max(8, min(13, width // 120)))
+            font.setBold(True)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
             painter.setPen(QPen(QColor(245, 170, 35), 1))
             painter.setBrush(QColor(245, 170, 35, 32))
             for item in self.page.char_boxes:
@@ -558,6 +576,31 @@ if QT_IMPORT_ERROR is None:
                     continue
                 x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
                 painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
+                width_text = compact_px(item.get('width'))
+                height_text = compact_px(item.get('height'))
+                if width_text is None or height_text is None:
+                    continue
+
+                label = f'寬{width_text} 高{height_text}'
+                text_rect = metrics.boundingRect(label)
+                pad_x = 3
+                pad_y = 2
+                label_w = text_rect.width() + pad_x * 2
+                label_h = text_rect.height() + pad_y * 2
+                label_x = int(round((x1 + x2) / 2 - label_w / 2))
+                label_y = y1 - 3
+                if label_y - label_h < 1:
+                    label_y = y2 + label_h + 3
+                label_y = max(label_h + 1, min(label_y, height - 1))
+                label_x = max(1, min(label_x, max(1, width - label_w - 1)))
+
+                painter.fillRect(
+                    QRectF(label_x, label_y - label_h, label_w, label_h),
+                    QColor(255, 255, 255, 225),
+                )
+                painter.setPen(QPen(QColor(70, 45, 0), 1))
+                painter.drawText(QPointF(label_x + pad_x, label_y - pad_y), label)
+                painter.setPen(QPen(QColor(245, 170, 35), 1))
 
         def _draw_font_labels(self, painter: QPainter, image_width: int, image_height: int) -> None:
             if self.page is None:
