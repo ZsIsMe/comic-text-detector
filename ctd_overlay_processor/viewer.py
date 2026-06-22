@@ -312,12 +312,15 @@ if QT_IMPORT_ERROR is None:
             self.next_page_action: QAction | None = None
             self.increase_font_action: QAction | None = None
             self.decrease_font_action: QAction | None = None
+            self.delete_box_action: QAction | None = None
+            self.move_box_actions: list[QAction] = []
             self.measure_dirty = False
             self.current_page_row = -1
             self._updating_editor = False
             self._box_drag_mode: str | None = None
             self._box_drag_start: tuple[float, float] | None = None
             self._box_drag_original: tuple[int, int, int, int] | None = None
+            self._box_drag_temporary = False
 
             self.view = ImageView()
             self.setCentralWidget(self.view)
@@ -437,6 +440,30 @@ if QT_IMPORT_ERROR is None:
             self.decrease_font_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             self.decrease_font_action.triggered.connect(lambda: self.nudge_selected_font_size(-2))
             self.addAction(self.decrease_font_action)
+
+            self.delete_box_action = QAction('刪除文字框', self)
+            self.delete_box_action.setShortcuts([QKeySequence(Qt.Key.Key_Delete), QKeySequence(Qt.Key.Key_Backspace)])
+            self.delete_box_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.delete_box_action.triggered.connect(self.delete_selected_box)
+            self.addAction(self.delete_box_action)
+
+            move_shortcuts = (
+                ('左移', Qt.Key.Key_Left, -1, 0, 1),
+                ('右移', Qt.Key.Key_Right, 1, 0, 1),
+                ('上移', Qt.Key.Key_Up, 0, -1, 1),
+                ('下移', Qt.Key.Key_Down, 0, 1, 1),
+                ('左移10', Qt.KeyboardModifier.ShiftModifier | Qt.Key.Key_Left, -1, 0, 10),
+                ('右移10', Qt.KeyboardModifier.ShiftModifier | Qt.Key.Key_Right, 1, 0, 10),
+                ('上移10', Qt.KeyboardModifier.ShiftModifier | Qt.Key.Key_Up, 0, -1, 10),
+                ('下移10', Qt.KeyboardModifier.ShiftModifier | Qt.Key.Key_Down, 0, 1, 10),
+            )
+            for label, key, dx, dy, step in move_shortcuts:
+                action = QAction(label, self)
+                action.setShortcut(QKeySequence(key))
+                action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+                action.triggered.connect(lambda checked=False, dx=dx, dy=dy, step=step: self.nudge_selected_box_position(dx * step, dy * step))
+                self.move_box_actions.append(action)
+                self.addAction(action)
 
         def _build_side_panel(self) -> None:
             panel = QWidget()
@@ -865,6 +892,58 @@ if QT_IMPORT_ERROR is None:
             sign = '+' if delta > 0 else ''
             self.apply_selected_box_updates({'font_size': size}, status=f'已將當前文字框字體大小 {sign}{delta} 到 {size}，尚未保存。')
 
+        def nudge_selected_box_position(self, dx: int, dy: int) -> None:
+            box = self.selected_box()
+            if box is None:
+                self.status_label.setText('請先選擇一個文字框，再使用方向鍵移動。')
+                return
+            x1, y1, x2, y2 = box.xyxy_pixel
+            new_xyxy = self.clamp_xyxy((x1 + dx, y1 + dy, x2 + dx, y2 + dy))
+            if new_xyxy == box.xyxy_pixel:
+                return
+            move_text = f'{dx:+d},{dy:+d}'
+            self.apply_selected_box_updates({'xyxy_pixel': list(new_xyxy)}, status=f'已用方向鍵移動當前文字框 {move_text}，尚未保存。')
+
+        def delete_selected_box(self) -> None:
+            if self.processor is None or self.page is None:
+                return
+            box = self.selected_box()
+            if box is None:
+                self.status_label.setText('請先選擇一個文字框，再刪除。')
+                return
+            found = self.processor.find_measure_item(
+                self.page.page_name,
+                box.source_block_index,
+                fallback_index=box.measure_item_index,
+            )
+            if found is None:
+                QMessageBox.warning(self, '刪除失敗', '找不到對應的 measure.custom.json 區塊。')
+                return
+            item_index, item = found
+            items = self.processor.measure_items_for_page(self.page.page_name)
+            if item_index < 0 or item_index >= len(items):
+                QMessageBox.warning(self, '刪除失敗', 'measure.custom.json 區塊索引無效。')
+                return
+
+            self.undo_stack.append({
+                'kind': 'delete_box',
+                'page_name': self.page.page_name,
+                'item_index': item_index,
+                'source_block_index': box.source_block_index,
+                'item': copy.deepcopy(item),
+                'description': '刪除文字框',
+            })
+            if len(self.undo_stack) > 200:
+                self.undo_stack = self.undo_stack[-200:]
+
+            del items[item_index]
+            self.mark_measure_dirty()
+            self.refresh_current_page_from_measure(
+                selected_source_index=None,
+                status=f'已刪除區塊 {box.source_block_index}，尚未保存。',
+                refit=False,
+            )
+
         def update_action_state(self) -> None:
             can_save = self.processor is not None and self.measure_dirty
             self.save_button.setEnabled(can_save)
@@ -882,6 +961,10 @@ if QT_IMPORT_ERROR is None:
                 self.increase_font_action.setEnabled(has_selected_box)
             if self.decrease_font_action is not None:
                 self.decrease_font_action.setEnabled(has_selected_box)
+            if self.delete_box_action is not None:
+                self.delete_box_action.setEnabled(has_selected_box)
+            for action in self.move_box_actions:
+                action.setEnabled(has_selected_box)
             suffix = ' *' if self.measure_dirty else ''
             self.setWindowTitle(f'CTD 疊圖檢視器{suffix}')
 
@@ -1002,7 +1085,7 @@ if QT_IMPORT_ERROR is None:
                 return
             entry = self.undo_stack.pop()
             kind = entry.get('kind')
-            if kind != 'box':
+            if kind not in {'box', 'delete_box'}:
                 self.update_action_state()
                 return
 
@@ -1016,7 +1099,12 @@ if QT_IMPORT_ERROR is None:
             source_block_index = entry.get('source_block_index')
             items = self.processor.measure_items_for_page(page_name)
             restored = False
-            if isinstance(item_index, int) and 0 <= item_index < len(items):
+            if kind == 'delete_box':
+                insert_index = item_index if isinstance(item_index, int) else len(items)
+                insert_index = max(0, min(insert_index, len(items)))
+                items.insert(insert_index, item)
+                restored = True
+            elif isinstance(item_index, int) and 0 <= item_index < len(items):
                 items[item_index] = item
                 restored = True
             elif isinstance(source_block_index, int):
@@ -1035,7 +1123,7 @@ if QT_IMPORT_ERROR is None:
                 selected_source = source_block_index if isinstance(source_block_index, int) else None
                 self.refresh_current_page_from_measure(
                     selected_source_index=selected_source,
-                    status='已撤銷上一個修改，尚未保存。',
+                    status='已撤銷上一個刪除，尚未保存。' if kind == 'delete_box' else '已撤銷上一個修改，尚未保存。',
                     refit=False,
                 )
             else:
@@ -1107,10 +1195,13 @@ if QT_IMPORT_ERROR is None:
                 self._box_drag_mode = None
                 self._box_drag_start = None
                 self._box_drag_original = None
+                self._box_drag_temporary = False
                 return
-            self._box_drag_mode = mode
+            temporary = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier)
+            self._box_drag_mode = 'move' if temporary else mode
             self._box_drag_start = (x, y)
             self._box_drag_original = box.xyxy_pixel
+            self._box_drag_temporary = temporary
 
         def handle_image_mouse_drag(self, x: float, y: float) -> None:
             if self.page is None or self._box_drag_mode is None or self._box_drag_start is None or self._box_drag_original is None:
@@ -1136,16 +1227,24 @@ if QT_IMPORT_ERROR is None:
                 new_xyxy = (nx1, ny1, nx2, ny2)
             box.xyxy_pixel = self.clamp_xyxy(new_xyxy)
             self.populate_box_editor(box)
+            if self._box_drag_temporary:
+                self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
             self.render_current_page(refit=False)
 
         def handle_image_mouse_release(self, x: float, y: float) -> None:
             box = self.selected_box()
             if box is not None and self._box_drag_mode is not None:
-                if self._box_drag_original is None or box.xyxy_pixel != self._box_drag_original:
+                if self._box_drag_temporary and self._box_drag_original is not None:
+                    box.xyxy_pixel = self._box_drag_original
+                    self.populate_box_editor(box)
+                    self.render_current_page(refit=False)
+                    self.status_label.setText('臨時移動結束，已回到原位。')
+                elif self._box_drag_original is None or box.xyxy_pixel != self._box_drag_original:
                     self.apply_selected_box_updates({'xyxy_pixel': list(box.xyxy_pixel)})
             self._box_drag_mode = None
             self._box_drag_start = None
             self._box_drag_original = None
+            self._box_drag_temporary = False
 
         def clamp_xyxy(self, xyxy: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
             if self.page is None:

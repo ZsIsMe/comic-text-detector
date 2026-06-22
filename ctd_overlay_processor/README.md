@@ -99,6 +99,9 @@ ctd_overlay_processor/.venv/
 
 - 單框字體大小
 - 單框位置與大小
+- 單框方向鍵移動（方向鍵 1px，`Shift` + 方向鍵 10px）
+- 單框刪除（`Delete` / `Backspace`）
+- 單框臨時移動預覽（按住 `Option/Alt` 拖動，鬆開後回到原位）
 - 文字黑/白
 - 原字描邊
 - 需要修復/描邊
