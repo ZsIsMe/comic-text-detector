@@ -294,6 +294,14 @@ if QT_IMPORT_ERROR is None:
         return size
 
 
+    def positive_int(value, default: int, *, minimum: int = 1) -> int:
+        try:
+            number = int(round(float(value)))
+        except (TypeError, ValueError):
+            return default
+        return number if number >= minimum else default
+
+
     class CtdOverlayViewer(QMainWindow):
         def __init__(self, image_dir: str | None = None) -> None:
             super().__init__()
@@ -1050,9 +1058,10 @@ if QT_IMPORT_ERROR is None:
                 widget.setEnabled(enabled)
             if not enabled:
                 self.box_editor_title.setText('未選擇 _bt 條目')
+                previous_updating = self._updating_editor
                 self._updating_editor = True
-            self.bt_text_edit.clear()
-            self._updating_editor = False
+                self.bt_text_edit.clear()
+                self._updating_editor = previous_updating
             self.update_bt_item_list()
             self.update_action_state()
 
@@ -1101,7 +1110,7 @@ if QT_IMPORT_ERROR is None:
                 f'index={item.get("index", "-")}  groupId={item.get("groupId", "-")}  框：{box_text}'
             )
             self.bt_text_edit.setPlainText(str(item.get('text') or ''))
-            self.font_size_spin.setValue(max(1, int(round(float(item.get('font-size') or 1)))))
+            self.font_size_spin.setValue(positive_int(item.get('font-size'), 40))
             orientation_index = self.orientation_combo.findData(item.get('orientation') or 'vertical')
             self.orientation_combo.setCurrentIndex(max(0, orientation_index))
             color_index = self.color_combo.findData(self.bt_text_color(item))
@@ -1147,7 +1156,10 @@ if QT_IMPORT_ERROR is None:
                 font_size = max(1, int(round(float(box.font_size))))
                 updates['font-size'] = font_size
             else:
-                font_size = max(1, int(round(float(item.get('font-size') or self.font_size_spin.value() or 1))))
+                font_size = positive_int(
+                    item.get('font-size'),
+                    positive_int(self.font_size_spin.value(), 40),
+                )
 
             color = str(box.text_color or self.bt_text_color(item)).lower()
             if color not in {'black', 'white'}:
@@ -1199,7 +1211,10 @@ if QT_IMPORT_ERROR is None:
             if item is None:
                 self.status_label.setText('請先選擇一條 _bt 文字，再使用字體大小快捷鍵。')
                 return
-            current = int(round(float(item.get('font-size') or self.font_size_spin.value() or 1)))
+            current = positive_int(
+                item.get('font-size'),
+                positive_int(self.font_size_spin.value(), 40),
+            )
             size = max(1, min(999, current + delta))
             if size == current:
                 return
@@ -1734,6 +1749,109 @@ if QT_IMPORT_ERROR is None:
             painter.end()
             self.bt_view.set_pixmap(QPixmap.fromImage(image), fit=refit)
 
+        def draw_bt_text(
+            self,
+            painter: QPainter,
+            rect: QRectF,
+            text: str,
+            orientation: str,
+            color: QColor,
+            stroke_color: QColor,
+            stroke_weight: int,
+        ) -> None:
+            if orientation == 'vertical':
+                draw_rect = rect.translated(0, 0)
+                if stroke_weight > 0:
+                    painter.setPen(QPen(stroke_color, max(1, stroke_weight)))
+                    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        self.draw_vertical_text(painter, draw_rect.translated(dx, dy), text)
+                painter.setPen(QPen(color, 1))
+                self.draw_vertical_text(painter, draw_rect, text)
+                return
+
+            if stroke_weight > 0:
+                painter.setPen(QPen(stroke_color, max(1, stroke_weight)))
+                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    painter.drawText(
+                        rect.translated(dx, dy),
+                        Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                        text,
+                    )
+            painter.setPen(QPen(color, 1))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
+
+        def bt_center_pixel_from_item(
+            self,
+            item: dict[str, Any],
+            image_width: int,
+            image_height: int,
+        ) -> tuple[float, float] | None:
+            try:
+                x = float(item.get('x'))
+                y = float(item.get('y'))
+            except (TypeError, ValueError):
+                x = y = None
+            if x is not None and y is not None:
+                return x * image_width, y * image_height
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is None:
+                return None
+            x1, y1, x2, y2 = xyxy
+            return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+        def natural_bt_text_rect(
+            self,
+            painter: QPainter,
+            center: tuple[float, float],
+            text: str,
+            orientation: str,
+        ) -> QRectF:
+            metrics = painter.fontMetrics()
+            pad = 4
+            cx, cy = center
+            if orientation == 'vertical':
+                columns = self.vertical_text_columns(text)
+                chars = [char for column in columns for char in column] or [' ']
+                char_width = max(metrics.horizontalAdvance(char) for char in chars)
+                column_width = max(metrics.horizontalAdvance('漢'), char_width)
+                width = column_width * len(columns) + pad * 2
+                height = metrics.height() * max(len(column) for column in columns) + pad * 2
+                return QRectF(cx - width / 2.0, cy - height / 2.0, width, height)
+
+            lines = text.splitlines() or [text]
+            if not lines:
+                lines = [' ']
+            width = max(metrics.horizontalAdvance(line or ' ') for line in lines) + pad * 2
+            height = metrics.height() * len(lines) + pad * 2
+            return QRectF(cx - width / 2.0, cy - height / 2.0, width, height)
+
+        def vertical_text_columns(self, text: str) -> list[list[str]]:
+            lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+            columns = [[char for char in line] for line in lines]
+            columns = [column for column in columns if column]
+            return columns or [[' ']]
+
+        def draw_vertical_text(self, painter: QPainter, rect: QRectF, text: str) -> None:
+            text_columns = self.vertical_text_columns(text)
+            metrics = painter.fontMetrics()
+            line_height = max(1, metrics.height())
+            column_width = max(1, metrics.horizontalAdvance('漢'))
+            max_columns = max(1, int(rect.width() // max(1, column_width)))
+            visible_columns = text_columns[:max_columns]
+            if not visible_columns:
+                return
+            total_width = len(visible_columns) * column_width
+            content_height = max(len(column) for column in visible_columns) * line_height
+            start_x = rect.center().x() + total_width / 2.0 - column_width / 2.0
+            top = rect.center().y() - content_height / 2.0
+            for column, column_chars in enumerate(visible_columns):
+                if not column_chars:
+                    continue
+                x = start_x - column * column_width
+                for row, char in enumerate(column_chars):
+                    y = top + row * line_height + metrics.ascent()
+                    painter.drawText(QPointF(x - metrics.horizontalAdvance(char) / 2.0, y), char)
+
         def _draw_bt_items(self, painter: QPainter, image_width: int, image_height: int) -> None:
             items = self.bt_items_for_page()
             if not items:
@@ -1771,20 +1889,27 @@ if QT_IMPORT_ERROR is None:
                     ):
                         painter.drawRect(QRectF(hx - 4, hy - 4, 8, 8))
 
-                font_size = max(8, min(96, int(round(float(item.get('font-size') or 18)))))
+                font_size = max(8, min(96, positive_int(item.get('font-size'), 40)))
                 font = QFont('Helvetica', font_size)
                 font.setBold(False)
                 painter.setFont(font)
                 text = str(item.get('text') or '').strip()
                 if not text:
                     text = f'#{item.get("index", index + 1)}'
-                rect = QRectF(x1 + 4, y1 + 4, max(1, x2 - x1 - 8), max(1, y2 - y1 - 8))
-                if stroke_weight > 0:
-                    painter.setPen(QPen(stroke_color, max(1, stroke_weight)))
-                    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                        painter.drawText(rect.translated(dx, dy), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
-                painter.setPen(QPen(text_color, 1))
-                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
+                orientation = str(item.get('orientation') or 'vertical')
+                center = self.bt_center_pixel_from_item(item, image_width, image_height)
+                if center is None:
+                    center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+                rect = self.natural_bt_text_rect(painter, center, text, orientation)
+                self.draw_bt_text(
+                    painter,
+                    rect,
+                    text,
+                    orientation,
+                    text_color,
+                    stroke_color,
+                    stroke_weight,
+                )
 
         def hit_test_bt_item(self, x: float, y: float) -> tuple[int | None, str | None]:
             handles = (
