@@ -20,7 +20,7 @@ import numpy as np
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 try:
     from PySide6.QtCore import QPointF, QProcess, QRectF, QSettings, Qt, Signal
-    from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap
+    from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -343,6 +343,8 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_start: tuple[float, float] | None = None
             self._bt_drag_original: tuple[int, int, int, int] | None = None
             self._bt_drag_original_item: dict[str, Any] | None = None
+            self._bt_drag_temporary = False
+            self.show_bt_inpainted = True
 
             self.bt_view = ImageView()
             self.view = ImageView()
@@ -404,6 +406,20 @@ if QT_IMPORT_ERROR is None:
 
             if startup_image_dir:
                 self.load_folder(startup_image_dir)
+
+        def keyPressEvent(self, event: QKeyEvent) -> None:
+            if (
+                event.key() == Qt.Key.Key_Q
+                and not event.modifiers()
+                and QApplication.focusWidget() is not self.bt_text_edit
+            ):
+                self.show_bt_inpainted = not self.show_bt_inpainted
+                self.render_bt_page(refit=False)
+                state = '顯示' if self.show_bt_inpainted else '隱藏'
+                self.status_label.setText(f'左側 inpainted 已{state}。')
+                event.accept()
+                return
+            super().keyPressEvent(event)
 
         def _last_existing_image_dir(self) -> str | None:
             value = self.settings.value('last_image_dir', '', str)
@@ -1663,6 +1679,7 @@ if QT_IMPORT_ERROR is None:
             try:
                 self.clear_hover_char_box(render=False)
                 self.selected_box_index = None
+                self.show_bt_inpainted = True
                 self.set_box_editor_enabled(False)
                 image_size = qimage_size(self.processor.image_dir / page_name)
                 self.page = self.processor.load_page(page_name, image_size=image_size)
@@ -1726,22 +1743,59 @@ if QT_IMPORT_ERROR is None:
             if row >= 0:
                 self.load_page_at_row(row)
 
+        def bt_inpainted_overlay_path(self, page_name: str) -> Path | None:
+            if self.processor is None:
+                return None
+            stem = Path(page_name).stem
+            candidates = [
+                self.processor.ctd_dir / 'inpainted' / f'{stem}.png',
+                self.processor.image_dir / 'inpainted' / f'{stem}.png',
+            ]
+            for path in candidates:
+                if path.is_file():
+                    return path
+            return None
+
+        def load_bt_base_image(self, page_name: str) -> QImage | None:
+            if self.processor is None:
+                return None
+            image_path = self.processor.image_dir / page_name
+            if not image_path.is_file() and self.page is not None:
+                image_path = self.page.image_path
+            image = QImage(str(image_path))
+            if image.isNull():
+                return None
+            image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+
+            if not self.show_bt_inpainted:
+                return image
+            overlay_path = self.bt_inpainted_overlay_path(page_name)
+            if overlay_path is None:
+                return image
+            overlay = QImage(str(overlay_path))
+            if overlay.isNull():
+                return image
+            overlay = overlay.convertToFormat(QImage.Format.Format_RGBA8888)
+            if overlay.size() != image.size():
+                overlay = overlay.scaled(
+                    image.size(),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            painter = QPainter(image)
+            painter.drawImage(0, 0, overlay)
+            painter.end()
+            return image
+
         def render_bt_page(self, *_, refit: bool = True) -> None:
             if self.processor is None:
                 return
             page_name = self.current_page_name()
             if not page_name:
                 return
-            try:
-                image_path = self.processor.image_dir / page_name
-                if not image_path.is_file() and self.page is not None:
-                    image_path = self.page.image_path
-                image = QImage(str(image_path))
-            except Exception:
+            image = self.load_bt_base_image(page_name)
+            if image is None:
                 return
-            if image.isNull():
-                return
-            image = image.convertToFormat(QImage.Format.Format_RGBA8888)
             painter = QPainter(image)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -1811,7 +1865,7 @@ if QT_IMPORT_ERROR is None:
             cx, cy = center
             if orientation == 'vertical':
                 columns = self.vertical_text_columns(text)
-                chars = [char for column in columns for char in column] or [' ']
+                chars = [char['display'] for column in columns for char in column] or [' ']
                 char_width = max(metrics.horizontalAdvance(char) for char in chars)
                 column_width = max(metrics.horizontalAdvance('漢'), char_width)
                 width = column_width * len(columns) + pad * 2
@@ -1825,11 +1879,75 @@ if QT_IMPORT_ERROR is None:
             height = metrics.height() * len(lines) + pad * 2
             return QRectF(cx - width / 2.0, cy - height / 2.0, width, height)
 
-        def vertical_text_columns(self, text: str) -> list[list[str]]:
-            lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
-            columns = [[char for char in line] for line in lines]
+        def vertical_text_columns(self, text: str) -> list[list[dict[str, object]]]:
+            prepared = text.replace('\\n', '\n').replace('\r\n', '\n').replace('\r', '\n')
+            prepared = prepared.replace('——', '︱')
+            lines = prepared.split('\n')
+            columns = [[self.vertical_char_info(char) for char in line] for line in lines]
             columns = [column for column in columns if column]
-            return columns or [[' ']]
+            return columns or [[self.vertical_char_info(' ')]]
+
+        def vertical_char_info(self, char: str) -> dict[str, object]:
+            display = self.vertical_display_character(char)
+            return {
+                'display': display,
+                'mirror_x': display in {'‶', '〟'},
+                'half_bottom': display in {'︐', '︑', '︒', '﹂', '﹄', '‶'},
+                'half_top': display in {'﹁', '﹃', '〟'},
+                'x_offset': self.vertical_char_x_offset(display),
+            }
+
+        def vertical_char_x_offset(self, display: str) -> float:
+            if display == '‶':
+                return -0.25
+            if display == '〟':
+                return 0.5
+            return 0.0
+
+        def vertical_display_character(self, char: str) -> str:
+            if len(char) != 1:
+                return char
+            codepoint = ord(char)
+            if 48 <= codepoint <= 57:
+                return chr(codepoint + 0xFEE0)
+            replacements = {
+                '，': '︐',
+                ',': '︐',
+                '、': '︑',
+                '。': '︒',
+                '：': '︓',
+                ':': '︓',
+                '；': '︔',
+                ';': '︔',
+                '！': '︕',
+                '!': '︕',
+                '？': '︖',
+                '?': '︖',
+                '…': '︙',
+                '\u201c': '‶',
+                '\u201d': '〟',
+                '「': '﹁',
+                '」': '﹂',
+                '『': '﹃',
+                '』': '﹄',
+                '（': '︵',
+                '）': '︶',
+                '(': '︵',
+                ')': '︶',
+                '〔': '︹',
+                '〕': '︺',
+                '【': '︻',
+                '】': '︼',
+                '《': '︽',
+                '》': '︾',
+                '〈': '︿',
+                '〉': '﹀',
+                '～': '︴',
+                '~': '︴',
+                '＿': '︳',
+                '_': '︳',
+            }
+            return replacements.get(char, char)
 
         def draw_vertical_text(self, painter: QPainter, rect: QRectF, text: str) -> None:
             text_columns = self.vertical_text_columns(text)
@@ -1848,9 +1966,23 @@ if QT_IMPORT_ERROR is None:
                 if not column_chars:
                     continue
                 x = start_x - column * column_width
-                for row, char in enumerate(column_chars):
-                    y = top + row * line_height + metrics.ascent()
-                    painter.drawText(QPointF(x - metrics.horizontalAdvance(char) / 2.0, y), char)
+                for row, char_info in enumerate(column_chars):
+                    display = str(char_info['display'])
+                    char_x = x + float(char_info.get('x_offset', 0.0)) * column_width
+                    char_y = top + row * line_height + metrics.ascent()
+                    if char_info.get('half_bottom'):
+                        char_y -= line_height * 0.25
+                    if char_info.get('half_top'):
+                        char_y += line_height * 0.25
+                    char_width = metrics.horizontalAdvance(display)
+                    if char_info.get('mirror_x'):
+                        painter.save()
+                        painter.translate(char_x, char_y)
+                        painter.scale(-1, 1)
+                        painter.drawText(QPointF(char_width / 2.0, 0), display)
+                        painter.restore()
+                    else:
+                        painter.drawText(QPointF(char_x - char_width / 2.0, char_y), display)
 
         def _draw_bt_items(self, painter: QPainter, image_width: int, image_height: int) -> None:
             items = self.bt_items_for_page()
@@ -1876,11 +2008,11 @@ if QT_IMPORT_ERROR is None:
                 color_name = self.bt_text_color(item)
                 text_color = QColor(255, 255, 255) if color_name == 'white' else QColor(0, 0, 0)
                 stroke_color = QColor(0, 0, 0) if color_name == 'white' else QColor(255, 255, 255)
-                frame_color = QColor(255, 210, 40) if selected else QColor(45, 135, 255)
-                painter.setBrush(QColor(255, 210, 40, 28) if selected else QColor(45, 135, 255, 18))
-                painter.setPen(QPen(frame_color, 5 if selected else 3))
-                painter.drawRect(QRectF(x1, y1, max(1, x2 - x1), max(1, y2 - y1)))
+                frame_color = QColor(255, 210, 40)
                 if selected:
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.setPen(QPen(frame_color, 5))
+                    painter.drawRect(QRectF(x1, y1, max(1, x2 - x1), max(1, y2 - y1)))
                     painter.setBrush(frame_color)
                     for hx, hy in (
                         (x1, y1), ((x1 + x2) / 2, y1), (x2, y1),
@@ -1947,11 +2079,14 @@ if QT_IMPORT_ERROR is None:
                 self._bt_drag_start = None
                 self._bt_drag_original = None
                 self._bt_drag_original_item = None
+                self._bt_drag_temporary = False
                 return
-            self._bt_drag_mode = mode
+            temporary = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier)
+            self._bt_drag_mode = 'move' if temporary else mode
             self._bt_drag_start = (x, y)
             self._bt_drag_original = xyxy
             self._bt_drag_original_item = copy.deepcopy(item)
+            self._bt_drag_temporary = temporary
 
         def handle_bt_mouse_drag(self, x: float, y: float) -> None:
             item = self.selected_bt_item()
@@ -1977,9 +2112,30 @@ if QT_IMPORT_ERROR is None:
             self.populate_box_editor_from_bt(item)
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
+            if self._bt_drag_temporary:
+                self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
 
         def handle_bt_mouse_release(self, x: float, y: float) -> None:
             item = self.selected_bt_item()
+            if (
+                self._bt_drag_temporary
+                and self._bt_drag_original_item is not None
+                and self.selected_bt_index is not None
+            ):
+                page_name = self.current_page_name()
+                items = self.bt_items_for_page(page_name)
+                if 0 <= self.selected_bt_index < len(items):
+                    items[self.selected_bt_index] = self._bt_drag_original_item
+                    self.populate_box_editor_from_bt(items[self.selected_bt_index])
+                    self.update_bt_item_list()
+                    self.render_bt_page(refit=False)
+                    self.status_label.setText('臨時移動結束，已回到原位。')
+                self._bt_drag_mode = None
+                self._bt_drag_start = None
+                self._bt_drag_original = None
+                self._bt_drag_original_item = None
+                self._bt_drag_temporary = False
+                return
             if item is not None and self._bt_drag_original is not None and self._bt_drag_original_item is not None:
                 xyxy = self.bt_xyxy_from_item(item)
                 if xyxy is not None and xyxy != self._bt_drag_original:
@@ -1999,6 +2155,7 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_start = None
             self._bt_drag_original = None
             self._bt_drag_original_item = None
+            self._bt_drag_temporary = False
 
         def render_current_page(self, *_, refit: bool = True) -> None:
             if self.page is None:
