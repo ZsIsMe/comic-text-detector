@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """ctd JSON/NPZ 即時疊圖檢視器。
 
-檢視器會在記憶體中根據原圖、measure.custom.json、ctd/progressing/*.json
-和 align/masks/*.npz 重建疊圖，不會輸出預覽 PNG。
+檢視器會在記憶體中根據原圖、ctd/measure.json、ctd/progressing/*.json
+和 align/masks/*.npz 重建只讀疊圖，不會輸出預覽 PNG。
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import json
 import sys
 import traceback
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -37,6 +39,7 @@ try:
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QSplitter,
         QSpinBox,
         QSlider,
         QTableWidget,
@@ -57,6 +60,7 @@ try:
         tuple_center,
         xyxy_from_item,
     )
+    from .labelplus_pipeline import build_bt_from_labelplus_txt
 except ImportError:
     from processor import (
         BoxOverlay,
@@ -66,6 +70,7 @@ except ImportError:
         tuple_center,
         xyxy_from_item,
     )
+    from labelplus_pipeline import build_bt_from_labelplus_txt
 
 
 if QT_IMPORT_ERROR is None:
@@ -300,6 +305,11 @@ if QT_IMPORT_ERROR is None:
             self.page: PageOverlay | None = None
             self.page_names: list[str] = []
             self.current_image_dir: str | None = startup_image_dir
+            self.bt_data: dict[str, Any] | None = None
+            self.bt_path: Path | None = None
+            self.bt_dirty = False
+            self.selected_bt_index: int | None = None
+            self.bt_undo_stack: list[dict[str, object]] = []
             self.detect_process: QProcess | None = None
             self.detect_output_chunks: list[str] = []
             self.detect_command: list[str] = []
@@ -321,11 +331,22 @@ if QT_IMPORT_ERROR is None:
             self._box_drag_start: tuple[float, float] | None = None
             self._box_drag_original: tuple[int, int, int, int] | None = None
             self._box_drag_temporary = False
+            self._bt_drag_mode: str | None = None
+            self._bt_drag_start: tuple[float, float] | None = None
+            self._bt_drag_original: tuple[int, int, int, int] | None = None
+            self._bt_drag_original_item: dict[str, Any] | None = None
 
+            self.bt_view = ImageView()
             self.view = ImageView()
-            self.setCentralWidget(self.view)
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+            splitter.addWidget(self.bt_view)
+            splitter.addWidget(self.view)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 1)
+            self.setCentralWidget(splitter)
 
             self.page_list = QListWidget()
+            self.bt_item_list = QListWidget()
             self.font_size_table = QTableWidget()
             self.status_label = QLabel('尚未選擇資料夾')
             self.status_label.setWordWrap(True)
@@ -339,14 +360,23 @@ if QT_IMPORT_ERROR is None:
             self.show_font_labels = QCheckBox('字級標籤')
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
-            self.save_button = QPushButton('保存修改')
+            self.import_labelplus_button = QPushButton('導入 LabelPlus txt')
+            self.open_bt_button = QPushButton('打開 _bt.json')
+            self.save_button = QPushButton('保存 _bt.json')
             self.even_font_button = QPushButton('字體取偶數')
             self.char_info_label = QLabel('游標單字框：未選中')
             self.char_info_label.setWordWrap(True)
             self.box_editor_title = QLabel('未選擇文字框')
             self.box_editor_title.setWordWrap(True)
+            self.bt_path_label = QLabel('尚未載入 _bt.json')
+            self.bt_path_label.setWordWrap(True)
+            self.bt_text_edit = QPlainTextEdit()
+            self.bt_text_edit.setPlaceholderText('選中左側 _bt 條目後編輯文字')
+            self.bt_text_edit.setMinimumHeight(90)
             self.font_size_spin = QSpinBox()
+            self.orientation_combo = QComboBox()
             self.color_combo = QComboBox()
+            self.stroke_weight_spin = QSpinBox()
             self.text_has_stroke_check = QCheckBox('原字描邊')
             self.need_inpaint_check = QCheckBox('需要修復/描邊')
 
@@ -394,8 +424,16 @@ if QT_IMPORT_ERROR is None:
             generate_action.triggered.connect(self.generate_ctd)
             toolbar.addAction(generate_action)
 
+            import_labelplus_action = QAction('導入 LabelPlus txt', self)
+            import_labelplus_action.triggered.connect(self.import_labelplus_txt)
+            toolbar.addAction(import_labelplus_action)
+
+            open_bt_action = QAction('打開 _bt.json', self)
+            open_bt_action.triggered.connect(self.open_bt_json)
+            toolbar.addAction(open_bt_action)
+
             fit_action = QAction('適合視窗', self)
-            fit_action.triggered.connect(lambda: self.view.fitInView(self.view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio))
+            fit_action.triggered.connect(self.fit_both_views)
             toolbar.addAction(fit_action)
 
             self.prev_page_action = QAction('上一頁', self)
@@ -410,7 +448,7 @@ if QT_IMPORT_ERROR is None:
             self.next_page_action.triggered.connect(lambda: self.go_to_relative_page(1))
             toolbar.addAction(self.next_page_action)
 
-            self.save_action = QAction('保存', self)
+            self.save_action = QAction('保存 _bt', self)
             self.save_action.setShortcuts([QKeySequence('Meta+S'), QKeySequence('Ctrl+S')])
             self.save_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             self.save_action.triggered.connect(self.save_pending_changes)
@@ -433,18 +471,21 @@ if QT_IMPORT_ERROR is None:
             ])
             self.increase_font_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             self.increase_font_action.triggered.connect(lambda: self.nudge_selected_font_size(2))
+            self.increase_font_action.setEnabled(False)
             self.addAction(self.increase_font_action)
 
             self.decrease_font_action = QAction('字體-2', self)
             self.decrease_font_action.setShortcuts([QKeySequence('Meta+-'), QKeySequence('Ctrl+-')])
             self.decrease_font_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             self.decrease_font_action.triggered.connect(lambda: self.nudge_selected_font_size(-2))
+            self.decrease_font_action.setEnabled(False)
             self.addAction(self.decrease_font_action)
 
             self.delete_box_action = QAction('刪除文字框', self)
             self.delete_box_action.setShortcuts([QKeySequence(Qt.Key.Key_Delete), QKeySequence(Qt.Key.Key_Backspace)])
             self.delete_box_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             self.delete_box_action.triggered.connect(self.delete_selected_box)
+            self.delete_box_action.setEnabled(False)
             self.addAction(self.delete_box_action)
 
             move_shortcuts = (
@@ -492,21 +533,39 @@ if QT_IMPORT_ERROR is None:
             layout.addLayout(opacity_row)
             layout.addWidget(self.status_label)
             layout.addWidget(self.char_info_label)
-            layout.addWidget(QLabel('當前文字框'))
+            layout.addWidget(QLabel('_bt.json'))
+            layout.addWidget(self.bt_path_label)
+            self.open_bt_button.clicked.connect(self.open_bt_json)
+            layout.addWidget(self.open_bt_button)
+            layout.addWidget(QLabel('當前頁 _bt 條目'))
+            self.bt_item_list.setMinimumHeight(130)
+            self.bt_item_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+            layout.addWidget(self.bt_item_list, 1)
+            layout.addWidget(QLabel('當前 _bt 條目'))
             layout.addWidget(self.box_editor_title)
             self.font_size_spin.setRange(1, 999)
             self.font_size_spin.setSuffix(' px')
+            self.orientation_combo.addItem('直排', 'vertical')
+            self.orientation_combo.addItem('橫排', 'horizontal')
             self.color_combo.addItem('黑', 'black')
             self.color_combo.addItem('白', 'white')
+            self.stroke_weight_spin.setRange(0, 99)
+            self.stroke_weight_spin.setSuffix(' px')
+            layout.addWidget(QLabel('文字'))
+            layout.addWidget(self.bt_text_edit)
             layout.addWidget(QLabel('字體大小'))
             layout.addWidget(self.font_size_spin)
+            layout.addWidget(QLabel('方向'))
+            layout.addWidget(self.orientation_combo)
             layout.addWidget(QLabel('文字顏色'))
             layout.addWidget(self.color_combo)
+            layout.addWidget(QLabel('描邊粗細'))
+            layout.addWidget(self.stroke_weight_spin)
             layout.addWidget(self.text_has_stroke_check)
             layout.addWidget(self.need_inpaint_check)
             self.save_button.clicked.connect(self.save_pending_changes)
             layout.addWidget(self.save_button)
-            hint = QLabel('修改後先暫存；Command+S、保存、或切換頁面時寫入 measure.custom.json')
+            hint = QLabel('左側編輯 _bt.json；右側 ctd/measure.json 只讀顯示。')
             hint.setWordWrap(True)
             layout.addWidget(hint)
             self.set_box_editor_enabled(False)
@@ -516,6 +575,8 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(reload_button)
             self.generate_button.clicked.connect(self.generate_ctd)
             layout.addWidget(self.generate_button)
+            self.import_labelplus_button.clicked.connect(self.import_labelplus_txt)
+            layout.addWidget(self.import_labelplus_button)
 
             dock = QDockWidget('CTD 資料', self)
             dock.setWidget(panel)
@@ -569,6 +630,7 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.font_size_table, 1)
             self.even_font_button.clicked.connect(self.preview_even_font_sizes)
             layout.addWidget(self.even_font_button)
+            self.even_font_button.hide()
 
             dock = QDockWidget('字級列表', self)
             dock.setWidget(panel)
@@ -577,6 +639,7 @@ if QT_IMPORT_ERROR is None:
 
         def _connect_signals(self) -> None:
             self.page_list.currentRowChanged.connect(self.handle_page_row_changed)
+            self.bt_item_list.currentRowChanged.connect(self.handle_bt_item_row_changed)
             for widget in (
                 self.show_mask,
                 self.show_npz_smoothed,
@@ -592,10 +655,14 @@ if QT_IMPORT_ERROR is None:
             self.view.imageMouseMoved.connect(self.update_hover_char_box)
             self.view.imageMouseLeft.connect(self.clear_hover_char_box)
             self.view.imageMousePressed.connect(self.handle_image_mouse_press)
-            self.view.imageMouseDragged.connect(self.handle_image_mouse_drag)
-            self.view.imageMouseReleased.connect(self.handle_image_mouse_release)
+            self.bt_view.imageMousePressed.connect(self.handle_bt_mouse_press)
+            self.bt_view.imageMouseDragged.connect(self.handle_bt_mouse_drag)
+            self.bt_view.imageMouseReleased.connect(self.handle_bt_mouse_release)
+            self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
             self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
             self.color_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.stroke_weight_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.text_has_stroke_check.stateChanged.connect(self.apply_editor_changes_to_selected_box)
             self.need_inpaint_check.stateChanged.connect(self.apply_editor_changes_to_selected_box)
             self.font_size_table.cellClicked.connect(self.apply_font_size_from_table)
@@ -607,11 +674,20 @@ if QT_IMPORT_ERROR is None:
                 self.load_folder(folder)
 
         def load_folder(self, image_dir: str) -> None:
+            if self.bt_dirty and not self.save_pending_changes(auto=True):
+                return
             image_dir = str(Path(image_dir).expanduser().resolve())
             self.current_image_dir = image_dir
             self.clear_hover_char_box(render=False)
             self.page = None
             self.selected_box_index = None
+            self.selected_bt_index = None
+            self.bt_data = None
+            self.bt_path = None
+            self.bt_dirty = False
+            self.bt_undo_stack.clear()
+            self.bt_path_label.setText('尚未載入 _bt.json')
+            self.update_bt_item_list()
             self.undo_stack.clear()
             self.measure_dirty = False
             self.current_page_row = -1
@@ -636,6 +712,7 @@ if QT_IMPORT_ERROR is None:
                 self.page = None
                 self.current_page_row = -1
                 self.view.scene().clear()
+                self.bt_view.scene().clear()
                 self.update_font_size_list()
                 self.status_label.setText(f'{self.status_label.text()}\n此資料夾沒有可顯示的圖片。')
 
@@ -643,7 +720,7 @@ if QT_IMPORT_ERROR is None:
             if row == self.current_page_row:
                 return
             previous_row = self.current_page_row
-            if self.measure_dirty and not self.save_pending_changes(auto=True):
+            if self.bt_dirty and not self.save_pending_changes(auto=True):
                 self.page_list.blockSignals(True)
                 self.page_list.setCurrentRow(previous_row)
                 self.page_list.blockSignals(False)
@@ -661,6 +738,207 @@ if QT_IMPORT_ERROR is None:
             target = max(0, min(current + delta, len(self.page_names) - 1))
             if target != current:
                 self.page_list.setCurrentRow(target)
+
+        def fit_both_views(self) -> None:
+            for view in (self.bt_view, self.view):
+                view.fitInView(view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+        def current_page_name(self) -> str | None:
+            if self.page is not None:
+                return self.page.page_name
+            if 0 <= self.current_page_row < len(self.page_names):
+                return self.page_names[self.current_page_row]
+            return None
+
+        def bt_items_for_page(self, page_name: str | None = None) -> list[dict[str, Any]]:
+            if self.bt_data is None:
+                return []
+            page_name = page_name or self.current_page_name()
+            if not page_name:
+                return []
+            items = self.bt_data.get('transMap', {}).get(page_name, [])
+            return items if isinstance(items, list) else []
+
+        def selected_bt_item(self) -> dict[str, Any] | None:
+            items = self.bt_items_for_page()
+            if self.selected_bt_index is None or self.selected_bt_index < 0 or self.selected_bt_index >= len(items):
+                return None
+            item = items[self.selected_bt_index]
+            return item if isinstance(item, dict) else None
+
+        def bt_item_status(self, item: dict[str, Any]) -> str:
+            raw_status = str(item.get('match_status') or '').lower()
+            if raw_status == 'manual':
+                return '手動'
+            if raw_status == 'auto':
+                return '自動'
+            if raw_status == 'unmatched':
+                return '未匹配'
+            if raw_status in {'duplicate', 'fallback'}:
+                return '待確認'
+            if self.bt_item_needs_review(item):
+                return '待確認'
+            return '自動'
+
+        def bt_item_needs_review(self, item: dict[str, Any]) -> bool:
+            raw_status = str(item.get('match_status') or '').lower()
+            if raw_status in {'manual', 'auto'}:
+                return False
+            if raw_status in {'unmatched', 'duplicate', 'fallback'}:
+                return True
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is None:
+                return True
+            x1, y1, x2, y2 = xyxy
+            return abs((x2 - x1) - 50) <= 1 and abs((y2 - y1) - 50) <= 1
+
+        def bt_item_list_label(self, index: int, item: dict[str, Any]) -> str:
+            status = self.bt_item_status(item)
+            text = ' '.join(str(item.get('text') or '').split())
+            if len(text) > 28:
+                text = f'{text[:28]}...'
+            if not text:
+                text = '(空文字)'
+            entry_index = item.get('index', index + 1)
+            group_id = item.get('groupId', '-')
+            return f'{index + 1:03d} [{status}] index={entry_index} g={group_id}  {text}'
+
+        def update_bt_item_list(self) -> None:
+            if not hasattr(self, 'bt_item_list'):
+                return
+            self.bt_item_list.blockSignals(True)
+            self.bt_item_list.clear()
+            items = self.bt_items_for_page()
+            if self.bt_data is None:
+                self.bt_item_list.addItem('未載入 _bt.json')
+                self.bt_item_list.item(0).setFlags(Qt.ItemFlag.NoItemFlags)
+            elif not items:
+                self.bt_item_list.addItem('本頁沒有 _bt 條目')
+                self.bt_item_list.item(0).setFlags(Qt.ItemFlag.NoItemFlags)
+            else:
+                for index, item in enumerate(items):
+                    label = self.bt_item_list_label(index, item if isinstance(item, dict) else {})
+                    self.bt_item_list.addItem(label)
+                    list_item = self.bt_item_list.item(index)
+                    list_item.setData(Qt.ItemDataRole.UserRole, index)
+                    status = self.bt_item_status(item if isinstance(item, dict) else {})
+                    if status in {'未匹配', '待確認'}:
+                        list_item.setBackground(QBrush(QColor(255, 236, 194)))
+                        list_item.setForeground(QBrush(QColor(92, 50, 0)))
+                        list_item.setToolTip('需要人工確認：可先選左側此條，再點右側 measure 框套用。')
+                    elif status == '手動':
+                        list_item.setBackground(QBrush(QColor(214, 245, 223)))
+                        list_item.setForeground(QBrush(QColor(18, 92, 50)))
+                        list_item.setToolTip('已手動套用 measure 框。')
+            if self.selected_bt_index is not None and 0 <= self.selected_bt_index < len(items):
+                self.bt_item_list.setCurrentRow(self.selected_bt_index)
+            else:
+                self.bt_item_list.clearSelection()
+                self.bt_item_list.setCurrentRow(-1)
+            self.bt_item_list.blockSignals(False)
+
+        def handle_bt_item_row_changed(self, row: int) -> None:
+            item = self.bt_item_list.item(row)
+            if item is None:
+                return
+            index = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(index, int):
+                self.select_bt_item(None)
+                return
+            if index != self.selected_bt_index:
+                self.select_bt_item(index)
+
+        def load_bt_json_path(self, path: Path) -> None:
+            data = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(data, dict) or not isinstance(data.get('transMap'), dict):
+                raise ValueError('不是有效的 _bt/MEO JSON：缺少 transMap。')
+            self.bt_data = data
+            self.bt_path = path
+            self.bt_dirty = False
+            self.selected_bt_index = None
+            self.bt_undo_stack.clear()
+            self.bt_path_label.setText(str(path))
+            self.set_box_editor_enabled(False)
+            self.update_bt_item_list()
+            self.render_bt_page(refit=True)
+            self.update_action_state()
+
+        def open_bt_json(self) -> None:
+            start_dir = self.current_image_dir or self._last_existing_image_dir() or str(Path.home())
+            path_text, _ = QFileDialog.getOpenFileName(self, '打開 _bt.json', start_dir, 'JSON (*.json)')
+            if not path_text:
+                return
+            try:
+                self.load_bt_json_path(Path(path_text).expanduser().resolve())
+            except Exception as exc:
+                show_exception_details(self, '打開失敗', '無法打開 _bt.json。下方是完整可複製的出錯信息。', exc)
+
+        def save_bt_json(self) -> None:
+            if self.bt_data is None or self.bt_path is None:
+                return
+            self.bt_path.write_text(
+                json.dumps(self.bt_data, ensure_ascii=False, indent=2) + '\n',
+                encoding='utf-8',
+            )
+            self.bt_dirty = False
+            self.update_action_state()
+
+        def mark_bt_dirty(self) -> None:
+            self.bt_dirty = True
+            self.update_action_state()
+
+        def bt_xyxy_from_item(self, item: dict[str, Any]) -> tuple[int, int, int, int] | None:
+            xyxy = item.get('xyxy_pixel')
+            if isinstance(xyxy, list) and len(xyxy) == 4:
+                return tuple(int(round(float(v))) for v in xyxy)
+            page_name = self.current_page_name()
+            if not page_name or self.processor is None:
+                return None
+            image_size = qimage_size(self.processor.image_dir / page_name)
+            if image_size is None:
+                return None
+            width, height = image_size
+            try:
+                cx = float(item.get('x')) * width
+                cy = float(item.get('y')) * height
+            except (TypeError, ValueError):
+                return None
+            half = 25
+            return int(round(cx - half)), int(round(cy - half)), int(round(cx + half)), int(round(cy + half))
+
+        def set_bt_xyxy(self, item: dict[str, Any], xyxy: tuple[int, int, int, int]) -> None:
+            item['xyxy_pixel'] = list(xyxy)
+            if self.page is not None:
+                center = normalized_center_from_xyxy(xyxy, qimage_size(self.page.image_path))
+                if center is not None:
+                    item['x'] = center[0]
+                    item['y'] = center[1]
+
+        def bt_text_color(self, item: dict[str, Any]) -> str:
+            color = str(item.get('color') or '#000000').lower()
+            return 'white' if color in {'#ffffff', 'ffffff', 'white'} else 'black'
+
+        def set_bt_text_color(self, item: dict[str, Any], value: str) -> None:
+            if value == 'white':
+                item['color'] = '#FFFFFF'
+                item['stroke-color'] = '#000000'
+            else:
+                item['color'] = '#000000'
+                item['stroke-color'] = '#FFFFFF'
+
+        def push_bt_undo(self, description: str) -> None:
+            item = self.selected_bt_item()
+            page_name = self.current_page_name()
+            if item is None or page_name is None or self.selected_bt_index is None:
+                return
+            self.bt_undo_stack.append({
+                'page_name': page_name,
+                'item_index': self.selected_bt_index,
+                'item': copy.deepcopy(item),
+                'description': description,
+            })
+            if len(self.bt_undo_stack) > 200:
+                self.bt_undo_stack = self.bt_undo_stack[-200:]
 
         def font_size_counts(self) -> dict[int, int]:
             if self.processor is None:
@@ -712,64 +990,10 @@ if QT_IMPORT_ERROR is None:
             return '\n'.join(lines)
 
         def preview_even_font_sizes(self) -> None:
-            if self.processor is None:
-                QMessageBox.information(self, '尚未載入資料', '請先選擇圖片資料夾。')
-                return
-            if not self.processor.measure_path.is_file():
-                QMessageBox.information(self, '找不到 measure.custom.json', '目前資料夾沒有可修改的 measure.custom.json。')
-                return
-
-            counts, changed = self.even_font_size_preview()
-            if not counts:
-                QMessageBox.information(self, '沒有字級資料', 'measure.custom.json 裡沒有可修改的 font_size。')
-                return
-            if changed == 0:
-                QMessageBox.information(self, '不需要修改', '全部 font_size 取整後已經是偶數。')
-                return
-
-            dialog = ConfirmPreviewDialog(
-                '字體取偶數',
-                f'將修改全部頁面 {changed} 個區塊的 font_size。下方是保存後全部字級的數目；確定後會立即寫入 measure.custom.json，且不可撤銷。',
-                self.format_font_size_counts(counts),
-                self,
-            )
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.apply_even_font_sizes()
+            QMessageBox.information(self, '功能已移除', 'ctd/measure.json 生成後不再支持批量修改字體大小。')
 
         def apply_even_font_sizes(self) -> None:
-            if self.processor is None:
-                return
-            pages = self.processor.measure.get('pages') or {}
-            changed = 0
-            for items in pages.values():
-                if not isinstance(items, list):
-                    continue
-                for item in items:
-                    if not isinstance(item, dict) or item.get('font_size') is None:
-                        continue
-                    new_size = even_font_size(item.get('font_size'))
-                    if new_size is None:
-                        continue
-                    try:
-                        old_size = int(round(float(item['font_size'])))
-                    except (TypeError, ValueError):
-                        old_size = new_size
-                    if new_size != old_size:
-                        item['font_size'] = new_size
-                        changed += 1
-
-            if changed == 0:
-                return
-
-            self.undo_stack.clear()
-            try:
-                self.processor.save_measure()
-            except Exception as exc:
-                show_exception_details(self, '保存失敗', '無法寫入 measure.custom.json。下方是完整可複製的出錯信息。', exc)
-                return
-            self.measure_dirty = False
-            self.refresh_current_page_from_measure(status=f'已對全部頁面套用字體取偶數並保存：{changed} 個區塊。')
-            QMessageBox.information(self, '修改完成', f'已對全部頁面套用並保存 {changed} 個區塊。此操作不可撤銷。')
+            return
 
         def current_page_font_sizes(self) -> set[int]:
             if self.page is None:
@@ -815,25 +1039,43 @@ if QT_IMPORT_ERROR is None:
 
         def set_box_editor_enabled(self, enabled: bool) -> None:
             for widget in (
+                self.bt_text_edit,
                 self.font_size_spin,
+                self.orientation_combo,
                 self.color_combo,
+                self.stroke_weight_spin,
                 self.text_has_stroke_check,
                 self.need_inpaint_check,
             ):
                 widget.setEnabled(enabled)
             if not enabled:
-                self.box_editor_title.setText('未選擇文字框')
+                self.box_editor_title.setText('未選擇 _bt 條目')
+                self._updating_editor = True
+            self.bt_text_edit.clear()
+            self._updating_editor = False
+            self.update_bt_item_list()
             self.update_action_state()
+
+        def select_bt_item(self, index: int | None) -> None:
+            items = self.bt_items_for_page()
+            if index is None or index < 0 or index >= len(items):
+                self.selected_bt_index = None
+                self.set_box_editor_enabled(False)
+                self.update_bt_item_list()
+                self.render_bt_page(refit=False)
+                return
+            self.selected_bt_index = index
+            self.populate_box_editor_from_bt(items[index])
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
 
         def select_box(self, index: int | None) -> None:
             if self.page is None or index is None or index < 0 or index >= len(self.page.boxes):
                 self.selected_box_index = None
-                self.set_box_editor_enabled(False)
                 self.render_current_page(refit=False)
                 return
 
             self.selected_box_index = index
-            self.populate_box_editor(self.page.boxes[index])
             self.render_current_page(refit=False)
 
         def populate_box_editor(self, box: BoxOverlay) -> None:
@@ -850,26 +1092,98 @@ if QT_IMPORT_ERROR is None:
             self.need_inpaint_check.setChecked(box.need_inpaint is True)
             self._updating_editor = False
 
+        def populate_box_editor_from_bt(self, item: dict[str, Any]) -> None:
+            self._updating_editor = True
+            self.set_box_editor_enabled(True)
+            xyxy = self.bt_xyxy_from_item(item)
+            box_text = '無框' if xyxy is None else ','.join(str(v) for v in xyxy)
+            self.box_editor_title.setText(
+                f'index={item.get("index", "-")}  groupId={item.get("groupId", "-")}  框：{box_text}'
+            )
+            self.bt_text_edit.setPlainText(str(item.get('text') or ''))
+            self.font_size_spin.setValue(max(1, int(round(float(item.get('font-size') or 1)))))
+            orientation_index = self.orientation_combo.findData(item.get('orientation') or 'vertical')
+            self.orientation_combo.setCurrentIndex(max(0, orientation_index))
+            color_index = self.color_combo.findData(self.bt_text_color(item))
+            self.color_combo.setCurrentIndex(max(0, color_index))
+            stroke_weight = int(round(float(item.get('stroke-weight') or 0)))
+            self.stroke_weight_spin.setValue(max(0, min(99, stroke_weight)))
+            self.text_has_stroke_check.setChecked(stroke_weight > 0)
+            self.need_inpaint_check.setChecked(item.get('need_inpaint') is True)
+            self._updating_editor = False
+
         def selected_box_updates_from_editor(self) -> dict[str, object] | None:
-            if self._updating_editor or self.selected_box() is None:
+            if self._updating_editor or self.selected_bt_item() is None:
                 return None
+            color = self.color_combo.currentData() or 'black'
+            stroke_weight = int(self.stroke_weight_spin.value())
+            if self.text_has_stroke_check.isChecked() and stroke_weight <= 0:
+                stroke_weight = max(1, int(np.ceil(float(self.font_size_spin.value()) / 8.0)))
             return {
-                'font_size': int(self.font_size_spin.value()),
-                'text_color': self.color_combo.currentData() or 'black',
-                'fg_color_rgb': [255, 255, 255] if self.color_combo.currentData() == 'white' else [0, 0, 0],
-                'text_has_stroke': self.text_has_stroke_check.isChecked(),
+                'text': self.bt_text_edit.toPlainText(),
+                'font-size': int(self.font_size_spin.value()),
+                'orientation': self.orientation_combo.currentData() or 'vertical',
+                'color': '#FFFFFF' if color == 'white' else '#000000',
+                'stroke-color': '#000000' if color == 'white' else '#FFFFFF',
+                'stroke-weight': stroke_weight,
                 'need_inpaint': self.need_inpaint_check.isChecked(),
             }
+
+        def measure_box_updates_for_bt(self, box: BoxOverlay) -> dict[str, object]:
+            item = self.selected_bt_item() or {}
+            updates: dict[str, object] = {
+                'xyxy_pixel': list(box.xyxy_pixel),
+                'orientation': box.orientation or item.get('orientation') or 'vertical',
+                'match_status': 'manual',
+                'match_source_block_index': box.source_block_index,
+            }
+            if box.measure_item_index is not None:
+                updates['match_measure_item_index'] = box.measure_item_index
+            if box.center_normalized is not None:
+                updates['x'] = box.center_normalized[0]
+                updates['y'] = box.center_normalized[1]
+
+            if box.font_size is not None:
+                font_size = max(1, int(round(float(box.font_size))))
+                updates['font-size'] = font_size
+            else:
+                font_size = max(1, int(round(float(item.get('font-size') or self.font_size_spin.value() or 1))))
+
+            color = str(box.text_color or self.bt_text_color(item)).lower()
+            if color not in {'black', 'white'}:
+                color = 'black'
+            updates['color'] = '#FFFFFF' if color == 'white' else '#000000'
+            updates['stroke-color'] = '#000000' if color == 'white' else '#FFFFFF'
+            needs_stroke = box.text_has_stroke is True or box.need_inpaint is True
+            updates['stroke-weight'] = int(np.ceil(font_size / 8.0)) if needs_stroke else 0
+            updates['need_inpaint'] = box.need_inpaint is True
+            return updates
+
+        def apply_measure_box_to_selected_bt(self, box: BoxOverlay) -> bool:
+            item = self.selected_bt_item()
+            if item is None:
+                self.status_label.setText('請先在左側選擇一條 _bt，再點右側 measure 框套用。')
+                return False
+            entry_index = item.get('index', self.selected_bt_index)
+            source_index = box.source_block_index
+            status = f'已將右側 measure 區塊 {source_index} 套用到左側 _bt index={entry_index}，尚未保存。'
+            changed = self.apply_selected_box_updates(
+                self.measure_box_updates_for_bt(box),
+                status=status,
+            )
+            if not changed:
+                self.status_label.setText(f'右側 measure 區塊 {source_index} 與左側 _bt 目前內容相同。')
+            return changed
 
         def apply_editor_changes_to_selected_box(self) -> None:
             updates = self.selected_box_updates_from_editor()
             if updates is None:
                 return
-            self.apply_selected_box_updates(updates, status='已修改當前文字框，尚未保存。')
+            self.apply_selected_box_updates(updates, status='已修改當前 _bt 條目，尚未保存。')
 
         def apply_font_size_from_table(self, row: int, column: int) -> None:
-            if self.selected_box() is None:
-                self.status_label.setText('請先在圖片中選擇一個文字框，再點右側字級。')
+            if self.selected_bt_item() is None:
+                self.status_label.setText('請先在左側選擇一條 _bt 文字，再點右側字級。')
                 return
             item = self.font_size_table.item(row, 0)
             if item is None:
@@ -878,117 +1192,100 @@ if QT_IMPORT_ERROR is None:
                 size = int(item.text())
             except ValueError:
                 return
-            self.apply_selected_box_updates({'font_size': size}, status=f'已把當前文字框字體大小改為 {size}，尚未保存。')
+            self.apply_selected_box_updates({'font-size': size}, status=f'已把當前 _bt 條目字體大小改為 {size}，尚未保存。')
 
         def nudge_selected_font_size(self, delta: int) -> None:
-            box = self.selected_box()
-            if box is None:
-                self.status_label.setText('請先選擇一個文字框，再使用字體大小快捷鍵。')
+            item = self.selected_bt_item()
+            if item is None:
+                self.status_label.setText('請先選擇一條 _bt 文字，再使用字體大小快捷鍵。')
                 return
-            current = int(round(float(box.font_size or self.font_size_spin.value() or 1)))
+            current = int(round(float(item.get('font-size') or self.font_size_spin.value() or 1)))
             size = max(1, min(999, current + delta))
             if size == current:
                 return
             sign = '+' if delta > 0 else ''
-            self.apply_selected_box_updates({'font_size': size}, status=f'已將當前文字框字體大小 {sign}{delta} 到 {size}，尚未保存。')
+            self.apply_selected_box_updates({'font-size': size}, status=f'已將當前 _bt 條目字體大小 {sign}{delta} 到 {size}，尚未保存。')
 
         def nudge_selected_box_position(self, dx: int, dy: int) -> None:
-            box = self.selected_box()
-            if box is None:
-                self.status_label.setText('請先選擇一個文字框，再使用方向鍵移動。')
+            item = self.selected_bt_item()
+            if item is None:
+                self.status_label.setText('請先選擇一條 _bt 文字，再使用方向鍵移動。')
                 return
-            x1, y1, x2, y2 = box.xyxy_pixel
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is None:
+                return
+            x1, y1, x2, y2 = xyxy
             new_xyxy = self.clamp_xyxy((x1 + dx, y1 + dy, x2 + dx, y2 + dy))
-            if new_xyxy == box.xyxy_pixel:
+            if new_xyxy == xyxy:
                 return
             move_text = f'{dx:+d},{dy:+d}'
-            self.apply_selected_box_updates({'xyxy_pixel': list(new_xyxy)}, status=f'已用方向鍵移動當前文字框 {move_text}，尚未保存。')
+            self.apply_selected_box_updates(
+                {'xyxy_pixel': list(new_xyxy), 'match_status': 'manual'},
+                status=f'已用方向鍵移動當前 _bt 條目 {move_text}，尚未保存。',
+            )
 
         def delete_selected_box(self) -> None:
-            if self.processor is None or self.page is None:
+            if self.bt_data is None:
                 return
-            box = self.selected_box()
-            if box is None:
-                self.status_label.setText('請先選擇一個文字框，再刪除。')
+            item = self.selected_bt_item()
+            if item is None:
+                self.status_label.setText('請先選擇一條 _bt 文字，再刪除。')
                 return
-            found = self.processor.find_measure_item(
-                self.page.page_name,
-                box.source_block_index,
-                fallback_index=box.measure_item_index,
-            )
-            if found is None:
-                QMessageBox.warning(self, '刪除失敗', '找不到對應的 measure.custom.json 區塊。')
+            page_name = self.current_page_name()
+            items = self.bt_items_for_page(page_name)
+            if page_name is None or self.selected_bt_index is None:
                 return
-            item_index, item = found
-            items = self.processor.measure_items_for_page(self.page.page_name)
-            if item_index < 0 or item_index >= len(items):
-                QMessageBox.warning(self, '刪除失敗', 'measure.custom.json 區塊索引無效。')
-                return
-
-            self.undo_stack.append({
-                'kind': 'delete_box',
-                'page_name': self.page.page_name,
-                'item_index': item_index,
-                'source_block_index': box.source_block_index,
-                'item': copy.deepcopy(item),
-                'description': '刪除文字框',
-            })
-            if len(self.undo_stack) > 200:
-                self.undo_stack = self.undo_stack[-200:]
-
-            del items[item_index]
-            self.mark_measure_dirty()
-            self.refresh_current_page_from_measure(
-                selected_source_index=None,
-                status=f'已刪除區塊 {box.source_block_index}，尚未保存。',
-                refit=False,
-            )
+            self.push_bt_undo('刪除 _bt 條目')
+            del items[self.selected_bt_index]
+            self.selected_bt_index = None
+            self.mark_bt_dirty()
+            self.set_box_editor_enabled(False)
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
+            self.status_label.setText('已刪除 _bt 條目，尚未保存。')
 
         def update_action_state(self) -> None:
-            can_save = self.processor is not None and self.measure_dirty
+            can_save = self.bt_data is not None and self.bt_dirty
             self.save_button.setEnabled(can_save)
             if self.save_action is not None:
                 self.save_action.setEnabled(can_save)
             if self.undo_action is not None:
-                self.undo_action.setEnabled(bool(self.undo_stack))
+                self.undo_action.setEnabled(bool(self.bt_undo_stack))
             has_pages = bool(self.page_names)
             if self.prev_page_action is not None:
                 self.prev_page_action.setEnabled(has_pages and self.page_list.currentRow() > 0)
             if self.next_page_action is not None:
                 self.next_page_action.setEnabled(has_pages and self.page_list.currentRow() < len(self.page_names) - 1)
-            has_selected_box = self.selected_box() is not None
             if self.increase_font_action is not None:
-                self.increase_font_action.setEnabled(has_selected_box)
+                self.increase_font_action.setEnabled(self.selected_bt_item() is not None)
             if self.decrease_font_action is not None:
-                self.decrease_font_action.setEnabled(has_selected_box)
+                self.decrease_font_action.setEnabled(self.selected_bt_item() is not None)
             if self.delete_box_action is not None:
-                self.delete_box_action.setEnabled(has_selected_box)
+                self.delete_box_action.setEnabled(self.selected_bt_item() is not None)
             for action in self.move_box_actions:
-                action.setEnabled(has_selected_box)
-            suffix = ' *' if self.measure_dirty else ''
-            self.setWindowTitle(f'CTD 疊圖檢視器{suffix}')
+                action.setEnabled(self.selected_bt_item() is not None)
+            suffix = ' *' if self.bt_dirty else ''
+            self.setWindowTitle(f'CTD / MEO BT 編輯器{suffix}')
 
         def mark_measure_dirty(self) -> None:
-            self.measure_dirty = True
+            self.measure_dirty = False
             self.update_action_state()
 
         def save_pending_changes(self, *_, auto: bool = False) -> bool:
-            if self.processor is None:
-                return True
-            if not self.measure_dirty:
+            if self.bt_data is None:
                 if not auto:
-                    self.status_label.setText('目前沒有需要保存的修改。')
+                    self.status_label.setText('目前沒有載入 _bt.json。')
+                return True
+            if not self.bt_dirty:
+                if not auto:
+                    self.status_label.setText('目前沒有需要保存的 _bt 修改。')
                 return True
             try:
-                self.processor.save_measure()
+                self.save_bt_json()
             except Exception as exc:
-                show_exception_details(self, '保存失敗', '無法寫入 measure.custom.json。下方是完整可複製的出錯信息。', exc)
+                show_exception_details(self, '保存失敗', '無法寫入 _bt.json。下方是完整可複製的出錯信息。', exc)
                 return False
-
-            self.measure_dirty = False
-            self.update_action_state()
-            page_text = self.page.page_name if self.page is not None else '目前資料'
-            self.status_label.setText(f'{page_text}：已保存整頁修改到 measure.custom.json。')
+            self.status_label.setText(f'已保存：{self.bt_path}')
             return True
 
         def build_box_updates(self, box: BoxOverlay, updates: dict[str, object]) -> dict[str, object]:
@@ -1031,64 +1328,32 @@ if QT_IMPORT_ERROR is None:
             box.raw_measure = dict(item)
 
         def apply_selected_box_updates(self, updates: dict[str, object], *, status: str = '已修改，尚未保存。') -> bool:
-            if self.processor is None or self.page is None:
-                return False
-            box = self.selected_box()
-            if box is None:
-                return False
-
-            normalized_updates = self.build_box_updates(box, updates)
-            found = self.processor.find_measure_item(
-                self.page.page_name,
-                box.source_block_index,
-                fallback_index=box.measure_item_index,
-            )
-            if found is None:
-                QMessageBox.warning(self, '修改失敗', '找不到對應的 measure.custom.json 區塊。')
-                return False
-            item_index, old_item = found
-            if not self.updates_change_item(old_item, normalized_updates):
-                return False
-
-            self.undo_stack.append({
-                'kind': 'box',
-                'page_name': self.page.page_name,
-                'item_index': item_index,
-                'source_block_index': box.source_block_index,
-                'selected_box_index': self.selected_box_index,
-                'item': copy.deepcopy(old_item),
-                'description': status,
-            })
-            if len(self.undo_stack) > 200:
-                self.undo_stack = self.undo_stack[-200:]
-
-            item = self.processor.update_measure_item(
-                self.page.page_name,
-                box.source_block_index,
-                normalized_updates,
-                fallback_index=box.measure_item_index,
-            )
+            item = self.selected_bt_item()
             if item is None:
-                QMessageBox.warning(self, '修改失敗', '找不到對應的 measure.custom.json 區塊。')
                 return False
-            box.measure_item_index = item_index
-            self.sync_box_from_measure_item(box, item)
-            self.mark_measure_dirty()
-            self.populate_box_editor(box)
-            self.update_font_size_list()
-            self.render_current_page(refit=False)
+            normalized_updates = dict(updates)
+            if 'xyxy_pixel' in normalized_updates:
+                xyxy = tuple(int(v) for v in normalized_updates['xyxy_pixel'])
+                normalized_updates['xyxy_pixel'] = list(self.clamp_xyxy(xyxy))
+            if not self.updates_change_item(item, normalized_updates):
+                return False
+            self.push_bt_undo(status)
+            if 'xyxy_pixel' in normalized_updates:
+                self.set_bt_xyxy(item, tuple(int(v) for v in normalized_updates.pop('xyxy_pixel')))
+            item.update(normalized_updates)
+            self.mark_bt_dirty()
+            self.populate_box_editor_from_bt(item)
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
             self.status_label.setText(status)
             return True
 
         def undo_last_edit(self) -> None:
-            if self.processor is None or not self.undo_stack:
-                return
-            entry = self.undo_stack.pop()
-            kind = entry.get('kind')
-            if kind not in {'box', 'delete_box'}:
+            if self.bt_data is None or not self.bt_undo_stack:
+                self.status_label.setText('沒有可撤銷的 _bt 修改。')
                 self.update_action_state()
                 return
-
+            entry = self.bt_undo_stack.pop()
             page_name = str(entry.get('page_name') or '')
             if self.page is None or page_name != self.page.page_name:
                 self.status_label.setText('撤銷只支持當前頁；已忽略其它頁面的撤銷記錄。')
@@ -1096,39 +1361,19 @@ if QT_IMPORT_ERROR is None:
                 return
             item = copy.deepcopy(entry.get('item') or {})
             item_index = entry.get('item_index')
-            source_block_index = entry.get('source_block_index')
-            items = self.processor.measure_items_for_page(page_name)
-            restored = False
-            if kind == 'delete_box':
-                insert_index = item_index if isinstance(item_index, int) else len(items)
-                insert_index = max(0, min(insert_index, len(items)))
-                items.insert(insert_index, item)
-                restored = True
-            elif isinstance(item_index, int) and 0 <= item_index < len(items):
+            items = self.bt_items_for_page(page_name)
+            if isinstance(item_index, int) and 0 <= item_index < len(items):
                 items[item_index] = item
-                restored = True
-            elif isinstance(source_block_index, int):
-                found = self.processor.find_measure_item(page_name, source_block_index)
-                if found is not None:
-                    index, _ = found
-                    items[index] = item
-                    restored = True
-            if not restored:
-                QMessageBox.warning(self, '撤銷失敗', '找不到可恢復的 measure.custom.json 區塊。')
-                self.update_action_state()
-                return
-
-            self.mark_measure_dirty()
-            if self.page is not None and self.page.page_name == page_name:
-                selected_source = source_block_index if isinstance(source_block_index, int) else None
-                self.refresh_current_page_from_measure(
-                    selected_source_index=selected_source,
-                    status='已撤銷上一個刪除，尚未保存。' if kind == 'delete_box' else '已撤銷上一個修改，尚未保存。',
-                    refit=False,
-                )
             else:
-                self.update_font_size_list()
-                self.status_label.setText(f'{page_name}：已撤銷上一個修改，尚未保存。')
+                insert_index = item_index if isinstance(item_index, int) else len(items)
+                items.insert(max(0, min(insert_index, len(items))), item)
+            self.selected_bt_index = item_index if isinstance(item_index, int) else None
+            self.mark_bt_dirty()
+            if self.selected_bt_item() is not None:
+                self.populate_box_editor_from_bt(self.selected_bt_item())
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
+            self.status_label.setText('已撤銷上一個 _bt 修改，尚未保存。')
 
         def refresh_current_page_from_measure(
             self,
@@ -1153,9 +1398,9 @@ if QT_IMPORT_ERROR is None:
                         self.selected_box_index = index
                         break
             if self.selected_box_index is not None:
-                self.populate_box_editor(self.page.boxes[self.selected_box_index])
+                pass
             else:
-                self.set_box_editor_enabled(False)
+                self.selected_box_index = None
             self.update_font_size_list()
             self.render_current_page(refit=refit)
             if status:
@@ -1188,59 +1433,23 @@ if QT_IMPORT_ERROR is None:
             return index, mode
 
         def handle_image_mouse_press(self, x: float, y: float) -> None:
-            index, mode = self.hit_test_box(x, y)
+            index, _mode = self.hit_test_box(x, y)
             self.select_box(index)
-            box = self.selected_box()
-            if box is None or mode is None:
-                self._box_drag_mode = None
-                self._box_drag_start = None
-                self._box_drag_original = None
-                self._box_drag_temporary = False
-                return
-            temporary = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier)
-            self._box_drag_mode = 'move' if temporary else mode
-            self._box_drag_start = (x, y)
-            self._box_drag_original = box.xyxy_pixel
-            self._box_drag_temporary = temporary
+            self._box_drag_mode = None
+            self._box_drag_start = None
+            self._box_drag_original = None
+            self._box_drag_temporary = False
+            if index is not None:
+                box = self.page.boxes[index] if self.page is not None else None
+                if box is not None and self.selected_bt_item() is not None:
+                    self.apply_measure_box_to_selected_bt(box)
+                else:
+                    self.status_label.setText('已選中 CTD measure 框；請先在左側選擇 _bt 條目後再點右側套用。')
 
         def handle_image_mouse_drag(self, x: float, y: float) -> None:
-            if self.page is None or self._box_drag_mode is None or self._box_drag_start is None or self._box_drag_original is None:
-                return
-            box = self.selected_box()
-            if box is None:
-                return
-            dx = int(round(x - self._box_drag_start[0]))
-            dy = int(round(y - self._box_drag_start[1]))
-            x1, y1, x2, y2 = self._box_drag_original
-            if self._box_drag_mode == 'move':
-                new_xyxy = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
-            else:
-                nx1, ny1, nx2, ny2 = x1, y1, x2, y2
-                if 'l' in self._box_drag_mode:
-                    nx1 += dx
-                if 'r' in self._box_drag_mode:
-                    nx2 += dx
-                if 't' in self._box_drag_mode:
-                    ny1 += dy
-                if 'b' in self._box_drag_mode:
-                    ny2 += dy
-                new_xyxy = (nx1, ny1, nx2, ny2)
-            box.xyxy_pixel = self.clamp_xyxy(new_xyxy)
-            self.populate_box_editor(box)
-            if self._box_drag_temporary:
-                self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
-            self.render_current_page(refit=False)
+            return
 
         def handle_image_mouse_release(self, x: float, y: float) -> None:
-            box = self.selected_box()
-            if box is not None and self._box_drag_mode is not None:
-                if self._box_drag_temporary and self._box_drag_original is not None:
-                    box.xyxy_pixel = self._box_drag_original
-                    self.populate_box_editor(box)
-                    self.render_current_page(refit=False)
-                    self.status_label.setText('臨時移動結束，已回到原位。')
-                elif self._box_drag_original is None or box.xyxy_pixel != self._box_drag_original:
-                    self.apply_selected_box_updates({'xyxy_pixel': list(box.xyxy_pixel)})
             self._box_drag_mode = None
             self._box_drag_start = None
             self._box_drag_original = None
@@ -1282,6 +1491,53 @@ if QT_IMPORT_ERROR is None:
                 f'\n問題：{issue_text or "ctd 資料不完整"}'
                 '\n請按「生成/更新 CTD」建立資料，或選擇已產生 ctd/ 的資料夾。'
             )
+
+        def import_labelplus_txt(self) -> None:
+            if self.processor is None:
+                QMessageBox.information(self, '尚未選擇資料夾', '請先選擇包含原圖的圖片資料夾。')
+                return
+            if not self.processor.ctd_measure_path.is_file():
+                QMessageBox.information(self, '缺少 measure.json', '請先生成 CTD，確保 ctd/measure.json 已存在。')
+                return
+
+            start_dir = self.current_image_dir or self._last_existing_image_dir() or str(Path.home())
+            txt_path, _ = QFileDialog.getOpenFileName(
+                self,
+                '導入 LabelPlus txt',
+                start_dir,
+                'LabelPlus/Text (*.txt);;All Files (*)',
+            )
+            if not txt_path:
+                return
+
+            try:
+                result = build_bt_from_labelplus_txt(
+                    txt_path,
+                    self.processor.ctd_measure_path,
+                    self.processor.image_dir,
+                )
+            except Exception as exc:
+                show_exception_details(
+                    self,
+                    '導入失敗',
+                    '無法由 LabelPlus txt 生成 _meo_bt.json。下方是完整可複製的出錯信息。',
+                    exc,
+                )
+                return
+
+            filtered_path = result.get('filtered_path')
+            filtered_text = f'\n{filtered_path}' if filtered_path is not None else ''
+            message = (
+                '已生成：\n'
+                f'{result["meo_path"]}'
+                f'{filtered_text}\n'
+                f'{result["bt_path"]}\n\n'
+                f'頁數：{result["pages"]}，條目：{result["labels"]}\n'
+                f'未匹配：{result["unmatched_pages"]} 頁，{result["unmatched_labels"]} 條'
+            )
+            self.status_label.setText(f'已生成 {Path(result["bt_path"]).name}')
+            self.load_bt_json_path(Path(result['bt_path']))
+            QMessageBox.information(self, '生成完成', message)
 
         def generate_ctd(self) -> None:
             if not self.current_image_dir:
@@ -1398,6 +1654,9 @@ if QT_IMPORT_ERROR is None:
                 self.current_page_row = row
                 self.update_font_size_list()
                 self.render_current_page()
+                self.select_bt_item(None)
+                self.update_bt_item_list()
+                self.render_bt_page()
             except Exception as exc:
                 show_exception_details(self, '頁面載入失敗', '無法載入此頁。下方是完整可複製的出錯信息。', exc)
 
@@ -1451,6 +1710,170 @@ if QT_IMPORT_ERROR is None:
             row = self.page_list.currentRow()
             if row >= 0:
                 self.load_page_at_row(row)
+
+        def render_bt_page(self, *_, refit: bool = True) -> None:
+            if self.processor is None:
+                return
+            page_name = self.current_page_name()
+            if not page_name:
+                return
+            try:
+                image_path = self.processor.image_dir / page_name
+                if not image_path.is_file() and self.page is not None:
+                    image_path = self.page.image_path
+                image = QImage(str(image_path))
+            except Exception:
+                return
+            if image.isNull():
+                return
+            image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            self._draw_bt_items(painter, image.width(), image.height())
+            painter.end()
+            self.bt_view.set_pixmap(QPixmap.fromImage(image), fit=refit)
+
+        def _draw_bt_items(self, painter: QPainter, image_width: int, image_height: int) -> None:
+            items = self.bt_items_for_page()
+            if not items:
+                font = QFont('Helvetica', 24)
+                font.setBold(True)
+                painter.setFont(font)
+                painter.setPen(QPen(QColor(245, 245, 245), 1))
+                painter.drawText(
+                    QRectF(0, 0, image_width, image_height),
+                    Qt.AlignmentFlag.AlignCenter,
+                    '未載入 _bt.json',
+                )
+                return
+
+            for index, item in enumerate(items):
+                xyxy = self.bt_xyxy_from_item(item)
+                if xyxy is None:
+                    continue
+                x1, y1, x2, y2 = xyxy
+                selected = index == self.selected_bt_index
+                stroke_weight = int(round(float(item.get('stroke-weight') or 0)))
+                color_name = self.bt_text_color(item)
+                text_color = QColor(255, 255, 255) if color_name == 'white' else QColor(0, 0, 0)
+                stroke_color = QColor(0, 0, 0) if color_name == 'white' else QColor(255, 255, 255)
+                frame_color = QColor(255, 210, 40) if selected else QColor(45, 135, 255)
+                painter.setBrush(QColor(255, 210, 40, 28) if selected else QColor(45, 135, 255, 18))
+                painter.setPen(QPen(frame_color, 5 if selected else 3))
+                painter.drawRect(QRectF(x1, y1, max(1, x2 - x1), max(1, y2 - y1)))
+                if selected:
+                    painter.setBrush(frame_color)
+                    for hx, hy in (
+                        (x1, y1), ((x1 + x2) / 2, y1), (x2, y1),
+                        (x1, (y1 + y2) / 2), (x2, (y1 + y2) / 2),
+                        (x1, y2), ((x1 + x2) / 2, y2), (x2, y2),
+                    ):
+                        painter.drawRect(QRectF(hx - 4, hy - 4, 8, 8))
+
+                font_size = max(8, min(96, int(round(float(item.get('font-size') or 18)))))
+                font = QFont('Helvetica', font_size)
+                font.setBold(False)
+                painter.setFont(font)
+                text = str(item.get('text') or '').strip()
+                if not text:
+                    text = f'#{item.get("index", index + 1)}'
+                rect = QRectF(x1 + 4, y1 + 4, max(1, x2 - x1 - 8), max(1, y2 - y1 - 8))
+                if stroke_weight > 0:
+                    painter.setPen(QPen(stroke_color, max(1, stroke_weight)))
+                    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        painter.drawText(rect.translated(dx, dy), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
+                painter.setPen(QPen(text_color, 1))
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
+
+        def hit_test_bt_item(self, x: float, y: float) -> tuple[int | None, str | None]:
+            handles = (
+                ('tl', -1, -1), ('t', 0, -1), ('tr', 1, -1),
+                ('l', -1, 0), ('r', 1, 0),
+                ('bl', -1, 1), ('b', 0, 1), ('br', 1, 1),
+            )
+            tolerance = 8.0
+            matches = []
+            for index, item in enumerate(self.bt_items_for_page()):
+                xyxy = self.bt_xyxy_from_item(item)
+                if xyxy is None:
+                    continue
+                x1, y1, x2, y2 = xyxy
+                for mode, sx, sy in handles:
+                    hx = (x1 + x2) / 2 if sx == 0 else (x1 if sx < 0 else x2)
+                    hy = (y1 + y2) / 2 if sy == 0 else (y1 if sy < 0 else y2)
+                    if abs(x - hx) <= tolerance and abs(y - hy) <= tolerance:
+                        matches.append((0, index, mode))
+                if x1 <= x <= x2 and y1 <= y <= y2:
+                    area = max(0, x2 - x1) * max(0, y2 - y1)
+                    matches.append((area, index, 'move'))
+            if not matches:
+                return None, None
+            _, index, mode = min(matches, key=lambda item: item[0])
+            return index, mode
+
+        def handle_bt_mouse_press(self, x: float, y: float) -> None:
+            index, mode = self.hit_test_bt_item(x, y)
+            self.select_bt_item(index)
+            item = self.selected_bt_item()
+            xyxy = self.bt_xyxy_from_item(item) if item is not None else None
+            if item is None or xyxy is None or mode is None:
+                self._bt_drag_mode = None
+                self._bt_drag_start = None
+                self._bt_drag_original = None
+                self._bt_drag_original_item = None
+                return
+            self._bt_drag_mode = mode
+            self._bt_drag_start = (x, y)
+            self._bt_drag_original = xyxy
+            self._bt_drag_original_item = copy.deepcopy(item)
+
+        def handle_bt_mouse_drag(self, x: float, y: float) -> None:
+            item = self.selected_bt_item()
+            if item is None or self._bt_drag_mode is None or self._bt_drag_start is None or self._bt_drag_original is None:
+                return
+            dx = int(round(x - self._bt_drag_start[0]))
+            dy = int(round(y - self._bt_drag_start[1]))
+            x1, y1, x2, y2 = self._bt_drag_original
+            if self._bt_drag_mode == 'move':
+                new_xyxy = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
+            else:
+                nx1, ny1, nx2, ny2 = x1, y1, x2, y2
+                if 'l' in self._bt_drag_mode:
+                    nx1 += dx
+                if 'r' in self._bt_drag_mode:
+                    nx2 += dx
+                if 't' in self._bt_drag_mode:
+                    ny1 += dy
+                if 'b' in self._bt_drag_mode:
+                    ny2 += dy
+                new_xyxy = (nx1, ny1, nx2, ny2)
+            self.set_bt_xyxy(item, self.clamp_xyxy(new_xyxy))
+            self.populate_box_editor_from_bt(item)
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
+
+        def handle_bt_mouse_release(self, x: float, y: float) -> None:
+            item = self.selected_bt_item()
+            if item is not None and self._bt_drag_original is not None and self._bt_drag_original_item is not None:
+                xyxy = self.bt_xyxy_from_item(item)
+                if xyxy is not None and xyxy != self._bt_drag_original:
+                    page_name = self.current_page_name()
+                    if page_name is not None and self.selected_bt_index is not None:
+                        self.bt_undo_stack.append({
+                            'page_name': page_name,
+                            'item_index': self.selected_bt_index,
+                            'item': self._bt_drag_original_item,
+                            'description': '移動/調整 _bt 框',
+                        })
+                    self.mark_bt_dirty()
+                    item['match_status'] = 'manual'
+                    self.update_bt_item_list()
+                    self.status_label.setText('已修改 _bt 框，尚未保存。')
+            self._bt_drag_mode = None
+            self._bt_drag_start = None
+            self._bt_drag_original = None
+            self._bt_drag_original_item = None
 
         def render_current_page(self, *_, refit: bool = True) -> None:
             if self.page is None:
