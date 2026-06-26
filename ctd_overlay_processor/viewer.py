@@ -19,6 +19,8 @@ from typing import Any
 import numpy as np
 
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
+QT_WEBENGINE_AVAILABLE = False
+QWebEngineView = None
 try:
     from PySide6.QtCore import QEvent, QPointF, QProcess, QRectF, QSettings, Qt, Signal
     from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap
@@ -53,6 +55,15 @@ try:
     )
 except ModuleNotFoundError as exc:
     QT_IMPORT_ERROR = exc
+
+if QT_IMPORT_ERROR is None:
+    try:
+        from PySide6.QtWebEngineWidgets import QWebEngineView as _QWebEngineView
+
+        QWebEngineView = _QWebEngineView
+        QT_WEBENGINE_AVAILABLE = True
+    except (ImportError, ModuleNotFoundError):
+        QT_WEBENGINE_AVAILABLE = False
 
 try:
     from .processor import (
@@ -417,6 +428,135 @@ if QT_IMPORT_ERROR is None:
             self.preview_label.setPixmap(pixmap)
 
 
+    class HtmlTextOverlay:
+        BASE_HTML = '''<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  #overlay {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+  .text-item {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-weight: 500;
+    white-space: pre-wrap;
+    width: max-content;
+    text-align: left;
+    line-height: 125%;
+    letter-spacing: 0;
+  }
+  .vertical-text {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+  }
+</style>
+<div id="overlay"></div>
+<script>
+  const overlay = document.getElementById('overlay');
+  const nodes = new Map();
+
+  function applyItem(el, item) {
+    el.className = item.vertical ? 'text-item vertical-text' : 'text-item';
+    if (el.__text !== item.text) {
+      el.textContent = item.text;
+      el.__text = item.text;
+    }
+    const style = el.style;
+    style.left = item.x + 'px';
+    style.top = item.y + 'px';
+    style.fontSize = item.fontSize + 'px';
+    style.fontFamily = item.fontFamily;
+    style.color = item.color;
+    style.textShadow = item.textShadow || '';
+  }
+
+  window.updateItems = function(items) {
+    const live = new Set();
+    for (const item of items) {
+      const id = String(item.id);
+      live.add(id);
+      let el = nodes.get(id);
+      if (!el) {
+        el = document.createElement('div');
+        nodes.set(id, el);
+        overlay.appendChild(el);
+      }
+      applyItem(el, item);
+    }
+    for (const [id, el] of nodes) {
+      if (!live.has(id)) {
+        el.remove();
+        nodes.delete(id);
+      }
+    }
+  };
+</script>'''
+
+        def __init__(self, view: ImageView) -> None:
+            self.view = view
+            self.web_view = QWebEngineView(view.viewport()) if QWebEngineView is not None else None
+            self._ready = False
+            self._pending_items: list[dict[str, object]] | None = None
+            self._last_payload = ''
+            if self.web_view is None:
+                return
+            self.web_view.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.web_view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.web_view.setStyleSheet('background: transparent;')
+            self.web_view.page().setBackgroundColor(Qt.GlobalColor.transparent)
+            self.web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+            self.web_view.setGeometry(view.viewport().rect())
+            self.web_view.loadFinished.connect(self._handle_load_finished)
+            self.web_view.setHtml(self.BASE_HTML)
+            self.web_view.hide()
+
+        def set_items(self, items: list[dict[str, object]]) -> None:
+            if self.web_view is None:
+                return
+            self._pending_items = items
+            self.web_view.setVisible(bool(items))
+            if items:
+                self.web_view.raise_()
+            if not self._ready:
+                return
+            payload = json.dumps(items, ensure_ascii=False, separators=(',', ':'))
+            if payload == self._last_payload:
+                return
+            self._last_payload = payload
+            self.web_view.page().runJavaScript(f'window.updateItems({payload});')
+
+        def hide(self) -> None:
+            if self.web_view is None:
+                return
+            self._pending_items = []
+            self._last_payload = ''
+            if self._ready:
+                self.web_view.page().runJavaScript('window.updateItems([]);')
+            self.web_view.hide()
+
+        def update_geometry(self) -> None:
+            if self.web_view is None:
+                return
+            self.web_view.setGeometry(self.view.viewport().rect())
+            if self._pending_items:
+                self.web_view.raise_()
+
+        def _handle_load_finished(self, ok: bool) -> None:
+            self._ready = ok
+            if ok and self._pending_items is not None:
+                self.set_items(self._pending_items)
+
+
     class ErrorDetailsDialog(QDialog):
         def __init__(self, title: str, summary: str, details: str, parent=None) -> None:
             super().__init__(parent)
@@ -586,6 +726,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_view = ImageView()
             self.view = ImageView()
             self.bt_match_popover = BtMatchPopover(self)
+            self.bt_html_overlay = HtmlTextOverlay(self.bt_view) if QT_WEBENGINE_AVAILABLE else None
             self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
             self.right_layer_dock: QDockWidget | None = None
             self._last_right_splitter_width = 520
@@ -1207,6 +1348,7 @@ if QT_IMPORT_ERROR is None:
             else:
                 self.sync_viewports_from(self.view)
             self.update_navigator()
+            self.update_bt_html_overlay()
 
         def sync_viewports_from(self, source: ImageView) -> None:
             if self._syncing_views or self._fitting_views:
@@ -1220,6 +1362,7 @@ if QT_IMPORT_ERROR is None:
             target.centerOn(center)
             self._syncing_views = False
             self.update_navigator()
+            self.update_bt_html_overlay()
             if self._popover_bt_item is not None and self.bt_match_popover.isVisible():
                 self.position_bt_match_popover(self._popover_bt_item)
 
@@ -1230,6 +1373,7 @@ if QT_IMPORT_ERROR is None:
             self.view.centerOn(center)
             self._syncing_views = False
             self.update_navigator()
+            self.update_bt_html_overlay()
 
         def update_navigator(self) -> None:
             if not hasattr(self, 'navigator'):
@@ -1252,6 +1396,7 @@ if QT_IMPORT_ERROR is None:
             if not hasattr(self, '_fitting_views'):
                 return
             self.fit_both_views()
+            self.update_bt_html_overlay()
 
         def current_page_name(self) -> str | None:
             if self.page is not None:
@@ -1639,7 +1784,7 @@ if QT_IMPORT_ERROR is None:
             pixmap = self.bt_view.pixmap_item.pixmap()
             if pixmap.isNull():
                 return
-            center = self.bt_center_pixel_from_item(item, pixmap.width(), pixmap.height())
+            center = self.bt_center_pixel_from_item(item)
             if center is not None:
                 self.center_views_on(center[0], center[1])
 
@@ -2597,166 +2742,137 @@ if QT_IMPORT_ERROR is None:
             painter.end()
             self.bt_view.set_pixmap(QPixmap.fromImage(image), fit=refit)
             self.update_navigator()
+            self.update_bt_html_overlay()
 
-        def draw_bt_text(
-            self,
-            painter: QPainter,
-            rect: QRectF,
-            text: str,
-            orientation: str,
-            color: QColor,
-            stroke_color: QColor,
-            stroke_weight: int,
-        ) -> None:
-            if orientation == 'vertical':
-                draw_rect = rect.translated(0, 0)
-                if stroke_weight > 0:
-                    painter.setPen(QPen(stroke_color, max(1, stroke_weight)))
-                    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                        self.draw_vertical_text(painter, draw_rect.translated(dx, dy), text)
-                painter.setPen(QPen(color, 1))
-                self.draw_vertical_text(painter, draw_rect, text)
+        def update_bt_html_overlay(self) -> None:
+            overlay = getattr(self, 'bt_html_overlay', None)
+            if overlay is None:
                 return
+            overlay.update_geometry()
+            items = self.build_bt_html_items()
+            if items:
+                overlay.set_items(items)
+            else:
+                overlay.hide()
 
-            if stroke_weight > 0:
-                painter.setPen(QPen(stroke_color, max(1, stroke_weight)))
-                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    painter.drawText(
-                        rect.translated(dx, dy),
-                        Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
-                        text,
-                    )
-            painter.setPen(QPen(color, 1))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
+        def build_bt_html_items(self) -> list[dict[str, object]]:
+            if self.bt_data is None:
+                return []
+            viewport_size = self.bt_view.viewport().size()
+            width = max(1, viewport_size.width())
+            height = max(1, viewport_size.height())
+            scale = max(0.01, min(abs(self.bt_view.transform().m11()), abs(self.bt_view.transform().m22())))
+            items = []
+            for index, item in enumerate(self.bt_items_for_page()):
+                text = str(item.get('text') or '').strip()
+                if not text:
+                    continue
+                center = self.bt_center_pixel_from_item(item)
+                if center is None:
+                    continue
+                point = self.bt_view.mapFromScene(QPointF(center[0], center[1]))
+                if point.x() < -width or point.x() > width * 2 or point.y() < -height or point.y() > height * 2:
+                    continue
+                font_size = max(1, min(999, positive_int(item.get('font-size'), 40)))
+                display_font_size = max(1, font_size * scale)
+                color_name = self.bt_css_text_color(item)
+                stroke_weight, stroke_color_name = self.bt_css_stroke(item, font_size, scale, color_name)
+                font_family = self.bt_html_font_family(item)
+                orientation = str(item.get('orientation') or 'vertical')
+                items.append({
+                    'id': str(item.get('index', index)),
+                    'x': round(float(point.x()), 3),
+                    'y': round(float(point.y()), 3),
+                    'text': self.prepare_html_bt_text(text, orientation),
+                    'fontSize': round(float(display_font_size), 3),
+                    'fontFamily': font_family,
+                    'color': color_name,
+                    'textShadow': self.bt_text_shadow_css(stroke_weight, stroke_color_name),
+                    'vertical': orientation == 'vertical',
+                })
+            return items
+
+        def bt_css_text_color(self, item: dict[str, Any]) -> str:
+            color = str(item.get('color') or '#000000').strip()
+            if not color:
+                return '#000000'
+            if color.lower() == 'black':
+                return '#000000'
+            if color.lower() == 'white':
+                return '#FFFFFF'
+            return color if color.startswith('#') else f'#{color}'
+
+        def bt_css_stroke(self, item: dict[str, Any], font_size: int, scale: float, color_name: str) -> tuple[float, str]:
+            stroke_weight = max(0.0, float(item.get('stroke-weight') or 0) * scale)
+            stroke_color = str(item.get('stroke-color') or '').strip()
+            if not stroke_color:
+                stroke_color = '#000000' if color_name.lower() in {'#ffffff', 'white'} else '#FFFFFF'
+            if stroke_color.lower() == 'black':
+                stroke_color = '#000000'
+            elif stroke_color.lower() == 'white':
+                stroke_color = '#FFFFFF'
+            elif stroke_color and not stroke_color.startswith('#'):
+                stroke_color = f'#{stroke_color}'
+            return min(stroke_weight, max(1.0, float(font_size) * scale / 2.0)), stroke_color
+
+        def prepare_html_bt_text(self, text: str, orientation: str) -> str:
+            prepared = text.replace('\\n', '\n').replace('\r\n', '\n').replace('\r', '\n')
+            prepared = prepared.translate(str.maketrans({
+                '（': '(',
+                '）': ')',
+                '「': '｢',
+                '」': '｣',
+            }))
+            if orientation == 'vertical':
+                prepared = ''.join(
+                    chr(ord(char) + 0xFEE0) if '0' <= char <= '9' else char
+                    for char in prepared
+                )
+            return prepared
+
+        def bt_html_font_family(self, item: dict[str, Any]) -> str:
+            font = str(item.get('font') or '').strip()
+            fallback = '"Noto Sans TC", "Hiragino Sans", "PingFang TC", "PingFang SC", sans-serif'
+            if not font:
+                return fallback
+            escaped = font.replace('"', '\\"')
+            return f'"{escaped}", {fallback}'
 
         def bt_center_pixel_from_item(
             self,
             item: dict[str, Any],
-            image_width: int,
-            image_height: int,
         ) -> tuple[float, float] | None:
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is not None:
+                x1, y1, x2, y2 = xyxy
+                return (x1 + x2) / 2.0, (y1 + y2) / 2.0
             try:
                 x = float(item.get('x'))
                 y = float(item.get('y'))
             except (TypeError, ValueError):
                 x = y = None
             if x is not None and y is not None:
+                pixmap = self.bt_view.pixmap_item.pixmap()
+                image_width = pixmap.width()
+                image_height = pixmap.height()
                 return x * image_width, y * image_height
-            xyxy = self.bt_xyxy_from_item(item)
-            if xyxy is None:
-                return None
-            x1, y1, x2, y2 = xyxy
-            return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            return None
 
-        def natural_bt_text_rect(
-            self,
-            painter: QPainter,
-            center: tuple[float, float],
-            text: str,
-            orientation: str,
-        ) -> QRectF:
-            metrics = painter.fontMetrics()
-            pad = 4
-            cx, cy = center
-            if orientation == 'vertical':
-                columns = self.vertical_text_columns(text)
-                chars = [char['display'] for column in columns for char in column] or [' ']
-                char_width = max(metrics.horizontalAdvance(char) for char in chars)
-                column_width = max(metrics.horizontalAdvance('漢'), char_width)
-                width = column_width * len(columns) + pad * 2
-                height = metrics.height() * max(len(column) for column in columns) + pad * 2
-                return QRectF(cx - width / 2.0, cy - height / 2.0, width, height)
-
-            lines = text.splitlines() or [text]
-            if not lines:
-                lines = [' ']
-            width = max(metrics.horizontalAdvance(line or ' ') for line in lines) + pad * 2
-            height = metrics.height() * len(lines) + pad * 2
-            return QRectF(cx - width / 2.0, cy - height / 2.0, width, height)
-
-        def vertical_text_columns(self, text: str) -> list[list[dict[str, object]]]:
-            prepared = text.replace('\\n', '\n').replace('\r\n', '\n').replace('\r', '\n')
-            prepared = prepared.replace('——', '︱')
-            lines = prepared.split('\n')
-            columns = [[self.vertical_char_info(char) for char in line] for line in lines]
-            columns = [column for column in columns if column]
-            return columns or [[self.vertical_char_info(' ')]]
-
-        def vertical_char_info(self, char: str) -> dict[str, object]:
-            display = self.vertical_display_character(char)
-            return {
-                'display': display,
-            }
-
-        def vertical_display_character(self, char: str) -> str:
-            if len(char) != 1:
-                return char
-            codepoint = ord(char)
-            if 48 <= codepoint <= 57:
-                return chr(codepoint + 0xFEE0)
-            replacements = {
-                '，': '︐',
-                ',': '︐',
-                '、': '︑',
-                '。': '︒',
-                '：': '︓',
-                ':': '︓',
-                '；': '︔',
-                ';': '︔',
-                '！': '︕',
-                '!': '︕',
-                '？': '︖',
-                '?': '︖',
-                '…': '︙',
-                '\u201c': '‶',
-                '\u201d': '〟',
-                '「': '﹁',
-                '」': '﹂',
-                '『': '﹃',
-                '』': '﹄',
-                '（': '︵',
-                '）': '︶',
-                '(': '︵',
-                ')': '︶',
-                '〔': '︹',
-                '〕': '︺',
-                '【': '︻',
-                '】': '︼',
-                '《': '︽',
-                '》': '︾',
-                '〈': '︿',
-                '〉': '﹀',
-                '～': '︴',
-                '~': '︴',
-                '＿': '︳',
-                '_': '︳',
-            }
-            return replacements.get(char, char)
-
-        def draw_vertical_text(self, painter: QPainter, rect: QRectF, text: str) -> None:
-            text_columns = self.vertical_text_columns(text)
-            metrics = painter.fontMetrics()
-            line_height = max(1, metrics.height())
-            column_width = max(1, metrics.horizontalAdvance('漢'))
-            max_columns = max(1, int(rect.width() // max(1, column_width)))
-            visible_columns = text_columns[:max_columns]
-            if not visible_columns:
-                return
-            total_width = len(visible_columns) * column_width
-            content_height = max(len(column) for column in visible_columns) * line_height
-            start_x = rect.center().x() + total_width / 2.0 - column_width / 2.0
-            top = rect.center().y() - content_height / 2.0
-            for column, column_chars in enumerate(visible_columns):
-                if not column_chars:
-                    continue
-                x = start_x - column * column_width
-                for row, char_info in enumerate(column_chars):
-                    display = str(char_info['display'])
-                    char_x = x
-                    char_y = top + row * line_height + metrics.ascent()
-                    ink_rect = metrics.tightBoundingRect(display)
-                    draw_x = char_x - ink_rect.center().x()
-                    painter.drawText(QPointF(draw_x, char_y), display)
+        def bt_text_shadow_css(self, stroke_weight: float, stroke_color_name: str) -> str:
+            if stroke_weight <= 0:
+                return ''
+            shadows = []
+            for angle in range(0, 360, 45):
+                rad = np.deg2rad(angle)
+                x = round(float(np.cos(rad) * stroke_weight), 2)
+                y = round(float(np.sin(rad) * stroke_weight), 2)
+                shadows.append(f'{x}px {y}px 0 {stroke_color_name}')
+            for angle in range(22, 360, 45):
+                rad = np.deg2rad(angle)
+                x = round(float(np.cos(rad) * stroke_weight), 2)
+                y = round(float(np.sin(rad) * stroke_weight), 2)
+                shadows.append(f'{x}px {y}px 0 {stroke_color_name}')
+            return 'text-shadow:' + ','.join(shadows) + ';'
 
         def _draw_bt_items(self, painter: QPainter, image_width: int, image_height: int) -> None:
             items = self.bt_items_for_page()
@@ -2778,10 +2894,6 @@ if QT_IMPORT_ERROR is None:
                     continue
                 x1, y1, x2, y2 = xyxy
                 selected = index == self.selected_bt_index
-                stroke_weight = int(round(float(item.get('stroke-weight') or 0)))
-                color_name = self.bt_text_color(item)
-                text_color = QColor(255, 255, 255) if color_name == 'white' else QColor(0, 0, 0)
-                stroke_color = QColor(0, 0, 0) if color_name == 'white' else QColor(255, 255, 255)
                 frame_color = QColor(255, 236, 150, 210)
                 if selected:
                     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -2794,28 +2906,6 @@ if QT_IMPORT_ERROR is None:
                         (x1, y2), ((x1 + x2) / 2, y2), (x2, y2),
                     ):
                         painter.drawRect(QRectF(hx - 3, hy - 3, 6, 6))
-
-                font_size = max(8, min(96, positive_int(item.get('font-size'), 40)))
-                font = QFont('Helvetica', font_size)
-                font.setBold(False)
-                painter.setFont(font)
-                text = str(item.get('text') or '').strip()
-                if not text:
-                    text = f'#{item.get("index", index + 1)}'
-                orientation = str(item.get('orientation') or 'vertical')
-                center = self.bt_center_pixel_from_item(item, image_width, image_height)
-                if center is None:
-                    center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-                rect = self.natural_bt_text_rect(painter, center, text, orientation)
-                self.draw_bt_text(
-                    painter,
-                    rect,
-                    text,
-                    orientation,
-                    text_color,
-                    stroke_color,
-                    stroke_weight,
-                )
                 self.draw_bt_font_label(
                     painter,
                     QRectF(x1, y1, x2 - x1, y2 - y1),
@@ -3223,7 +3313,7 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     if QT_IMPORT_ERROR is not None:
         print(
-            '尚未安裝 PySide6。請安裝 PySide6 或 PySide6-Essentials 後再啟動。',
+            '尚未安裝 PySide6。請安裝完整 PySide6 後再啟動。',
             file=sys.stderr,
         )
         raise SystemExit(1)

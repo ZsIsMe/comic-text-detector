@@ -1,5 +1,5 @@
 numpy
-PySide6-Essentials
+PySide6
 pyclipper
 requests
 shapely

@@ -72,7 +72,7 @@ ctd/measure.debug.json
 
 ## PySide6 GUI
 
-需要已安裝 `PySide6` 或 `PySide6-Essentials`：
+需要已安裝完整 `PySide6`，HTML 豎排預覽會使用其中的 QtWebEngine：
 
 ```bash
 python -m ctd_overlay_processor.viewer /path/to/image_folder
