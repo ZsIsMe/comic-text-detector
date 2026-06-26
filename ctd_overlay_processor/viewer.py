@@ -20,7 +20,7 @@ import numpy as np
 
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 try:
-    from PySide6.QtCore import QPointF, QProcess, QRectF, QSettings, Qt, Signal
+    from PySide6.QtCore import QEvent, QPointF, QProcess, QRectF, QSettings, Qt, Signal
     from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
@@ -30,6 +30,7 @@ try:
         QDialogButtonBox,
         QDockWidget,
         QFileDialog,
+        QFrame,
         QGraphicsPixmapItem,
         QGraphicsScene,
         QGraphicsView,
@@ -320,6 +321,102 @@ if QT_IMPORT_ERROR is None:
             super().mouseReleaseEvent(event)
 
 
+    class BtMatchPopover(QFrame):
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self.setObjectName('btMatchPopover')
+            self.setWindowFlags(Qt.WindowType.ToolTip)
+            self.setStyleSheet(
+                'QFrame#btMatchPopover {'
+                '  background: rgba(20, 22, 24, 230);'
+                '  border: 1px solid rgba(255, 235, 150, 210);'
+                '  border-radius: 4px;'
+                '}'
+            )
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(0)
+            self.preview_label = QLabel()
+            self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.preview_label.setMinimumSize(180, 96)
+            self.preview_label.setMouseTracking(True)
+            self.preview_label.setStyleSheet('background: #101214;')
+            self.preview_label.installEventFilter(self)
+            self._char_regions: list[tuple[QRectF, str]] = []
+            self._base_pixmap = QPixmap()
+            self._hover_region_index: int | None = None
+            layout.addWidget(self.preview_label)
+            self.hide()
+
+        def set_content(
+            self,
+            preview: QPixmap | None,
+            char_regions: list[tuple[QRectF, str]] | None = None,
+        ) -> None:
+            self._char_regions = char_regions or []
+            self._hover_region_index = None
+            if preview is None or preview.isNull():
+                self._base_pixmap = QPixmap()
+                self.preview_label.setMinimumSize(180, 96)
+                self.preview_label.setMaximumSize(16777215, 16777215)
+                self.preview_label.setText('')
+                self.preview_label.setPixmap(QPixmap())
+            else:
+                self._base_pixmap = preview
+                self.preview_label.setText('')
+                self.preview_label.setFixedSize(preview.size())
+                self.preview_label.setPixmap(preview)
+            self.adjustSize()
+
+        def eventFilter(self, watched, event) -> bool:
+            if watched is self.preview_label and event.type() == QEvent.Type.MouseMove:
+                point = event.position()
+                for index, (rect, text) in enumerate(self._char_regions):
+                    if rect.contains(point):
+                        if self._hover_region_index != index:
+                            self._hover_region_index = index
+                            self._render_hover_label(rect, text)
+                        return False
+                if self._hover_region_index is not None:
+                    self._hover_region_index = None
+                    self.preview_label.setPixmap(self._base_pixmap)
+            elif watched is self.preview_label and event.type() == QEvent.Type.Leave:
+                self._hover_region_index = None
+                self.preview_label.setPixmap(self._base_pixmap)
+            return super().eventFilter(watched, event)
+
+        def _render_hover_label(self, rect: QRectF, text: str) -> None:
+            if self._base_pixmap.isNull() or not text:
+                return
+            pixmap = QPixmap(self._base_pixmap)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            font = QFont('Helvetica Neue', 22)
+            font.setBold(True)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
+            pad_x = 8
+            pad_y = 5
+            text_w = metrics.horizontalAdvance(text)
+            text_h = metrics.ascent() + metrics.descent()
+            label_w = text_w + pad_x * 2
+            label_h = text_h + pad_y * 2
+            x = int(round(rect.center().x() - label_w / 2))
+            y = int(round(rect.top() - label_h - 5))
+            if y < 2:
+                y = int(round(rect.bottom() + 5))
+            x = max(2, min(x, max(2, pixmap.width() - label_w - 2)))
+            y = max(2, min(y, max(2, pixmap.height() - label_h - 2)))
+            painter.setPen(QPen(QColor(25, 25, 25), 1))
+            painter.setBrush(QColor(255, 255, 255, 245))
+            painter.drawRect(QRectF(x, y, label_w, label_h))
+            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            painter.drawText(QRectF(x, y, label_w, label_h), Qt.AlignmentFlag.AlignCenter, text)
+            painter.end()
+            self.preview_label.setPixmap(pixmap)
+
+
     class ErrorDetailsDialog(QDialog):
         def __init__(self, title: str, summary: str, details: str, parent=None) -> None:
             super().__init__(parent)
@@ -464,6 +561,7 @@ if QT_IMPORT_ERROR is None:
             self.undo_action: QAction | None = None
             self.prev_page_action: QAction | None = None
             self.next_page_action: QAction | None = None
+            self.toggle_right_panel_action: QAction | None = None
             self.increase_font_action: QAction | None = None
             self.decrease_font_action: QAction | None = None
             self.delete_box_action: QAction | None = None
@@ -473,6 +571,7 @@ if QT_IMPORT_ERROR is None:
             self._updating_editor = False
             self._syncing_views = False
             self._fitting_views = False
+            self._popover_bt_item: dict[str, Any] | None = None
             self._box_drag_mode: str | None = None
             self._box_drag_start: tuple[float, float] | None = None
             self._box_drag_original: tuple[int, int, int, int] | None = None
@@ -486,6 +585,10 @@ if QT_IMPORT_ERROR is None:
 
             self.bt_view = ImageView()
             self.view = ImageView()
+            self.bt_match_popover = BtMatchPopover(self)
+            self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+            self.right_layer_dock: QDockWidget | None = None
+            self._last_right_splitter_width = 520
 
             self.page_list = QListWidget()
             self.bt_item_list = QListWidget()
@@ -534,15 +637,15 @@ if QT_IMPORT_ERROR is None:
             self._build_side_panel()
             center_tools = self._build_center_tools_panel()
             self._build_layer_panel()
-            splitter = QSplitter(Qt.Orientation.Horizontal)
-            splitter.addWidget(self.bt_view)
-            splitter.addWidget(center_tools)
-            splitter.addWidget(self.view)
-            splitter.setStretchFactor(0, 3)
-            splitter.setStretchFactor(1, 0)
-            splitter.setStretchFactor(2, 3)
-            splitter.setSizes([520, 300, 520])
-            self.setCentralWidget(splitter)
+            self.main_splitter.addWidget(self.bt_view)
+            self.main_splitter.addWidget(center_tools)
+            self.main_splitter.addWidget(self.view)
+            self.main_splitter.setStretchFactor(0, 3)
+            self.main_splitter.setStretchFactor(1, 0)
+            self.main_splitter.setStretchFactor(2, 3)
+            self.main_splitter.setSizes([520, 300, 520])
+            self.setCentralWidget(self.main_splitter)
+            self.restore_right_panel_state()
             self._connect_signals()
 
             if startup_image_dir:
@@ -649,6 +752,12 @@ if QT_IMPORT_ERROR is None:
             fit_action = QAction('適合視窗', self)
             fit_action.triggered.connect(self.fit_both_views)
             toolbar.addAction(fit_action)
+
+            self.toggle_right_panel_action = QAction('收起右側', self)
+            self.toggle_right_panel_action.setCheckable(True)
+            self.toggle_right_panel_action.setToolTip('展開/收起右邊圖片和最右功能區')
+            self.toggle_right_panel_action.triggered.connect(self.toggle_right_panel)
+            toolbar.addAction(self.toggle_right_panel_action)
 
             self.prev_page_action = QAction('上一頁', self)
             self.prev_page_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
@@ -877,6 +986,7 @@ if QT_IMPORT_ERROR is None:
             dock = QDockWidget('圖層 / 流程', self)
             dock.setWidget(panel)
             dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+            self.right_layer_dock = dock
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
         def _connect_signals(self) -> None:
@@ -959,6 +1069,61 @@ if QT_IMPORT_ERROR is None:
             self._save_layer_checkbox_states()
             self.render_current_page()
 
+        def restore_right_panel_state(self) -> None:
+            collapsed = self._settings_bool('right_panel/collapsed', False)
+            width = self.settings.value('right_panel/width', self._last_right_splitter_width)
+            try:
+                self._last_right_splitter_width = max(160, int(width))
+            except (TypeError, ValueError):
+                self._last_right_splitter_width = 520
+            self.set_right_panel_collapsed(collapsed, remember=False)
+
+        def toggle_right_panel(self, checked: bool = False) -> None:
+            self.set_right_panel_collapsed(checked, remember=True)
+
+        def set_right_panel_collapsed(self, collapsed: bool, *, remember: bool) -> None:
+            if not hasattr(self, 'main_splitter'):
+                return
+            sizes = self.main_splitter.sizes()
+            if len(sizes) < 3:
+                return
+
+            if collapsed:
+                if sizes[2] > 0:
+                    self._last_right_splitter_width = sizes[2]
+                sizes[0] = max(160, sizes[0] + sizes[2])
+                sizes[2] = 0
+                self.main_splitter.setSizes(sizes)
+                self.view.hide()
+                if self.right_layer_dock is not None:
+                    self.right_layer_dock.hide()
+                label = '展開右側'
+            else:
+                self.view.show()
+                if self.right_layer_dock is not None:
+                    self.right_layer_dock.show()
+                restored_width = max(160, self._last_right_splitter_width)
+                if sizes[2] <= 0:
+                    sizes[2] = restored_width
+                    sizes[0] = max(160, sizes[0] - restored_width)
+                self.main_splitter.setSizes(sizes)
+                label = '收起右側'
+
+            if self.toggle_right_panel_action is not None:
+                self.toggle_right_panel_action.blockSignals(True)
+                self.toggle_right_panel_action.setChecked(collapsed)
+                self.toggle_right_panel_action.setText(label)
+                self.toggle_right_panel_action.blockSignals(False)
+            if remember:
+                self.settings.setValue('right_panel/collapsed', collapsed)
+                if self._last_right_splitter_width > 0:
+                    self.settings.setValue('right_panel/width', self._last_right_splitter_width)
+            self.bt_match_popover.hide()
+            self.fit_both_views()
+
+        def is_right_panel_collapsed(self) -> bool:
+            return hasattr(self, 'view') and not self.view.isVisible()
+
         def load_folder(self, image_dir: str) -> None:
             if self.bt_dirty and not self.save_pending_changes(auto=True):
                 return
@@ -1032,11 +1197,15 @@ if QT_IMPORT_ERROR is None:
             if self._fitting_views:
                 return
             self._fitting_views = True
-            for view in (self.bt_view, self.view):
+            views = (self.bt_view,) if self.is_right_panel_collapsed() else (self.bt_view, self.view)
+            for view in views:
                 if view.sceneRect().isValid() and not view.sceneRect().isEmpty():
                     view.fitInView(view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
             self._fitting_views = False
-            self.sync_viewports_from(self.view)
+            if self.is_right_panel_collapsed():
+                self.sync_viewports_from(self.bt_view)
+            else:
+                self.sync_viewports_from(self.view)
             self.update_navigator()
 
         def sync_viewports_from(self, source: ImageView) -> None:
@@ -1051,6 +1220,8 @@ if QT_IMPORT_ERROR is None:
             target.centerOn(center)
             self._syncing_views = False
             self.update_navigator()
+            if self._popover_bt_item is not None and self.bt_match_popover.isVisible():
+                self.position_bt_match_popover(self._popover_bt_item)
 
         def center_views_on(self, x: float, y: float) -> None:
             self._syncing_views = True
@@ -1063,11 +1234,12 @@ if QT_IMPORT_ERROR is None:
         def update_navigator(self) -> None:
             if not hasattr(self, 'navigator'):
                 return
-            pixmap = self.view.pixmap_item.pixmap()
+            source_view = self.bt_view if self.is_right_panel_collapsed() else self.view
+            pixmap = source_view.pixmap_item.pixmap()
             if pixmap.isNull():
                 self.navigator.set_navigator_state(QPixmap(), (0, 0), QRectF())
                 return
-            visible_polygon = self.view.mapToScene(self.view.viewport().rect())
+            visible_polygon = source_view.mapToScene(source_view.viewport().rect())
             visible_rect = visible_polygon.boundingRect()
             self.navigator.set_navigator_state(
                 pixmap,
@@ -1445,6 +1617,8 @@ if QT_IMPORT_ERROR is None:
             items = self.bt_items_for_page()
             if index is None or index < 0 or index >= len(items):
                 self.selected_bt_index = None
+                self._popover_bt_item = None
+                self.bt_match_popover.hide()
                 self.set_box_editor_enabled(False)
                 self.update_bt_item_list()
                 self.render_bt_page(refit=False)
@@ -1468,6 +1642,229 @@ if QT_IMPORT_ERROR is None:
             center = self.bt_center_pixel_from_item(item, pixmap.width(), pixmap.height())
             if center is not None:
                 self.center_views_on(center[0], center[1])
+
+        def measure_box_for_bt_item(self, item: dict[str, Any]) -> BoxOverlay | None:
+            if self.page is None:
+                return None
+            measure_index = item.get('match_measure_item_index')
+            if isinstance(measure_index, int):
+                for box in self.page.boxes:
+                    if box.measure_item_index == measure_index:
+                        return box
+            source_index = item.get('match_source_block_index')
+            if isinstance(source_index, int):
+                for box in self.page.boxes:
+                    if box.source_block_index == source_index:
+                        return box
+            return None
+
+        def box_preview_content(
+            self,
+            box: BoxOverlay | None,
+            *,
+            char_box: dict | None = None,
+        ) -> tuple[QPixmap, list[tuple[QRectF, str]]] | None:
+            if box is None or self.page is None:
+                return None
+            image = QImage(str(self.page.image_path)).convertToFormat(QImage.Format.Format_RGBA8888)
+            if image.isNull():
+                return None
+            x1, y1, x2, y2 = box.xyxy_pixel
+            pad = max(2, int(round(max(x2 - x1, y2 - y1) * 0.04)))
+            crop_x1 = max(0, x1 - pad)
+            crop_y1 = max(0, y1 - pad)
+            crop_x2 = min(image.width(), x2 + pad)
+            crop_y2 = min(image.height(), y2 + pad)
+            crop_rect = QRectF(crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1).toRect()
+            if crop_rect.isEmpty():
+                return None
+            crop = image.copy(crop_rect)
+            char_regions: list[tuple[QRectF, str]] = []
+            for char_item in self.page.char_boxes:
+                bbox = char_item.get('bbox')
+                if not isinstance(bbox, list) or len(bbox) != 4:
+                    continue
+                cx1, cy1, cx2, cy2 = [float(value) for value in bbox]
+                if cx2 < x1 or cx1 > x2 or cy2 < y1 or cy1 > y2:
+                    continue
+                rect = QRectF(cx1 - crop_x1, cy1 - crop_y1, cx2 - cx1, cy2 - cy1)
+                width_text = compact_int_px(char_item.get('width')) or '-'
+                height_text = compact_int_px(char_item.get('height')) or '-'
+                label = f'W{width_text}H{height_text}'
+                char_regions.append((rect, label))
+
+            highlight_rect: QRectF | None = None
+            if char_box is not None:
+                bbox = char_box.get('bbox')
+                if isinstance(bbox, list) and len(bbox) == 4:
+                    cx1, cy1, cx2, cy2 = [float(value) for value in bbox]
+                    highlight_rect = QRectF(cx1 - crop_x1, cy1 - crop_y1, cx2 - cx1, cy2 - cy1)
+            pixmap = QPixmap.fromImage(crop)
+            target_w = 460
+            target_h = 360
+            scaled = pixmap.scaled(
+                target_w,
+                target_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            scale_x = scaled.width() / max(1, crop.width())
+            scale_y = scaled.height() / max(1, crop.height())
+            scaled_regions = [
+                (
+                    QRectF(
+                        rect.x() * scale_x,
+                        rect.y() * scale_y,
+                        rect.width() * scale_x,
+                        rect.height() * scale_y,
+                    ),
+                    tooltip,
+                )
+                for rect, tooltip in char_regions
+            ]
+            scaled_highlight = None
+            if highlight_rect is not None:
+                scaled_highlight = QRectF(
+                    highlight_rect.x() * scale_x,
+                    highlight_rect.y() * scale_y,
+                    highlight_rect.width() * scale_x,
+                    highlight_rect.height() * scale_y,
+                )
+
+            painter = QPainter(scaled)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            painter.setBrush(QColor(245, 170, 35, 32))
+            painter.setPen(QPen(QColor(245, 170, 35), 2))
+            for rect, _tooltip in scaled_regions:
+                painter.drawRect(rect)
+            if scaled_highlight is not None:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(QColor(255, 40, 120), 3))
+                painter.drawRect(scaled_highlight)
+
+            label_font = QFont('Helvetica Neue', 13)
+            label_font.setWeight(QFont.Weight.DemiBold)
+            label_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+            painter.setFont(label_font)
+            metrics = painter.fontMetrics()
+            painter.setPen(QPen(QColor(74, 42, 12), 1))
+            for rect, label in scaled_regions:
+                text_w = metrics.horizontalAdvance(label)
+                text_h = metrics.ascent() + metrics.descent()
+                label_x = int(round(rect.center().x() - text_w / 2))
+                label_y = int(round(rect.top() - 3))
+                if label_y - text_h < 2:
+                    label_y = int(round(rect.bottom() + text_h + 3))
+                label_x = max(2, min(label_x, max(2, scaled.width() - text_w - 2)))
+                label_y = max(text_h + 2, min(label_y, scaled.height() - 2))
+                painter.drawText(QPointF(label_x, label_y), label)
+            painter.end()
+            return scaled, scaled_regions
+
+        def show_bt_match_popover(self, item: dict[str, Any]) -> None:
+            self._popover_bt_item = item
+            box = self.measure_box_for_bt_item(item)
+            if box is None:
+                self.bt_match_popover.hide()
+                return
+            content = self.box_preview_content(box)
+            if content is None:
+                self.bt_match_popover.hide()
+                return
+            preview, regions = content
+            if preview.isNull():
+                self.bt_match_popover.hide()
+                return
+            self.bt_match_popover.set_content(preview, regions)
+            self.position_bt_match_popover(item)
+            self.bt_match_popover.show()
+            self.bt_match_popover.raise_()
+
+        def position_bt_match_popover(self, item: dict[str, Any]) -> None:
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is None:
+                return
+            x1, y1, x2, y2 = xyxy
+            view_rect = self.bt_view.viewport().rect()
+            p1 = self.bt_view.mapFromScene(QPointF(x1, y1))
+            p2 = self.bt_view.mapFromScene(QPointF(x2, y2))
+            selected_rect = QRectF(p1, p2).normalized().adjusted(-8, -8, 8, 8)
+            popover_size = self.bt_match_popover.sizeHint()
+            gap = 12
+            margin = 12
+            min_x = margin
+            max_x = max(margin, view_rect.width() - popover_size.width() - margin)
+            min_y = margin
+            max_y = max(margin, view_rect.height() - popover_size.height() - margin)
+            x = int(round(selected_rect.center().x() - popover_size.width() / 2))
+            x = max(min_x, min(x, max_x))
+
+            top_y = int(round(selected_rect.top() - popover_size.height() - gap))
+            bottom_y = int(round(selected_rect.bottom() + gap))
+            if top_y >= min_y:
+                y = top_y
+            elif bottom_y + popover_size.height() <= view_rect.height() - margin:
+                y = bottom_y
+            else:
+                space_above = selected_rect.top() - margin
+                space_below = view_rect.height() - selected_rect.bottom() - margin
+                y = top_y if space_above >= space_below else bottom_y
+                y = max(min_y, min(y, max_y))
+            global_pos = self.bt_view.viewport().mapToGlobal(QPointF(x, y).toPoint())
+            self.bt_match_popover.move(global_pos)
+
+        def update_popover_with_char_box(self, item: dict) -> None:
+            source_index = item.get('source_block_index', '-')
+            box = None
+            try:
+                source_number = int(source_index)
+            except (TypeError, ValueError):
+                source_number = None
+            if self.page is not None and source_number is not None:
+                for candidate in self.page.boxes:
+                    if candidate.source_block_index == source_number:
+                        box = candidate
+                        break
+            if box is None and self._popover_bt_item is not None:
+                box = self.measure_box_for_bt_item(self._popover_bt_item)
+            content = self.box_preview_content(box, char_box=item)
+            if content is None:
+                self.bt_match_popover.hide()
+                return
+            preview, regions = content
+            if preview.isNull():
+                self.bt_match_popover.hide()
+                return
+            self.bt_match_popover.set_content(preview, regions)
+            if self._popover_bt_item is not None:
+                self.position_bt_match_popover(self._popover_bt_item)
+            else:
+                self.position_char_popover(item)
+            self.bt_match_popover.show()
+            self.bt_match_popover.raise_()
+
+        def position_char_popover(self, item: dict) -> None:
+            bbox = item.get('bbox')
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                return
+            x1, y1, x2, y2 = [float(value) for value in bbox]
+            view_rect = self.view.viewport().rect()
+            p1 = self.view.mapFromScene(QPointF(x1, y1))
+            p2 = self.view.mapFromScene(QPointF(x2, y2))
+            hover_rect = QRectF(p1, p2).normalized().adjusted(-8, -8, 8, 8)
+            popover_size = self.bt_match_popover.sizeHint()
+            gap = 12
+            x = hover_rect.right() + gap
+            y = hover_rect.top()
+            if x + popover_size.width() > view_rect.width() - gap:
+                x = hover_rect.left() - popover_size.width() - gap
+            if y + popover_size.height() > view_rect.height() - gap:
+                y = view_rect.height() - popover_size.height() - gap
+            x = max(gap, min(x, max(gap, view_rect.width() - popover_size.width() - gap)))
+            y = max(gap, min(y, max(gap, view_rect.height() - popover_size.height() - gap)))
+            global_pos = self.view.viewport().mapToGlobal(QPointF(x, y).toPoint())
+            self.bt_match_popover.move(global_pos)
 
         def select_box(self, index: int | None) -> None:
             if self.page is None or index is None or index < 0 or index >= len(self.page.boxes):
@@ -2107,12 +2504,17 @@ if QT_IMPORT_ERROR is None:
                 return
             self.hover_char_box = item
             self.char_info_label.setText(self._char_info_text(item))
+            self.update_popover_with_char_box(item)
             self.render_current_page(refit=False)
 
         def clear_hover_char_box(self, render: bool = True) -> None:
             had_hover = self.hover_char_box is not None
             self.hover_char_box = None
             self.char_info_label.setText('游標單字框：未選中')
+            if self._popover_bt_item is not None and self.bt_match_popover.isVisible():
+                self.show_bt_match_popover(self._popover_bt_item)
+            elif self.bt_match_popover.isVisible():
+                self.bt_match_popover.hide()
             if render and had_hover:
                 self.render_current_page(refit=False)
 
@@ -2507,6 +2909,8 @@ if QT_IMPORT_ERROR is None:
                 self._bt_drag_original = None
                 self._bt_drag_original_item = None
                 self._bt_drag_temporary = False
+                self._popover_bt_item = None
+                self.bt_match_popover.hide()
                 return
             temporary = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier)
             self._bt_drag_mode = 'move' if temporary else mode
@@ -2514,6 +2918,7 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_original = xyxy
             self._bt_drag_original_item = copy.deepcopy(item)
             self._bt_drag_temporary = temporary
+            self.show_bt_match_popover(item)
 
         def update_bt_view_cursor(self, x: float, y: float) -> None:
             index, _ = self.hit_test_bt_item(x, y)
@@ -2543,6 +2948,8 @@ if QT_IMPORT_ERROR is None:
             self.populate_box_editor_from_bt(item)
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
+            if self._popover_bt_item is item:
+                self.position_bt_match_popover(item)
             if self._bt_drag_temporary:
                 self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
 
