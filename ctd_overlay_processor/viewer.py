@@ -2686,18 +2686,7 @@ if QT_IMPORT_ERROR is None:
             display = self.vertical_display_character(char)
             return {
                 'display': display,
-                'mirror_x': display in {'‶', '〟'},
-                'half_bottom': display in {'︐', '︑', '︒', '﹂', '﹄', '‶'},
-                'half_top': display in {'﹁', '﹃', '〟'},
-                'x_offset': self.vertical_char_x_offset(display),
             }
-
-        def vertical_char_x_offset(self, display: str) -> float:
-            if display == '‶':
-                return -0.25
-            if display == '〟':
-                return 0.5
-            return 0.0
 
         def vertical_display_character(self, char: str) -> str:
             if len(char) != 1:
@@ -2765,21 +2754,9 @@ if QT_IMPORT_ERROR is None:
                     display = str(char_info['display'])
                     char_x = x
                     char_y = top + row * line_height + metrics.ascent()
-                    if char_info.get('half_bottom'):
-                        char_y -= line_height * 0.25
-                    if char_info.get('half_top'):
-                        char_y += line_height * 0.25
                     ink_rect = metrics.tightBoundingRect(display)
-                    char_center_x = char_x + float(char_info.get('x_offset', 0.0)) * column_width
-                    draw_x = char_center_x - ink_rect.center().x()
-                    if char_info.get('mirror_x'):
-                        painter.save()
-                        painter.translate(char_center_x, char_y)
-                        painter.scale(-1, 1)
-                        painter.drawText(QPointF(ink_rect.center().x(), 0), display)
-                        painter.restore()
-                    else:
-                        painter.drawText(QPointF(draw_x, char_y), display)
+                    draw_x = char_x - ink_rect.center().x()
+                    painter.drawText(QPointF(draw_x, char_y), display)
 
         def _draw_bt_items(self, painter: QPainter, image_width: int, image_height: int) -> None:
             items = self.bt_items_for_page()
