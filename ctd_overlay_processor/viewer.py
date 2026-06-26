@@ -2818,10 +2818,42 @@ if QT_IMPORT_ERROR is None:
         def prepare_html_bt_text(self, text: str, orientation: str) -> str:
             prepared = text.replace('\\n', '\n').replace('\r\n', '\n').replace('\r', '\n')
             prepared = prepared.translate(str.maketrans({
-                '（': '(',
-                '）': ')',
-                '「': '｢',
-                '」': '｣',
+                '“': '‶',
+                '”': '〟',
+            }))
+            prepared = prepared.translate(str.maketrans({
+                '!': '！',
+                '"': '＂',
+                '#': '＃',
+                '$': '＄',
+                '%': '％',
+                '&': '＆',
+                "'": '＇',
+                '(': '（',
+                ')': '）',
+                '*': '＊',
+                '+': '＋',
+                ',': '，',
+                '-': '－',
+                '.': '．',
+                '/': '／',
+                ':': '：',
+                ';': '；',
+                '<': '＜',
+                '=': '＝',
+                '>': '＞',
+                '?': '？',
+                '@': '＠',
+                '[': '［',
+                '\\': '＼',
+                ']': '］',
+                '^': '＾',
+                '_': '＿',
+                '`': '｀',
+                '{': '｛',
+                '|': '｜',
+                '}': '｝',
+                '~': '～',
             }))
             if orientation == 'vertical':
                 prepared = ''.join(
