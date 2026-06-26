@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTD / MEO BT 編輯器 - Center Tools Mockup</title>
+  <style>
+    :root {
+      --bg: #151718;
+      --panel: #202324;
+      --panel-2: #262a2c;
+      --panel-3: #111314;
+      --line: #3a4044;
+      --line-soft: #2f3437;
+      --text: #eef2f4;
+      --muted: #aab3b8;
+      --weak: #778188;
+      --accent: #ffd65a;
+      --green: #19b873;
+      --danger: #ff5b72;
+      --field: #141617;
+      --button: #303537;
+      --radius: 6px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: 38px minmax(0, 1fr) 28px;
+      min-height: 100vh;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-bottom: 1px solid var(--line);
+      background: #242725;
+      white-space: nowrap;
+    }
+
+    button {
+      height: 26px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--button);
+      color: var(--text);
+      padding: 0 10px;
+      font: inherit;
+    }
+
+    button.primary {
+      background: #3c351c;
+      border-color: #6f5b1b;
+      color: #ffe59b;
+      font-weight: 800;
+    }
+
+    button:disabled {
+      color: #60666a;
+      background: #252829;
+    }
+
+    .spacer { flex: 1; }
+
+    .main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 260px minmax(330px, 1fr) 292px minmax(330px, 1fr) 230px;
+    }
+
+    .side,
+    .center-tools,
+    .layers {
+      min-height: 0;
+      overflow: auto;
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+    }
+
+    .center-tools {
+      background: #242829;
+      border-left: 1px solid var(--line);
+    }
+
+    .layers {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .section {
+      border-bottom: 1px solid var(--line-soft);
+      padding: 10px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-weight: 850;
+      color: var(--text);
+    }
+
+    .section-title small {
+      color: var(--weak);
+      font-weight: 650;
+    }
+
+    .status,
+    .current-box {
+      padding: 8px;
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+      background: #181b1c;
+      color: var(--muted);
+    }
+
+    .list {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-3);
+      overflow: hidden;
+    }
+
+    .page-list { height: 150px; overflow: auto; }
+    .item-list { height: 330px; overflow: auto; }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+      padding: 5px 8px;
+      border-bottom: 1px solid #1f2325;
+      color: var(--muted);
+    }
+
+    .row:last-child { border-bottom: 0; }
+    .row.selected { background: #3b3219; color: #fff2b8; }
+    .row.warn { background: #3b2c18; color: #ffdca1; }
+
+    .tag {
+      min-width: 48px;
+      text-align: center;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #2e3436;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .tag.ok { background: #1f6a47; color: #d7ffe7; }
+    .tag.warn { background: #674717; color: #ffe0a6; }
+
+    .image-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 42px minmax(0, 1fr);
+      background: #1d2021;
+    }
+
+    .image-title {
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #202425;
+    }
+
+    .image-title strong {
+      display: block;
+      font-size: 13px;
+    }
+
+    .image-title span {
+      display: block;
+      margin-top: 1px;
+      color: var(--weak);
+      font-size: 11px;
+    }
+
+    .canvas {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        #202425;
+      background-size: 24px 24px;
+    }
+
+    .page {
+      position: relative;
+      width: min(82%, 420px);
+      aspect-ratio: 0.72;
+      background: #f7f7f2;
+      box-shadow: 0 18px 45px rgba(0,0,0,.45);
+      overflow: hidden;
+    }
+
+    .panel-line {
+      position: absolute;
+      left: 10%;
+      right: 10%;
+      border: 2px solid #1b1b1b;
+      background: repeating-linear-gradient(-16deg, #ffffff 0 9px, #eeeeec 10px 12px);
+    }
+
+    .panel-line.top { top: 10%; height: 31%; }
+    .panel-line.bottom { top: 46%; height: 43%; }
+
+    .manga-text {
+      position: absolute;
+      color: #111;
+      font-weight: 900;
+      font-size: 22px;
+    }
+
+    .manga-text.logo { top: 4%; left: 14%; }
+    .manga-text.caption { bottom: 4%; left: 12%; font-size: 18px; }
+
+    .box {
+      position: absolute;
+      border: 3px solid var(--green);
+      background: rgba(25, 184, 115, .14);
+    }
+
+    .box.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(255,214,90,.26);
+    }
+
+    .box.bad {
+      border-color: var(--danger);
+      background: rgba(255,91,114,.12);
+    }
+
+    .label {
+      position: absolute;
+      padding: 2px 4px;
+      background: rgba(255,255,255,.9);
+      color: #101112;
+      font-size: 11px;
+      font-weight: 850;
+    }
+
+    .form {
+      display: grid;
+      gap: 8px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    textarea,
+    input,
+    select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--field);
+      color: var(--text);
+      font: inherit;
+      padding: 7px 8px;
+    }
+
+    textarea {
+      height: 88px;
+      resize: vertical;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .quick-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+
+    .quick-row button {
+      padding: 0 6px;
+      font-weight: 800;
+    }
+
+    .font-table {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--panel-3);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-family: Menlo, Consolas, monospace;
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    th,
+    td {
+      height: 28px;
+      padding: 4px 8px;
+      text-align: center;
+      border-bottom: 1px solid #202426;
+    }
+
+    th {
+      background: #293033;
+      color: #f3f7f8;
+    }
+
+    tr:nth-child(even) td { background: #171a1c; }
+    tr.current td { background: var(--accent); color: #111; }
+
+    .checks {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+    }
+
+    .checks span {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .slider {
+      height: 5px;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent) 0 35%, #373d40 35%);
+    }
+
+    .hint {
+      color: var(--weak);
+      font-size: 12px;
+    }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 10px;
+      border-top: 1px solid var(--line);
+      background: #202324;
+      color: var(--weak);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="toolbar">
+      <button>選擇資料夾</button>
+      <button class="primary">生成/更新 CTD</button>
+      <button>導入 LabelPlus txt</button>
+      <button>打開 _bt.json</button>
+      <button>適合視窗</button>
+      <span class="spacer"></span>
+      <button>上一頁</button>
+      <button>下一頁</button>
+      <button disabled>保存 _bt</button>
+      <button disabled>撤銷</button>
+    </header>
+
+    <main class="main">
+      <aside class="side">
+        <section class="section">
+          <div class="section-title">資料 <small>目前資料夾</small></div>
+          <div class="status">已載入 42 頁，186 個區塊，312 條文字行。</div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">頁面 <small>Page</small></div>
+          <div class="list page-list">
+            <div class="row selected">001.jpg</div>
+            <div class="row">002.jpg</div>
+            <div class="row">003.jpg</div>
+            <div class="row">004.jpg</div>
+            <div class="row">005.jpg</div>
+            <div class="row">006.jpg</div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">_bt 條目 <small>本頁</small></div>
+          <div class="list item-list">
+            <div class="row selected"><span class="tag ok">手動</span>001 index=4  侵入者に出会ったら...</div>
+            <div class="row warn"><span class="tag warn">待確認</span>002 index=5  ガ...</div>
+            <div class="row"><span class="tag">自動</span>003 index=6  さっ...</div>
+            <div class="row"><span class="tag">自動</span>004 index=7  第40話</div>
+            <div class="row warn"><span class="tag warn">未匹配</span>005 index=8  龍宏一</div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">游標資訊</div>
+          <div class="status">游標單字框：未選中</div>
+        </section>
+      </aside>
+
+      <section class="image-pane">
+        <div class="image-title">
+          <strong>_bt 編輯預覽</strong>
+          <span>拖黃框調整位置，改完即時看結果</span>
+        </div>
+        <div class="canvas">
+          <div class="page">
+            <div class="manga-text logo">ジュラトリ</div>
+            <div class="panel-line top"></div>
+            <div class="panel-line bottom"></div>
+            <div class="manga-text caption">第40話　使命</div>
+            <div class="box selected" style="left:11%; top:17%; width:8%; height:28%;"></div>
+            <div class="box bad" style="left:72%; top:63%; width:11%; height:15%;"></div>
+            <div class="label" style="left:10%; top:46%;">4H, 黑, 描邊</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="center-tools">
+        <section class="section">
+          <div class="section-title">當前 _bt 條目</div>
+          <div class="current-box">index=4　groupId=2<br>框：334,314,382,532</div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">文字編輯 <small>高頻操作</small></div>
+          <div class="form">
+            <div>
+              <label>文字</label>
+              <textarea>侵入者に出会ったら、死...</textarea>
+            </div>
+            <div class="grid-2">
+              <div>
+                <label>字體大小</label>
+                <input value="32 px">
+              </div>
+              <div>
+                <label>方向</label>
+                <select><option>直排</option><option>橫排</option></select>
+              </div>
+            </div>
+            <div class="quick-row">
+              <button>-2</button>
+              <button>+2</button>
+              <button>-10</button>
+              <button>+10</button>
+            </div>
+            <div class="grid-2">
+              <div>
+                <label>文字顏色</label>
+                <select><option>黑</option><option>白</option></select>
+              </div>
+              <div>
+                <label>描邊粗細</label>
+                <input value="4 px">
+              </div>
+            </div>
+            <div class="checks">
+              <span><input type="checkbox" checked> 原字描邊</span>
+              <span><input type="checkbox"> 需要修復/描邊</span>
+            </div>
+            <button class="primary">保存 _bt.json</button>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">字級快捷列表 <small>點一下套用</small></div>
+          <div class="font-table">
+            <table>
+              <thead><tr><th>字級</th><th>數目</th></tr></thead>
+              <tbody>
+                <tr><td>4</td><td>4</td></tr>
+                <tr><td>6</td><td>2</td></tr>
+                <tr><td>18</td><td>20</td></tr>
+                <tr><td>20</td><td>17</td></tr>
+                <tr><td>22</td><td>21</td></tr>
+                <tr><td>24</td><td>9</td></tr>
+                <tr><td>28</td><td>6</td></tr>
+                <tr class="current"><td>32</td><td>4</td></tr>
+                <tr class="current"><td>34</td><td>5</td></tr>
+                <tr><td>40</td><td>1</td></tr>
+                <tr><td>60</td><td>1</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">這個放兩張圖中間：左看效果，右看 CTD 推定，手不用跑到最右。</p>
+        </section>
+      </aside>
+
+      <section class="image-pane">
+        <div class="image-title">
+          <strong>CTD measure 參考</strong>
+          <span>點綠框套用字級、方向與文字框</span>
+        </div>
+        <div class="canvas">
+          <div class="page">
+            <div class="manga-text logo" style="color:#9b174d">ジュラトリ</div>
+            <div class="panel-line top"></div>
+            <div class="panel-line bottom"></div>
+            <div class="manga-text caption" style="color:#e51d52">第40話　使命</div>
+            <div class="box selected" style="left:11%; top:17%; width:8%; height:28%;"></div>
+            <div class="box" style="left:72%; top:63%; width:11%; height:15%;"></div>
+            <div class="label" style="left:84%; top:73%;">32V,黑</div>
+            <div class="label" style="left:63%; top:92%;">34H,黑　40H,黑</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="layers">
+        <section class="section">
+          <div class="section-title">圖層顯示 <small>低頻</small></div>
+          <div class="checks">
+            <span><input type="checkbox" checked> 文字遮罩</span>
+            <span><input type="checkbox"> NPZ 平滑遮罩</span>
+            <span><input type="checkbox"> NPZ 外輪廓遮罩</span>
+            <span><input type="checkbox"> 原始區塊框</span>
+            <span><input type="checkbox" checked> 重定位框</span>
+            <span><input type="checkbox"> 文字行多邊形</span>
+            <span><input type="checkbox"> 單字框</span>
+            <span><input type="checkbox" checked> 字級標籤</span>
+          </div>
+          <div style="margin-top:10px;">
+            <label>疊圖透明度</label>
+            <div class="slider"></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">流程</div>
+          <div class="form">
+            <button>重新載入目前頁</button>
+            <label><input type="checkbox"> 字體取偶數</label>
+            <button class="primary">生成/更新 CTD</button>
+            <button>導入 LabelPlus txt</button>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">提示</div>
+          <div class="status">左圖編輯 _bt.json；右圖 ctd/measure.json 只讀顯示。</div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <span>左側：選頁與選條目</span>
+      <span>中間：文字編輯與字級快捷</span>
+      <span>最右：圖層和低頻流程</span>
+    </footer>
+  </div>
+</body>
+</html>
