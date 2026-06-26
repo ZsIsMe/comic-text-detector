@@ -21,6 +21,19 @@ STATUS=$?
 if [ "$STATUS" -ne 0 ]; then
   echo
   read -r -p "按 Enter 關閉..."
+else
+  CURRENT_TTY="$(tty)"
+  osascript -e "delay 0.4" \
+    -e "tell application \"Terminal\"" \
+    -e "repeat with w in windows" \
+    -e "repeat with t in tabs of w" \
+    -e "if tty of t is \"$CURRENT_TTY\" then" \
+    -e "close w" \
+    -e "return" \
+    -e "end if" \
+    -e "end repeat" \
+    -e "end repeat" \
+    -e "end tell" >/dev/null 2>&1 </dev/null &
 fi
 
 exit "$STATUS"

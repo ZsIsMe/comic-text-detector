@@ -26,6 +26,42 @@ if LAYOUT_HELPER_DIR.is_dir() and str(LAYOUT_HELPER_DIR) not in sys.path:
 from ctd_overlay_processor.analyze_text_core import enrich_measure_map
 
 
+def even_font_size(value: object) -> int | None:
+    try:
+        size = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    if size <= 0:
+        return None
+    if size % 2:
+        size += 1
+    return size
+
+
+def quantize_measure_font_sizes(measure_map: dict) -> int:
+    changed = 0
+    pages = measure_map.get('pages', {})
+    if not isinstance(pages, dict):
+        return changed
+    for items in pages.values():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get('font_size') is None:
+                continue
+            new_size = even_font_size(item.get('font_size'))
+            if new_size is None:
+                continue
+            old_size = item.get('font_size')
+            item['font_size'] = new_size
+            try:
+                if int(round(float(old_size))) != new_size:
+                    changed += 1
+            except (TypeError, ValueError):
+                changed += 1
+    return changed
+
+
 def patch_numpy_compat() -> None:
     try:
         import numpy as np
@@ -77,11 +113,14 @@ def load_detection_api():
             LINE_TRANS_MAP_JSON,
             MEASURE_DEBUG_JSON,
             MEASURE_JSON,
+            INPAINT_MASK_EXPANSION,
+            INPAINT_RADIUS,
             _align_pages,
             _build_measure_maps,
             _detect_pages,
             _ensure_dirs,
             _load_json,
+            _write_inpainted_images,
             _write_json,
         )
     except Exception as exc:
@@ -101,11 +140,14 @@ def load_detection_api():
         'LINE_TRANS_MAP_JSON': LINE_TRANS_MAP_JSON,
         'MEASURE_DEBUG_JSON': MEASURE_DEBUG_JSON,
         'MEASURE_JSON': MEASURE_JSON,
+        'INPAINT_MASK_EXPANSION': INPAINT_MASK_EXPANSION,
+        'INPAINT_RADIUS': INPAINT_RADIUS,
         '_align_pages': _align_pages,
         '_build_measure_maps': _build_measure_maps,
         '_detect_pages': _detect_pages,
         '_ensure_dirs': _ensure_dirs,
         '_load_json': _load_json,
+        '_write_inpainted_images': _write_inpainted_images,
         '_write_json': _write_json,
     }
 
@@ -116,6 +158,7 @@ def run_detection(
     device: str | None = None,
     only_align: bool = False,
     need_neck: bool = False,
+    even_font_size_enabled: bool = False,
 ) -> int:
     os.chdir(PROJECT_ROOT)
     image_dir = osp.abspath(image_dir)
@@ -130,6 +173,7 @@ def run_detection(
     detect_pages = api['_detect_pages']
     align_pages = api['_align_pages']
     build_measure_maps = api['_build_measure_maps']
+    write_inpainted_images = api['_write_inpainted_images']
 
     if model_path is None:
         model_path = str(PROJECT_ROOT / 'data' / 'comictextdetector.pt')
@@ -185,9 +229,22 @@ def run_detection(
         line_trans_map,
         aligned_box_map,
     )
+    even_font_changed = 0
+    if even_font_size_enabled:
+        even_font_changed = quantize_measure_font_sizes(measure_map)
+        quantize_measure_font_sizes(measure_debug_map)
     enriched_count, enrich_errors = enrich_measure_map(Path(image_dir), measure_map)
     write_json(measure_path, measure_map)
     write_json(measure_debug_path, measure_debug_map)
+    page_names = list(measure_map.get('pages', {}).keys())
+    write_inpainted_images(
+        image_dir,
+        paths,
+        page_names,
+        block_map,
+        api['INPAINT_RADIUS'],
+        api['INPAINT_MASK_EXPANSION'],
+    )
 
     print('完成。已生成 GUI 所需資料：', flush=True)
     print(f'  - {block_map_path}', flush=True)
@@ -195,8 +252,11 @@ def run_detection(
     print(f'  - {paths["mask"]}/<檔名>.png', flush=True)
     print(f'  - {aligned_box_map_path}', flush=True)
     print(f'  - {paths["align_masks"]}/<檔名>.npz', flush=True)
+    print(f'  - {paths["inpainted"]}/<檔名>.png', flush=True)
     print(f'  - {measure_path}', flush=True)
     print(f'  - {measure_debug_path}', flush=True)
+    if even_font_size_enabled:
+        print(f'字體取偶數：已處理 measure.json，調整 {even_font_changed} 個區塊', flush=True)
     print(f'文字顏色/描邊分析：{enriched_count} 個區塊', flush=True)
     if enrich_errors:
         print('部分頁面無法分析文字顏色/描邊：', flush=True)
@@ -233,6 +293,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=False,
         help='是否啟用 neck/deal_overlap 輔助流程，預設 false。',
     )
+    parser.add_argument(
+        '--even-font-size',
+        action='store_true',
+        help='生成 measure.json 時將 font_size 取為偶數。',
+    )
     return parser
 
 
@@ -244,6 +309,7 @@ def main() -> None:
         device=args.device,
         only_align=args.only_align,
         need_neck=args.need_neck,
+        even_font_size_enabled=args.even_font_size,
     )
 
 

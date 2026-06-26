@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import sys
 import traceback
@@ -39,6 +40,7 @@ try:
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QScrollArea,
         QSplitter,
         QSpinBox,
         QSlider,
@@ -303,6 +305,8 @@ if QT_IMPORT_ERROR is None:
 
 
     class CtdOverlayViewer(QMainWindow):
+        DEFAULT_LAYER_CHECKED = frozenset(('show_char_boxes', 'show_font_labels'))
+
         def __init__(self, image_dir: str | None = None) -> None:
             super().__init__()
             self.setWindowTitle('CTD 疊圖檢視器')
@@ -348,12 +352,6 @@ if QT_IMPORT_ERROR is None:
 
             self.bt_view = ImageView()
             self.view = ImageView()
-            splitter = QSplitter(Qt.Orientation.Horizontal)
-            splitter.addWidget(self.bt_view)
-            splitter.addWidget(self.view)
-            splitter.setStretchFactor(0, 1)
-            splitter.setStretchFactor(1, 1)
-            self.setCentralWidget(splitter)
 
             self.page_list = QListWidget()
             self.bt_item_list = QListWidget()
@@ -370,6 +368,7 @@ if QT_IMPORT_ERROR is None:
             self.show_font_labels = QCheckBox('字級標籤')
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
+            self.even_measure_font_check = QCheckBox('字體取偶數')
             self.import_labelplus_button = QPushButton('導入 LabelPlus txt')
             self.open_bt_button = QPushButton('打開 _bt.json')
             self.save_button = QPushButton('保存 _bt.json')
@@ -390,18 +389,23 @@ if QT_IMPORT_ERROR is None:
             self.text_has_stroke_check = QCheckBox('原字描邊')
             self.need_inpaint_check = QCheckBox('需要修復/描邊')
 
-            for checkbox in (
-                self.show_align_boxes,
-                self.show_font_labels,
-                self.show_mask,
-            ):
-                checkbox.setChecked(True)
+            self._restore_layer_checkbox_states()
             self.opacity_slider.setRange(5, 90)
             self.opacity_slider.setValue(35)
 
             self._build_toolbar()
             self._build_side_panel()
-            self._build_font_size_panel()
+            center_tools = self._build_center_tools_panel()
+            self._build_layer_panel()
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+            splitter.addWidget(self.bt_view)
+            splitter.addWidget(center_tools)
+            splitter.addWidget(self.view)
+            splitter.setStretchFactor(0, 3)
+            splitter.setStretchFactor(1, 0)
+            splitter.setStretchFactor(2, 3)
+            splitter.setSizes([520, 300, 520])
+            self.setCentralWidget(splitter)
             self._connect_signals()
 
             if startup_image_dir:
@@ -434,6 +438,55 @@ if QT_IMPORT_ERROR is None:
             path = Path(image_dir).expanduser()
             if path.is_dir():
                 self.settings.setValue('last_image_dir', str(path.resolve()))
+
+        def _bt_mapping_key(self, image_dir: str | None = None) -> str | None:
+            image_dir = image_dir or self.current_image_dir
+            if not image_dir:
+                return None
+            path = Path(image_dir).expanduser()
+            try:
+                resolved = path.resolve()
+            except OSError:
+                return None
+            digest = hashlib.sha1(str(resolved).encode('utf-8')).hexdigest()
+            return f'bt_json_for_folder/{digest}'
+
+        def _save_bt_mapping(self, bt_path: Path, image_dir: str | None = None) -> None:
+            key = self._bt_mapping_key(image_dir)
+            if key is None:
+                return
+            self.settings.setValue(key, str(bt_path.expanduser().resolve()))
+
+        def _mapped_bt_path(self, image_dir: str | None = None) -> Path | None:
+            key = self._bt_mapping_key(image_dir)
+            if key is None:
+                return None
+            value = self.settings.value(key, '', str)
+            if not value:
+                return None
+            path = Path(value).expanduser()
+            if path.is_file():
+                return path.resolve()
+            self.settings.remove(key)
+            return None
+
+        def _autoload_mapped_bt_json(self) -> None:
+            path = self._mapped_bt_path()
+            if path is None:
+                return
+            try:
+                self.load_bt_json_path(path, remember=False)
+                self.status_label.setText(f'{self.status_label.text()}\n已自動載入：{path.name}')
+            except Exception as exc:
+                key = self._bt_mapping_key()
+                if key is not None:
+                    self.settings.remove(key)
+                show_exception_details(
+                    self,
+                    '自動打開 _bt.json 失敗',
+                    f'已找到此資料夾記錄的 _bt.json，但無法打開：\n{path}',
+                    exc,
+                )
 
         def _build_toolbar(self) -> None:
             toolbar = QToolBar('主工具列')
@@ -536,35 +589,78 @@ if QT_IMPORT_ERROR is None:
             layout.setContentsMargins(10, 10, 10, 10)
             layout.setSpacing(8)
 
-            layout.addWidget(QLabel('頁面'))
-            layout.addWidget(self.page_list, 1)
-            layout.addWidget(QLabel('圖層'))
-            for widget in (
-                self.show_mask,
-                self.show_npz_smoothed,
-                self.show_npz_outer,
-                self.show_block_boxes,
-                self.show_align_boxes,
-                self.show_line_polygons,
-                self.show_char_boxes,
-                self.show_font_labels,
-            ):
-                layout.addWidget(widget)
-
-            opacity_row = QHBoxLayout()
-            opacity_row.addWidget(QLabel('疊圖透明度'))
-            opacity_row.addWidget(self.opacity_slider)
-            layout.addLayout(opacity_row)
+            layout.addWidget(QLabel('資料狀態'))
             layout.addWidget(self.status_label)
-            layout.addWidget(self.char_info_label)
+            layout.addWidget(QLabel('頁面'))
+            self.page_list.setMinimumHeight(150)
+            layout.addWidget(self.page_list, 1)
             layout.addWidget(QLabel('_bt.json'))
             layout.addWidget(self.bt_path_label)
             self.open_bt_button.clicked.connect(self.open_bt_json)
             layout.addWidget(self.open_bt_button)
             layout.addWidget(QLabel('當前頁 _bt 條目'))
-            self.bt_item_list.setMinimumHeight(130)
+            self.bt_item_list.setMinimumHeight(260)
             self.bt_item_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-            layout.addWidget(self.bt_item_list, 1)
+            layout.addWidget(self.bt_item_list, 2)
+            layout.addWidget(QLabel('游標資訊'))
+            layout.addWidget(self.char_info_label)
+
+            dock = QDockWidget('頁面 / _bt 條目', self)
+            dock.setWidget(panel)
+            dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+
+        def _build_center_tools_panel(self) -> QWidget:
+            panel = QWidget()
+            panel.setMinimumWidth(280)
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(10, 10, 10, 10)
+            layout.setSpacing(8)
+
+            title = QLabel('字級快捷列表')
+            title.setToolTip('點擊字級即可套用到目前選中的 _bt 條目。')
+            layout.addWidget(title)
+            list_font = QFont('Menlo', 13)
+            list_font.setBold(True)
+            list_font.setStyleHint(QFont.StyleHint.Monospace)
+            self.font_size_table.setFont(list_font)
+            self.font_size_table.setColumnCount(2)
+            self.font_size_table.setHorizontalHeaderLabels(['字級', '數目'])
+            self.font_size_table.verticalHeader().setVisible(False)
+            self.font_size_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            self.font_size_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+            self.font_size_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            self.font_size_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.font_size_table.setAlternatingRowColors(True)
+            self.font_size_table.setShowGrid(False)
+            self.font_size_table.horizontalHeader().setStretchLastSection(True)
+            self.font_size_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.font_size_table.setColumnWidth(0, 86)
+            self.font_size_table.setMinimumHeight(230)
+            self.font_size_table.setStyleSheet(
+                'QTableWidget {'
+                '  background: #101214;'
+                '  alternate-background-color: #181a1d;'
+                '  color: #e9ecef;'
+                '  border: 1px solid #33383d;'
+                '}'
+                'QHeaderView::section {'
+                '  background: #2a2e33;'
+                '  color: #f4f6f8;'
+                '  border: 0;'
+                '  border-bottom: 1px solid #454b52;'
+                '  padding: 6px 4px;'
+                '  font-weight: 700;'
+                '}'
+                'QTableWidget::item {'
+                '  padding: 5px 8px;'
+                '}'
+            )
+            layout.addWidget(self.font_size_table, 2)
+            self.even_font_button.clicked.connect(self.preview_even_font_sizes)
+            layout.addWidget(self.even_font_button)
+            self.even_font_button.hide()
+
             layout.addWidget(QLabel('當前 _bt 條目'))
             layout.addWidget(self.box_editor_title)
             self.font_size_spin.setRange(1, 999)
@@ -592,71 +688,53 @@ if QT_IMPORT_ERROR is None:
             hint = QLabel('左側編輯 _bt.json；右側 ctd/measure.json 只讀顯示。')
             hint.setWordWrap(True)
             layout.addWidget(hint)
+            layout.addStretch(1)
             self.set_box_editor_enabled(False)
 
-            reload_button = QPushButton('重新載入目前頁')
-            reload_button.clicked.connect(self.reload_current_page)
-            layout.addWidget(reload_button)
-            self.generate_button.clicked.connect(self.generate_ctd)
-            layout.addWidget(self.generate_button)
-            self.import_labelplus_button.clicked.connect(self.import_labelplus_txt)
-            layout.addWidget(self.import_labelplus_button)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(panel)
+            scroll.setMinimumWidth(280)
+            return scroll
 
-            dock = QDockWidget('CTD 資料', self)
-            dock.setWidget(panel)
-            dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-
-        def _build_font_size_panel(self) -> None:
+        def _build_layer_panel(self) -> None:
             panel = QWidget()
+            panel.setMinimumWidth(220)
             layout = QVBoxLayout(panel)
             layout.setContentsMargins(10, 10, 10, 10)
             layout.setSpacing(8)
 
-            title = QLabel('全部字級')
-            title.setWordWrap(True)
-            layout.addWidget(title)
-            list_font = QFont('Menlo', 13)
-            list_font.setBold(True)
-            list_font.setStyleHint(QFont.StyleHint.Monospace)
-            self.font_size_table.setFont(list_font)
-            self.font_size_table.setColumnCount(2)
-            self.font_size_table.setHorizontalHeaderLabels(['字級', '數目'])
-            self.font_size_table.verticalHeader().setVisible(False)
-            self.font_size_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-            self.font_size_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-            self.font_size_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-            self.font_size_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            self.font_size_table.setAlternatingRowColors(True)
-            self.font_size_table.setShowGrid(False)
-            self.font_size_table.horizontalHeader().setStretchLastSection(True)
-            self.font_size_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.font_size_table.setColumnWidth(0, 86)
-            self.font_size_table.setStyleSheet(
-                'QTableWidget {'
-                '  background: #101214;'
-                '  alternate-background-color: #181a1d;'
-                '  color: #e9ecef;'
-                '  border: 1px solid #33383d;'
-                '}'
-                'QHeaderView::section {'
-                '  background: #2a2e33;'
-                '  color: #f4f6f8;'
-                '  border: 0;'
-                '  border-bottom: 1px solid #454b52;'
-                '  padding: 6px 4px;'
-                '  font-weight: 700;'
-                '}'
-                'QTableWidget::item {'
-                '  padding: 5px 8px;'
-                '}'
-            )
-            layout.addWidget(self.font_size_table, 1)
-            self.even_font_button.clicked.connect(self.preview_even_font_sizes)
-            layout.addWidget(self.even_font_button)
-            self.even_font_button.hide()
+            layout.addWidget(QLabel('圖層'))
+            for widget in (
+                self.show_mask,
+                self.show_npz_smoothed,
+                self.show_npz_outer,
+                self.show_block_boxes,
+                self.show_align_boxes,
+                self.show_line_polygons,
+                self.show_char_boxes,
+                self.show_font_labels,
+            ):
+                layout.addWidget(widget)
 
-            dock = QDockWidget('字級列表', self)
+            opacity_row = QHBoxLayout()
+            opacity_row.addWidget(QLabel('疊圖透明度'))
+            opacity_row.addWidget(self.opacity_slider)
+            layout.addLayout(opacity_row)
+
+            layout.addWidget(QLabel('流程'))
+            reload_button = QPushButton('重新載入目前頁')
+            reload_button.clicked.connect(self.reload_current_page)
+            layout.addWidget(reload_button)
+            self.even_measure_font_check.setToolTip('生成 CTD 時，將 measure.json 的 font_size 取為偶數。')
+            layout.addWidget(self.even_measure_font_check)
+            self.generate_button.clicked.connect(self.generate_ctd)
+            layout.addWidget(self.generate_button)
+            self.import_labelplus_button.clicked.connect(self.import_labelplus_txt)
+            layout.addWidget(self.import_labelplus_button)
+            layout.addStretch(1)
+
+            dock = QDockWidget('圖層 / 流程', self)
             dock.setWidget(panel)
             dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
@@ -674,7 +752,7 @@ if QT_IMPORT_ERROR is None:
                 self.show_char_boxes,
                 self.show_font_labels,
             ):
-                widget.stateChanged.connect(self.render_current_page)
+                widget.stateChanged.connect(self.handle_layer_checkbox_changed)
             self.opacity_slider.valueChanged.connect(self.render_current_page)
             self.view.imageMouseMoved.connect(self.update_hover_char_box)
             self.view.imageMouseLeft.connect(self.clear_hover_char_box)
@@ -696,6 +774,45 @@ if QT_IMPORT_ERROR is None:
             folder = QFileDialog.getExistingDirectory(self, '選擇包含原圖和 ctd 的圖片資料夾', start_dir)
             if folder:
                 self.load_folder(folder)
+
+        def _layer_checkboxes(self) -> tuple[tuple[str, QCheckBox], ...]:
+            return (
+                ('show_mask', self.show_mask),
+                ('show_npz_smoothed', self.show_npz_smoothed),
+                ('show_npz_outer', self.show_npz_outer),
+                ('show_block_boxes', self.show_block_boxes),
+                ('show_align_boxes', self.show_align_boxes),
+                ('show_line_polygons', self.show_line_polygons),
+                ('show_char_boxes', self.show_char_boxes),
+                ('show_font_labels', self.show_font_labels),
+            )
+
+        def _settings_bool(self, key: str, default: bool) -> bool:
+            value = self.settings.value(key, default)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in ('1', 'true', 'yes', 'on'):
+                    return True
+                if lowered in ('0', 'false', 'no', 'off'):
+                    return False
+            return default
+
+        def _restore_layer_checkbox_states(self) -> None:
+            for name, checkbox in self._layer_checkboxes():
+                default = name in self.DEFAULT_LAYER_CHECKED
+                checkbox.setChecked(self._settings_bool(f'layers/{name}', default))
+
+        def _save_layer_checkbox_states(self) -> None:
+            for name, checkbox in self._layer_checkboxes():
+                self.settings.setValue(f'layers/{name}', checkbox.isChecked())
+
+        def handle_layer_checkbox_changed(self, *_: object) -> None:
+            self._save_layer_checkbox_states()
+            self.render_current_page()
 
         def load_folder(self, image_dir: str) -> None:
             if self.bt_dirty and not self.save_pending_changes(auto=True):
@@ -732,6 +849,7 @@ if QT_IMPORT_ERROR is None:
             self.status_label.setText(self._summary_text(summary))
             if self.page_names:
                 self.page_list.setCurrentRow(0)
+                self._autoload_mapped_bt_json()
             else:
                 self.page = None
                 self.current_page_row = -1
@@ -872,7 +990,8 @@ if QT_IMPORT_ERROR is None:
             if index != self.selected_bt_index:
                 self.select_bt_item(index)
 
-        def load_bt_json_path(self, path: Path) -> None:
+        def load_bt_json_path(self, path: Path, *, remember: bool = True) -> None:
+            path = path.expanduser().resolve()
             data = json.loads(path.read_text(encoding='utf-8'))
             if not isinstance(data, dict) or not isinstance(data.get('transMap'), dict):
                 raise ValueError('不是有效的 _bt/MEO JSON：缺少 transMap。')
@@ -886,6 +1005,8 @@ if QT_IMPORT_ERROR is None:
             self.update_bt_item_list()
             self.render_bt_page(refit=True)
             self.update_action_state()
+            if remember:
+                self._save_bt_mapping(path)
 
         def open_bt_json(self) -> None:
             start_dir = self.current_image_dir or self._last_existing_image_dir() or str(Path.home())
@@ -1584,9 +1705,13 @@ if QT_IMPORT_ERROR is None:
                 return
 
             self.generate_button.setEnabled(False)
-            self.status_label.setText('正在生成 CTD 資料，模型推理可能需要一段時間...')
+            even_font_size = self.even_measure_font_check.isChecked()
+            option_text = '，字體取偶數' if even_font_size else ''
+            self.status_label.setText(f'正在生成 CTD 資料{option_text}，模型推理可能需要一段時間...')
             process = QProcess(self)
             args = [str(script), self.current_image_dir]
+            if even_font_size:
+                args.append('--even-font-size')
             self.detect_command = [sys.executable, *args]
             self.detect_output_chunks = []
             process.setProgram(sys.executable)

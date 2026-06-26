@@ -120,6 +120,7 @@ ctd_overlay_processor/.venv/
 - 單框刪除：`Delete` / `Backspace`
 
 `ctd/measure.json` 不支持 GUI 編輯。「字體取偶數」只應在生成 CTD 之前作為生成選項處理，生成後不再修改 `measure.json`。
+在 GUI 勾選「字體取偶數」後按「生成/更新 CTD」，生成出的 `ctd/measure.json` 會將每個 `font_size` 取為偶數。
 
 ## 命令列檢查資料
 
