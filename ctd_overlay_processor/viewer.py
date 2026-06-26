@@ -22,7 +22,7 @@ QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 QT_WEBENGINE_AVAILABLE = False
 QWebEngineView = None
 try:
-    from PySide6.QtCore import QEvent, QPointF, QProcess, QRectF, QSettings, Qt, Signal
+    from PySide6.QtCore import QEvent, QPointF, QProcess, QRectF, QSettings, Qt, QTimer, Signal
     from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
@@ -166,6 +166,7 @@ if QT_IMPORT_ERROR is None:
                 self._zoom = 1.0
                 self.resetTransform()
                 self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self.viewportChanged.emit(self)
 
         def wheelEvent(self, event) -> None:
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
@@ -1349,6 +1350,7 @@ if QT_IMPORT_ERROR is None:
                 self.sync_viewports_from(self.view)
             self.update_navigator()
             self.update_bt_html_overlay()
+            self.schedule_bt_html_overlay_update()
 
         def sync_viewports_from(self, source: ImageView) -> None:
             if self._syncing_views or self._fitting_views:
@@ -1572,6 +1574,7 @@ if QT_IMPORT_ERROR is None:
             )
             self.bt_dirty = False
             self.update_action_state()
+            self.schedule_bt_html_overlay_update()
 
         def mark_bt_dirty(self) -> None:
             self.bt_dirty = True
@@ -2623,6 +2626,7 @@ if QT_IMPORT_ERROR is None:
                 self.update_bt_item_list()
                 self.render_bt_page(refit=False)
                 self.fit_both_views()
+                self.schedule_bt_html_overlay_update()
             except Exception as exc:
                 show_exception_details(self, '頁面載入失敗', '無法載入此頁。下方是完整可複製的出錯信息。', exc)
 
@@ -2743,6 +2747,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_view.set_pixmap(QPixmap.fromImage(image), fit=refit)
             self.update_navigator()
             self.update_bt_html_overlay()
+            self.schedule_bt_html_overlay_update()
 
         def update_bt_html_overlay(self) -> None:
             overlay = getattr(self, 'bt_html_overlay', None)
@@ -2754,6 +2759,21 @@ if QT_IMPORT_ERROR is None:
                 overlay.set_items(items)
             else:
                 overlay.hide()
+
+        def schedule_bt_html_overlay_update(self) -> None:
+            if getattr(self, 'bt_html_overlay', None) is None:
+                return
+            if getattr(self, '_bt_html_overlay_update_scheduled', False):
+                return
+            self._bt_html_overlay_update_scheduled = True
+
+            def refresh(final: bool = False) -> None:
+                self.update_bt_html_overlay()
+                if final:
+                    self._bt_html_overlay_update_scheduled = False
+
+            QTimer.singleShot(0, refresh)
+            QTimer.singleShot(30, lambda: refresh(True))
 
         def build_bt_html_items(self) -> list[dict[str, object]]:
             if self.bt_data is None:
@@ -2818,6 +2838,8 @@ if QT_IMPORT_ERROR is None:
         def prepare_html_bt_text(self, text: str, orientation: str) -> str:
             prepared = text.replace('\\n', '\n').replace('\r\n', '\n').replace('\r', '\n')
             prepared = prepared.translate(str.maketrans({
+                '「': '｢',
+                '」': '｣',
                 '“': '‶',
                 '”': '〟',
             }))
