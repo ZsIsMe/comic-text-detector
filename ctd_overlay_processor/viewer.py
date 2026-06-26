@@ -135,6 +135,15 @@ if QT_IMPORT_ERROR is None:
             self.viewport().setMouseTracking(True)
             self._zoom = 1.0
             self._mouse_down_on_image = False
+            self._background_pan_enabled = False
+            self._background_panning = False
+            self._background_pan_start = None
+            self._background_pan_h = 0
+            self._background_pan_v = 0
+
+        def set_background_pan_enabled(self, enabled: bool) -> None:
+            self._background_pan_enabled = enabled
+            self.setCursor(Qt.CursorShape.OpenHandCursor if enabled else Qt.CursorShape.ArrowCursor)
 
         def set_pixmap(self, pixmap: QPixmap, fit: bool = True) -> None:
             if self.pixmap_item.scene() is None:
@@ -157,6 +166,13 @@ if QT_IMPORT_ERROR is None:
             self.viewportChanged.emit(self)
 
         def mouseMoveEvent(self, event) -> None:
+            if self._background_panning:
+                delta = event.position().toPoint() - self._background_pan_start
+                self.horizontalScrollBar().setValue(self._background_pan_h - delta.x())
+                self.verticalScrollBar().setValue(self._background_pan_v - delta.y())
+                self.viewportChanged.emit(self)
+                event.accept()
+                return
             super().mouseMoveEvent(event)
             scene_point = self.mapToScene(event.position().toPoint())
             pixmap_rect = QRectF(self.pixmap_item.pixmap().rect())
@@ -175,6 +191,12 @@ if QT_IMPORT_ERROR is None:
             if event.button() == Qt.MouseButton.LeftButton and pixmap_rect.contains(scene_point):
                 self._mouse_down_on_image = True
                 self.imageMousePressed.emit(scene_point.x(), scene_point.y())
+                if self._background_pan_enabled:
+                    self._background_panning = True
+                    self._background_pan_start = event.position().toPoint()
+                    self._background_pan_h = self.horizontalScrollBar().value()
+                    self._background_pan_v = self.verticalScrollBar().value()
+                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
                 event.accept()
                 return
             super().mousePressEvent(event)
@@ -183,6 +205,10 @@ if QT_IMPORT_ERROR is None:
             scene_point = self.mapToScene(event.position().toPoint())
             if self._mouse_down_on_image and event.button() == Qt.MouseButton.LeftButton:
                 self.imageMouseReleased.emit(scene_point.x(), scene_point.y())
+                if self._background_panning:
+                    self._background_panning = False
+                    self._background_pan_start = None
+                    self.setCursor(Qt.CursorShape.OpenHandCursor if self._background_pan_enabled else Qt.CursorShape.ArrowCursor)
                 self._mouse_down_on_image = False
                 event.accept()
                 return
@@ -872,6 +898,8 @@ if QT_IMPORT_ERROR is None:
             self.view.imageMouseLeft.connect(self.clear_hover_char_box)
             self.view.imageMousePressed.connect(self.handle_image_mouse_press)
             self.bt_view.imageMousePressed.connect(self.handle_bt_mouse_press)
+            self.bt_view.imageMouseMoved.connect(self.update_bt_view_cursor)
+            self.bt_view.imageMouseLeft.connect(lambda: self.bt_view.set_background_pan_enabled(False))
             self.bt_view.imageMouseDragged.connect(self.handle_bt_mouse_drag)
             self.bt_view.imageMouseReleased.connect(self.handle_bt_mouse_release)
             self.bt_view.viewportChanged.connect(self.sync_viewports_from)
@@ -1188,7 +1216,7 @@ if QT_IMPORT_ERROR is None:
                 self.select_bt_item(None)
                 return
             if index != self.selected_bt_index:
-                self.select_bt_item(index)
+                self.select_bt_item(index, center=True)
 
         def load_bt_json_path(self, path: Path, *, remember: bool = True) -> None:
             path = path.expanduser().resolve()
@@ -1413,7 +1441,7 @@ if QT_IMPORT_ERROR is None:
             self.update_bt_item_list()
             self.update_action_state()
 
-        def select_bt_item(self, index: int | None) -> None:
+        def select_bt_item(self, index: int | None, *, center: bool = False) -> None:
             items = self.bt_items_for_page()
             if index is None or index < 0 or index >= len(items):
                 self.selected_bt_index = None
@@ -1425,6 +1453,21 @@ if QT_IMPORT_ERROR is None:
             self.populate_box_editor_from_bt(items[index])
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
+            if center:
+                self.center_views_on_bt_item(items[index])
+
+        def center_views_on_bt_item(self, item: dict[str, Any]) -> None:
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is not None:
+                x1, y1, x2, y2 = xyxy
+                self.center_views_on((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+                return
+            pixmap = self.bt_view.pixmap_item.pixmap()
+            if pixmap.isNull():
+                return
+            center = self.bt_center_pixel_from_item(item, pixmap.width(), pixmap.height())
+            if center is not None:
+                self.center_views_on(center[0], center[1])
 
         def select_box(self, index: int | None) -> None:
             if self.page is None or index is None or index < 0 or index >= len(self.page.boxes):
@@ -2440,6 +2483,7 @@ if QT_IMPORT_ERROR is None:
 
         def handle_bt_mouse_press(self, x: float, y: float) -> None:
             index, mode = self.hit_test_bt_item(x, y)
+            self.bt_view.set_background_pan_enabled(index is None)
             self.select_bt_item(index)
             item = self.selected_bt_item()
             xyxy = self.bt_xyxy_from_item(item) if item is not None else None
@@ -2456,6 +2500,10 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_original = xyxy
             self._bt_drag_original_item = copy.deepcopy(item)
             self._bt_drag_temporary = temporary
+
+        def update_bt_view_cursor(self, x: float, y: float) -> None:
+            index, _ = self.hit_test_bt_item(x, y)
+            self.bt_view.set_background_pan_enabled(index is None)
 
         def handle_bt_mouse_drag(self, x: float, y: float) -> None:
             item = self.selected_bt_item()
