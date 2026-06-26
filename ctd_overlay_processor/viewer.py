@@ -1582,7 +1582,12 @@ if QT_IMPORT_ERROR is None:
             updates = self.selected_box_updates_from_editor()
             if updates is None:
                 return
-            self.apply_selected_box_updates(updates, status='已修改當前 _bt 條目，尚未保存。')
+            refresh_editor = QApplication.focusWidget() is not self.bt_text_edit
+            self.apply_selected_box_updates(
+                updates,
+                status='已修改當前 _bt 條目，尚未保存。',
+                refresh_editor=refresh_editor,
+            )
 
         def apply_font_size_from_table(self, row: int, column: int) -> None:
             if self.selected_bt_item() is None:
@@ -1733,7 +1738,13 @@ if QT_IMPORT_ERROR is None:
             )
             box.raw_measure = dict(item)
 
-        def apply_selected_box_updates(self, updates: dict[str, object], *, status: str = '已修改，尚未保存。') -> bool:
+        def apply_selected_box_updates(
+            self,
+            updates: dict[str, object],
+            *,
+            status: str = '已修改，尚未保存。',
+            refresh_editor: bool = True,
+        ) -> bool:
             item = self.selected_bt_item()
             if item is None:
                 return False
@@ -1748,7 +1759,8 @@ if QT_IMPORT_ERROR is None:
                 self.set_bt_xyxy(item, tuple(int(v) for v in normalized_updates.pop('xyxy_pixel')))
             item.update(normalized_updates)
             self.mark_bt_dirty()
-            self.populate_box_editor_from_bt(item)
+            if refresh_editor:
+                self.populate_box_editor_from_bt(item)
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
             self.status_label.setText(status)
@@ -2349,21 +2361,23 @@ if QT_IMPORT_ERROR is None:
                 x = start_x - column * column_width
                 for row, char_info in enumerate(column_chars):
                     display = str(char_info['display'])
-                    char_x = x + float(char_info.get('x_offset', 0.0)) * column_width
+                    char_x = x
                     char_y = top + row * line_height + metrics.ascent()
                     if char_info.get('half_bottom'):
                         char_y -= line_height * 0.25
                     if char_info.get('half_top'):
                         char_y += line_height * 0.25
-                    char_width = metrics.horizontalAdvance(display)
+                    ink_rect = metrics.tightBoundingRect(display)
+                    char_center_x = char_x + float(char_info.get('x_offset', 0.0)) * column_width
+                    draw_x = char_center_x - ink_rect.center().x()
                     if char_info.get('mirror_x'):
                         painter.save()
-                        painter.translate(char_x, char_y)
+                        painter.translate(char_center_x, char_y)
                         painter.scale(-1, 1)
-                        painter.drawText(QPointF(char_width / 2.0, 0), display)
+                        painter.drawText(QPointF(ink_rect.center().x(), 0), display)
                         painter.restore()
                     else:
-                        painter.drawText(QPointF(char_x - char_width / 2.0, char_y), display)
+                        painter.drawText(QPointF(draw_x, char_y), display)
 
         def _draw_bt_items(self, painter: QPainter, image_width: int, image_height: int) -> None:
             items = self.bt_items_for_page()
