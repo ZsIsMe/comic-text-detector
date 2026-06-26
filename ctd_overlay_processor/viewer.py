@@ -119,6 +119,7 @@ if QT_IMPORT_ERROR is None:
         imageMousePressed = Signal(float, float)
         imageMouseDragged = Signal(float, float)
         imageMouseReleased = Signal(float, float)
+        viewportChanged = Signal(object)
 
         def __init__(self) -> None:
             super().__init__()
@@ -149,6 +150,11 @@ if QT_IMPORT_ERROR is None:
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
             self._zoom *= factor
             self.scale(factor, factor)
+            self.viewportChanged.emit(self)
+
+        def scrollContentsBy(self, dx: int, dy: int) -> None:
+            super().scrollContentsBy(dx, dy)
+            self.viewportChanged.emit(self)
 
         def mouseMoveEvent(self, event) -> None:
             super().mouseMoveEvent(event)
@@ -186,6 +192,106 @@ if QT_IMPORT_ERROR is None:
         def leaveEvent(self, event) -> None:
             self.imageMouseLeft.emit()
             super().leaveEvent(event)
+
+
+    class NavigatorWidget(QWidget):
+        navigateRequested = Signal(float, float)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.setMinimumSize(180, 130)
+            self.setMaximumHeight(180)
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self._pixmap = QPixmap()
+            self._image_size = (0, 0)
+            self._visible_rect = QRectF()
+            self._thumb_rect = QRectF()
+            self._dragging = False
+
+        def set_navigator_state(
+            self,
+            pixmap: QPixmap,
+            image_size: tuple[int, int],
+            visible_rect: QRectF,
+        ) -> None:
+            self._pixmap = pixmap
+            self._image_size = image_size
+            self._visible_rect = visible_rect
+            self.update()
+
+        def paintEvent(self, event) -> None:
+            super().paintEvent(event)
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.fillRect(self.rect(), QColor(24, 26, 28))
+            if self._pixmap.isNull() or self._image_size[0] <= 0 or self._image_size[1] <= 0:
+                painter.setPen(QPen(QColor(180, 184, 190), 1))
+                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, '導航器')
+                painter.end()
+                return
+
+            margin = 8
+            available_w = max(1, self.width() - margin * 2)
+            available_h = max(1, self.height() - margin * 2)
+            image_w, image_h = self._image_size
+            scale = min(available_w / image_w, available_h / image_h)
+            thumb_w = image_w * scale
+            thumb_h = image_h * scale
+            thumb_x = (self.width() - thumb_w) / 2.0
+            thumb_y = (self.height() - thumb_h) / 2.0
+            self._thumb_rect = QRectF(thumb_x, thumb_y, thumb_w, thumb_h)
+
+            painter.drawPixmap(self._thumb_rect, self._pixmap, QRectF(self._pixmap.rect()))
+            painter.setPen(QPen(QColor(70, 74, 80), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self._thumb_rect)
+
+            rect = self._visible_rect.intersected(QRectF(0, 0, image_w, image_h))
+            if rect.isValid() and not rect.isEmpty():
+                view_rect = QRectF(
+                    thumb_x + rect.x() * scale,
+                    thumb_y + rect.y() * scale,
+                    rect.width() * scale,
+                    rect.height() * scale,
+                )
+                painter.setBrush(QColor(255, 245, 180, 46))
+                painter.setPen(QPen(QColor(255, 235, 120), 2))
+                painter.drawRect(view_rect)
+            painter.end()
+
+        def _emit_navigation(self, point: QPointF) -> None:
+            if self._thumb_rect.isEmpty() or self._image_size[0] <= 0 or self._image_size[1] <= 0:
+                return
+            x = min(max(point.x(), self._thumb_rect.left()), self._thumb_rect.right())
+            y = min(max(point.y(), self._thumb_rect.top()), self._thumb_rect.bottom())
+            ratio_x = (x - self._thumb_rect.left()) / max(1.0, self._thumb_rect.width())
+            ratio_y = (y - self._thumb_rect.top()) / max(1.0, self._thumb_rect.height())
+            self.navigateRequested.emit(ratio_x * self._image_size[0], ratio_y * self._image_size[1])
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._dragging = True
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                self._emit_navigation(event.position())
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:
+            if self._dragging and event.buttons() & Qt.MouseButton.LeftButton:
+                self._emit_navigation(event.position())
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+                self._dragging = False
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+                self._emit_navigation(event.position())
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
 
 
     class ErrorDetailsDialog(QDialog):
@@ -339,6 +445,8 @@ if QT_IMPORT_ERROR is None:
             self.measure_dirty = False
             self.current_page_row = -1
             self._updating_editor = False
+            self._syncing_views = False
+            self._fitting_views = False
             self._box_drag_mode: str | None = None
             self._box_drag_start: tuple[float, float] | None = None
             self._box_drag_original: tuple[int, int, int, int] | None = None
@@ -366,6 +474,7 @@ if QT_IMPORT_ERROR is None:
             self.show_npz_smoothed = QCheckBox('NPZ 平滑遮罩')
             self.show_npz_outer = QCheckBox('NPZ 外輪廓遮罩')
             self.show_font_labels = QCheckBox('字級標籤')
+            self.navigator = NavigatorWidget()
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
             self.even_measure_font_check = QCheckBox('字體取偶數')
@@ -379,6 +488,8 @@ if QT_IMPORT_ERROR is None:
             self.box_editor_title.setWordWrap(True)
             self.bt_path_label = QLabel('尚未載入 _bt.json')
             self.bt_path_label.setWordWrap(True)
+            self.bt_stats_label = QLabel('_bt 統計：未載入')
+            self.bt_stats_label.setWordWrap(True)
             self.bt_text_edit = QPlainTextEdit()
             self.bt_text_edit.setPlaceholderText('選中左側 _bt 條目後編輯文字')
             self.bt_text_edit.setMinimumHeight(90)
@@ -598,12 +709,15 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.bt_path_label)
             self.open_bt_button.clicked.connect(self.open_bt_json)
             layout.addWidget(self.open_bt_button)
+            layout.addWidget(self.bt_stats_label)
             layout.addWidget(QLabel('當前頁 _bt 條目'))
             self.bt_item_list.setMinimumHeight(260)
             self.bt_item_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
             layout.addWidget(self.bt_item_list, 2)
             layout.addWidget(QLabel('游標資訊'))
             layout.addWidget(self.char_info_label)
+            layout.addWidget(QLabel('導航器'))
+            layout.addWidget(self.navigator)
 
             dock = QDockWidget('頁面 / _bt 條目', self)
             dock.setWidget(panel)
@@ -760,6 +874,9 @@ if QT_IMPORT_ERROR is None:
             self.bt_view.imageMousePressed.connect(self.handle_bt_mouse_press)
             self.bt_view.imageMouseDragged.connect(self.handle_bt_mouse_drag)
             self.bt_view.imageMouseReleased.connect(self.handle_bt_mouse_release)
+            self.bt_view.viewportChanged.connect(self.sync_viewports_from)
+            self.view.viewportChanged.connect(self.sync_viewports_from)
+            self.navigator.navigateRequested.connect(self.center_views_on)
             self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
             self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -882,8 +999,59 @@ if QT_IMPORT_ERROR is None:
                 self.page_list.setCurrentRow(target)
 
         def fit_both_views(self) -> None:
+            if not hasattr(self, 'bt_view') or not hasattr(self, 'view'):
+                return
+            if self._fitting_views:
+                return
+            self._fitting_views = True
             for view in (self.bt_view, self.view):
-                view.fitInView(view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+                if view.sceneRect().isValid() and not view.sceneRect().isEmpty():
+                    view.fitInView(view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._fitting_views = False
+            self.sync_viewports_from(self.view)
+            self.update_navigator()
+
+        def sync_viewports_from(self, source: ImageView) -> None:
+            if self._syncing_views or self._fitting_views:
+                return
+            target = self.view if source is self.bt_view else self.bt_view
+            if source.sceneRect().isEmpty() or target.sceneRect().isEmpty():
+                return
+            self._syncing_views = True
+            target.setTransform(source.transform())
+            center = source.mapToScene(source.viewport().rect().center())
+            target.centerOn(center)
+            self._syncing_views = False
+            self.update_navigator()
+
+        def center_views_on(self, x: float, y: float) -> None:
+            self._syncing_views = True
+            center = QPointF(x, y)
+            self.bt_view.centerOn(center)
+            self.view.centerOn(center)
+            self._syncing_views = False
+            self.update_navigator()
+
+        def update_navigator(self) -> None:
+            if not hasattr(self, 'navigator'):
+                return
+            pixmap = self.view.pixmap_item.pixmap()
+            if pixmap.isNull():
+                self.navigator.set_navigator_state(QPixmap(), (0, 0), QRectF())
+                return
+            visible_polygon = self.view.mapToScene(self.view.viewport().rect())
+            visible_rect = visible_polygon.boundingRect()
+            self.navigator.set_navigator_state(
+                pixmap,
+                (pixmap.width(), pixmap.height()),
+                visible_rect,
+            )
+
+        def resizeEvent(self, event) -> None:
+            super().resizeEvent(event)
+            if not hasattr(self, '_fitting_views'):
+                return
+            self.fit_both_views()
 
         def current_page_name(self) -> str | None:
             if self.page is not None:
@@ -900,6 +1068,37 @@ if QT_IMPORT_ERROR is None:
                 return []
             items = self.bt_data.get('transMap', {}).get(page_name, [])
             return items if isinstance(items, list) else []
+
+        def _bt_total_count(self) -> int:
+            if self.bt_data is None:
+                return 0
+            trans_map = self.bt_data.get('transMap', {})
+            if not isinstance(trans_map, dict):
+                return 0
+            return sum(len(items) for items in trans_map.values() if isinstance(items, list))
+
+        def _bt_remaining_count_from_current_page(self) -> int:
+            if self.bt_data is None or not self.page_names:
+                return 0
+            row = self.current_page_row
+            if row < 0:
+                page_name = self.current_page_name()
+                row = self.page_names.index(page_name) if page_name in self.page_names else 0
+            return sum(len(self.bt_items_for_page(page_name)) for page_name in self.page_names[row:])
+
+        def update_bt_stats_label(self) -> None:
+            if not hasattr(self, 'bt_stats_label'):
+                return
+            if self.bt_data is None:
+                self.bt_stats_label.setText('_bt 統計：未載入')
+                return
+            current_count = len(self.bt_items_for_page())
+            remaining_count = self._bt_remaining_count_from_current_page()
+            self.bt_stats_label.setText(
+                f'_bt 總條數：{self._bt_total_count()}，'
+                f'當前頁：{current_count}，'
+                f'當前頁起剩餘：{remaining_count}'
+            )
 
         def selected_bt_item(self) -> dict[str, Any] | None:
             items = self.bt_items_for_page()
@@ -978,6 +1177,7 @@ if QT_IMPORT_ERROR is None:
                 self.bt_item_list.clearSelection()
                 self.bt_item_list.setCurrentRow(-1)
             self.bt_item_list.blockSignals(False)
+            self.update_bt_stats_label()
 
         def handle_bt_item_row_changed(self, row: int) -> None:
             item = self.bt_item_list.item(row)
@@ -1062,6 +1262,17 @@ if QT_IMPORT_ERROR is None:
         def bt_text_color(self, item: dict[str, Any]) -> str:
             color = str(item.get('color') or '#000000').lower()
             return 'white' if color in {'#ffffff', 'ffffff', 'white'} else 'black'
+
+        def bt_font_label(self, item: dict[str, Any]) -> str:
+            orientation = str(item.get('orientation') or 'vertical')
+            direction = 'H' if orientation == 'horizontal' else 'V'
+            font_size = positive_int(item.get('font-size'), 0)
+            parts = [f'{font_size}{direction}' if font_size > 0 else direction]
+            color_name = self.bt_text_color(item)
+            parts.append('白' if color_name == 'white' else '黑')
+            if positive_int(item.get('stroke-weight'), 0) > 0:
+                parts.append('描邊')
+            return ','.join(parts)
 
         def set_bt_text_color(self, item: dict[str, Any], value: str) -> None:
             if value == 'white':
@@ -1810,10 +2021,11 @@ if QT_IMPORT_ERROR is None:
                 self.page = self.processor.load_page(page_name, image_size=image_size)
                 self.current_page_row = row
                 self.update_font_size_list()
-                self.render_current_page()
+                self.render_current_page(refit=False)
                 self.select_bt_item(None)
                 self.update_bt_item_list()
-                self.render_bt_page()
+                self.render_bt_page(refit=False)
+                self.fit_both_views()
             except Exception as exc:
                 show_exception_details(self, '頁面載入失敗', '無法載入此頁。下方是完整可複製的出錯信息。', exc)
 
@@ -1927,6 +2139,7 @@ if QT_IMPORT_ERROR is None:
             self._draw_bt_items(painter, image.width(), image.height())
             painter.end()
             self.bt_view.set_pixmap(QPixmap.fromImage(image), fit=refit)
+            self.update_navigator()
 
         def draw_bt_text(
             self,
@@ -2133,10 +2346,10 @@ if QT_IMPORT_ERROR is None:
                 color_name = self.bt_text_color(item)
                 text_color = QColor(255, 255, 255) if color_name == 'white' else QColor(0, 0, 0)
                 stroke_color = QColor(0, 0, 0) if color_name == 'white' else QColor(255, 255, 255)
-                frame_color = QColor(255, 210, 40)
+                frame_color = QColor(255, 236, 150, 210)
                 if selected:
                     painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.setPen(QPen(frame_color, 5))
+                    painter.setPen(QPen(frame_color, 2))
                     painter.drawRect(QRectF(x1, y1, max(1, x2 - x1), max(1, y2 - y1)))
                     painter.setBrush(frame_color)
                     for hx, hy in (
@@ -2144,7 +2357,7 @@ if QT_IMPORT_ERROR is None:
                         (x1, (y1 + y2) / 2), (x2, (y1 + y2) / 2),
                         (x1, y2), ((x1 + x2) / 2, y2), (x2, y2),
                     ):
-                        painter.drawRect(QRectF(hx - 4, hy - 4, 8, 8))
+                        painter.drawRect(QRectF(hx - 3, hy - 3, 6, 6))
 
                 font_size = max(8, min(96, positive_int(item.get('font-size'), 40)))
                 font = QFont('Helvetica', font_size)
@@ -2167,6 +2380,37 @@ if QT_IMPORT_ERROR is None:
                     stroke_color,
                     stroke_weight,
                 )
+                self.draw_bt_font_label(
+                    painter,
+                    QRectF(x1, y1, x2 - x1, y2 - y1),
+                    self.bt_font_label(item),
+                    image_width,
+                    image_height,
+                )
+
+        def draw_bt_font_label(
+            self,
+            painter: QPainter,
+            item_rect: QRectF,
+            label: str,
+            image_width: int,
+            image_height: int,
+        ) -> None:
+            if not label:
+                return
+            font = QFont('Helvetica', max(16, min(30, (image_width // 100) * 2)))
+            font.setBold(True)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
+            text_rect = metrics.boundingRect(label)
+            pad = 8
+            label_w = text_rect.width() + pad * 2
+            label_h = text_rect.height() + pad * 2
+            x = min(max(int(round(item_rect.right() + 10)), 2), max(2, image_width - label_w - 2))
+            y = min(max(int(round(item_rect.bottom() + 10)), label_h + 2), max(label_h + 2, image_height - 2))
+            painter.fillRect(QRectF(x, y - label_h, label_w, label_h), QColor(255, 255, 255, 230))
+            painter.setPen(QPen(QColor(20, 20, 20), 1))
+            painter.drawText(QPointF(x + pad, y - pad), label)
 
         def hit_test_bt_item(self, x: float, y: float) -> tuple[int | None, str | None]:
             handles = (
@@ -2318,6 +2562,7 @@ if QT_IMPORT_ERROR is None:
 
             painter.end()
             self.view.set_pixmap(QPixmap.fromImage(image), fit=refit)
+            self.update_navigator()
             if self.processor is not None and not self.processor.has_overlay_data():
                 self.status_label.setText(
                     f'{self.page.page_name}\n'
