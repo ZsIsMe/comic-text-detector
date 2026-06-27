@@ -731,6 +731,7 @@ if QT_IMPORT_ERROR is None:
             self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
             self.right_layer_dock: QDockWidget | None = None
             self._last_right_splitter_width = 520
+            self.measure_editor_windows: list[QMainWindow] = []
 
             self.page_list = QListWidget()
             self.bt_item_list = QListWidget()
@@ -748,6 +749,7 @@ if QT_IMPORT_ERROR is None:
             self.navigator = NavigatorWidget()
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
+            self.edit_measure_button = QPushButton('編輯 measure.json')
             self.even_measure_font_check = QCheckBox('字體取偶數')
             self.import_labelplus_button = QPushButton('導入 LabelPlus txt')
             self.open_bt_button = QPushButton('打開 _bt.json')
@@ -1121,6 +1123,8 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.even_measure_font_check)
             self.generate_button.clicked.connect(self.generate_ctd)
             layout.addWidget(self.generate_button)
+            self.edit_measure_button.clicked.connect(self.open_measure_editor)
+            layout.addWidget(self.edit_measure_button)
             self.import_labelplus_button.clicked.connect(self.import_labelplus_txt)
             layout.addWidget(self.import_labelplus_button)
             layout.addStretch(1)
@@ -2685,6 +2689,40 @@ if QT_IMPORT_ERROR is None:
             row = self.page_list.currentRow()
             if row >= 0:
                 self.load_page_at_row(row)
+
+        def open_measure_editor(self) -> None:
+            if self.processor is None:
+                QMessageBox.information(self, '尚未載入資料夾', '請先選擇包含 ctd/measure.json 的圖片資料夾。')
+                return
+            if not self.processor.measure_path.is_file():
+                QMessageBox.information(self, '缺少 measure.json', '請先生成 CTD，確保 ctd/measure.json 已存在。')
+                return
+            try:
+                from .measure_editor import MeasureEditorWindow
+            except ImportError:
+                from measure_editor import MeasureEditorWindow
+            editor = MeasureEditorWindow(self.processor, self.current_page_name(), self)
+            editor.saved.connect(self.handle_measure_editor_saved)
+            editor.destroyed.connect(lambda _=None, editor=editor: self.forget_measure_editor(editor))
+            self.measure_editor_windows.append(editor)
+            editor.show()
+
+        def forget_measure_editor(self, editor: QMainWindow) -> None:
+            if editor in self.measure_editor_windows:
+                self.measure_editor_windows.remove(editor)
+
+        def handle_measure_editor_saved(self) -> None:
+            if self.current_image_dir:
+                try:
+                    current_name = self.current_page_name()
+                    self.processor = CtdOverlayProcessor(self.current_image_dir)
+                    self.page_names = self.processor.page_names()
+                    if current_name in self.page_names:
+                        self.load_page_at_row(self.page_names.index(current_name))
+                    elif self.page_names:
+                        self.load_page_at_row(max(0, min(self.current_page_row, len(self.page_names) - 1)))
+                except Exception as exc:
+                    show_exception_details(self, '重新載入失敗', 'measure.json 已保存，但主視窗重新載入失敗。', exc)
 
         def bt_inpainted_overlay_path(self, page_name: str) -> Path | None:
             if self.processor is None:
