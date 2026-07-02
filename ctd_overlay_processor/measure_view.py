@@ -7,7 +7,7 @@ from typing import Any
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
 try:
     from .processor import PageOverlay
@@ -46,6 +46,7 @@ class MeasureImageView(QGraphicsView):
     imageMousePressed = Signal(float, float)
     imageMouseDragged = Signal(float, float)
     imageMouseReleased = Signal(float, float)
+    fontSizeWheelRequested = Signal(int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -56,9 +57,11 @@ class MeasureImageView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setBackgroundBrush(QColor(32, 34, 36))
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
         self._mouse_down_on_image = False
+        self._fit_on_resize = True
 
     def set_pixmap(self, pixmap: QPixmap, fit: bool = True) -> None:
         if self.pixmap_item.scene() is None:
@@ -66,12 +69,46 @@ class MeasureImageView(QGraphicsView):
         self.pixmap_item.setPixmap(pixmap)
         self.scene().setSceneRect(QRectF(pixmap.rect()))
         if fit and not pixmap.isNull():
-            self.resetTransform()
-            self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._fit_on_resize = True
+            self.fit_to_view()
+
+    def fit_to_view(self) -> None:
+        if self.pixmap_item.pixmap().isNull():
+            return
+        self.resetTransform()
+        self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._fit_on_resize:
+            self.fit_to_view()
 
     def wheelEvent(self, event) -> None:
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale(factor, factor)
+        modifiers = event.modifiers()
+        angle = event.angleDelta()
+        pixel = event.pixelDelta()
+        delta_y = angle.y() or pixel.y()
+        horizontal_modifier = Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            if delta_y:
+                step = 1 if delta_y > 0 else -1
+                self.fontSizeWheelRequested.emit(step * 2)
+            event.accept()
+            return
+        if modifiers & horizontal_modifier:
+            delta = angle.y() or angle.x() or pixel.y() or pixel.x()
+            if delta:
+                bar = self.horizontalScrollBar()
+                bar.setValue(bar.value() - delta)
+            event.accept()
+            return
+        if delta_y:
+            self._fit_on_resize = False
+            factor = 1.15 if delta_y > 0 else 1 / 1.15
+            self.scale(factor, factor)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def mousePressEvent(self, event) -> None:
         scene_point = self.mapToScene(event.position().toPoint())

@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, QSettings, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -93,6 +94,9 @@ class MeasureEditorWindow(QMainWindow):
         self.measure = copy.deepcopy(processor.measure)
         self.processor.measure = self.measure
         self.measure_path = processor.measure_path
+        self.settings = QSettings('comic-text-detector', 'measure-editor')
+        folder_key = hashlib.sha1(str(self.processor.image_dir).encode('utf-8')).hexdigest()
+        self.settings_prefix = f'folders/{folder_key}'
         self.page_names = processor.page_names()
         self.page: PageOverlay | None = None
         self.current_page_row = -1
@@ -133,7 +137,9 @@ class MeasureEditorWindow(QMainWindow):
         self.delete_button = QPushButton('刪除當前文字框')
         self.status_label = QLabel('尚未修改')
         self.status_label.setWordWrap(True)
+        self.save_action = QAction('保存 measure.json', self)
         self.undo_action = QAction('撤銷', self)
+        self.delete_action = QAction('刪除文字框', self)
         self.increase_font_action = QAction('字體+2', self)
         self.decrease_font_action = QAction('字體-2', self)
         self.increase_font_10_action = QAction('字體+10', self)
@@ -143,8 +149,9 @@ class MeasureEditorWindow(QMainWindow):
         self._connect_signals()
         self._build_shortcuts()
         self.page_list.addItems(self.page_names)
-        if current_page_name in self.page_names:
-            self.page_list.setCurrentRow(self.page_names.index(current_page_name))
+        initial_page_name = self.remembered_page_name() or current_page_name
+        if initial_page_name in self.page_names:
+            self.page_list.setCurrentRow(self.page_names.index(initial_page_name))
         elif self.page_names:
             self.page_list.setCurrentRow(0)
         self.update_action_state()
@@ -232,9 +239,19 @@ class MeasureEditorWindow(QMainWindow):
         splitter.setSizes([240, 700, 110, 260])
 
     def _build_shortcuts(self) -> None:
+        self.save_action.setShortcuts([QKeySequence('Meta+S'), QKeySequence('Ctrl+S')])
+        self.save_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.save_action.triggered.connect(self.save_measure)
+        self.addAction(self.save_action)
+
         self.undo_action.setShortcuts([QKeySequence('Meta+Z'), QKeySequence('Ctrl+Z')])
         self.undo_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.addAction(self.undo_action)
+
+        self.delete_action.setShortcuts([QKeySequence(Qt.Key.Key_Delete), QKeySequence(Qt.Key.Key_Backspace)])
+        self.delete_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.delete_action.triggered.connect(self.delete_selected_item)
+        self.addAction(self.delete_action)
 
         self.increase_font_action.setShortcuts([
             QKeySequence('Meta++'),
@@ -274,6 +291,7 @@ class MeasureEditorWindow(QMainWindow):
         self.view.imageMousePressed.connect(self.handle_mouse_press)
         self.view.imageMouseDragged.connect(self.handle_mouse_drag)
         self.view.imageMouseReleased.connect(self.handle_mouse_release)
+        self.view.fontSizeWheelRequested.connect(self.nudge_selected_font_size)
         self.x1_spin.valueChanged.connect(self.apply_editor_changes)
         self.y1_spin.valueChanged.connect(self.apply_editor_changes)
         self.x2_spin.valueChanged.connect(self.apply_editor_changes)
@@ -297,6 +315,49 @@ class MeasureEditorWindow(QMainWindow):
         if 0 <= self.current_page_row < len(self.page_names):
             return self.page_names[self.current_page_row]
         return None
+
+    def settings_key(self, *parts: str) -> str:
+        return '/'.join((self.settings_prefix, *parts))
+
+    def page_settings_key(self, page_name: str, field: str) -> str:
+        page_key = hashlib.sha1(page_name.encode('utf-8')).hexdigest()
+        return self.settings_key('pages', page_key, field)
+
+    def remembered_page_name(self) -> str | None:
+        value = self.settings.value(self.settings_key('last_page_name'), '')
+        return str(value) if value else None
+
+    def remembered_selected_index(self, page_name: str) -> int | None:
+        value = self.settings.value(self.page_settings_key(page_name, 'selected_index'), -1)
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            return None
+        return index if index >= 0 else None
+
+    def save_editor_position(self) -> None:
+        page_name = self.current_page_name()
+        if not page_name:
+            return
+        self.settings.setValue(self.settings_key('last_page_name'), page_name)
+        self.settings.setValue(
+            self.page_settings_key(page_name, 'selected_index'),
+            self.selected_index if self.selected_index is not None else -1,
+        )
+        self.settings.setValue(self.page_settings_key(page_name, 'scroll_x'), self.view.horizontalScrollBar().value())
+        self.settings.setValue(self.page_settings_key(page_name, 'scroll_y'), self.view.verticalScrollBar().value())
+
+    def restore_current_view_state(self) -> None:
+        page_name = self.current_page_name()
+        if not page_name:
+            return
+        try:
+            scroll_x = int(self.settings.value(self.page_settings_key(page_name, 'scroll_x'), 0))
+            scroll_y = int(self.settings.value(self.page_settings_key(page_name, 'scroll_y'), 0))
+        except (TypeError, ValueError):
+            return
+        self.view.horizontalScrollBar().setValue(scroll_x)
+        self.view.verticalScrollBar().setValue(scroll_y)
 
     def current_items(self) -> list[dict[str, Any]]:
         page_name = self.current_page_name()
@@ -341,13 +402,24 @@ class MeasureEditorWindow(QMainWindow):
     def handle_page_changed(self, row: int) -> None:
         if row < 0 or row >= len(self.page_names):
             return
+        if self.current_page_row >= 0 and row != self.current_page_row:
+            self.save_editor_position()
         self.current_page_row = row
-        self.selected_index = None
+        page_name = self.current_page_name()
+        remembered_index = self.remembered_selected_index(page_name) if page_name else None
+        self.selected_index = (
+            remembered_index
+            if remembered_index is not None and 0 <= remembered_index < len(self.current_items())
+            else None
+        )
         self.clear_hover_char_box(render=False)
         self.refresh_page_overlay()
         self.update_item_list()
         self.render_page(refit=True)
-        self.populate_editor(None)
+        self.populate_editor(self.selected_item())
+        self.update_font_size_selection()
+        QTimer.singleShot(0, self.restore_current_view_state)
+        self.update_action_state()
 
     def update_item_list(self) -> None:
         self.item_list.blockSignals(True)
@@ -397,6 +469,7 @@ class MeasureEditorWindow(QMainWindow):
             if xyxy is not None:
                 x1, y1, x2, y2 = xyxy
                 self.view.centerOn(QPointF((x1 + x2) / 2.0, (y1 + y2) / 2.0))
+        self.save_editor_position()
         self.update_action_state()
 
     def select_box_item(self, index: int | None) -> None:
@@ -408,6 +481,7 @@ class MeasureEditorWindow(QMainWindow):
         self.update_item_list()
         self.update_font_size_selection()
         self.render_page(refit=False)
+        self.save_editor_position()
         self.update_action_state()
 
     def populate_editor(self, item: dict[str, Any] | None) -> None:
@@ -735,9 +809,11 @@ class MeasureEditorWindow(QMainWindow):
 
     def update_action_state(self) -> None:
         self.save_button.setEnabled(self.dirty)
+        self.save_action.setEnabled(self.dirty)
         has_item = self.selected_item() is not None
         self.copy_button.setEnabled(has_item)
         self.delete_button.setEnabled(has_item)
+        self.delete_action.setEnabled(has_item)
         self.font_size_list.setEnabled(has_item)
         self.undo_button.setEnabled(bool(self.undo_stack))
         self.undo_action.setEnabled(bool(self.undo_stack))
@@ -760,6 +836,7 @@ class MeasureEditorWindow(QMainWindow):
         self.processor.measure = copy.deepcopy(self.measure)
         self.dirty = False
         self.undo_stack.clear()
+        self.save_editor_position()
         self.status_label.setText(f'已保存：{self.measure_path}')
         self.update_action_state()
         self.saved.emit()
@@ -790,6 +867,7 @@ class MeasureEditorWindow(QMainWindow):
         self.view.set_pixmap(QPixmap.fromImage(image), fit=refit)
 
     def closeEvent(self, event) -> None:
+        self.save_editor_position()
         if not self.dirty:
             event.accept()
             return

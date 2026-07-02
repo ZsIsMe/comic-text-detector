@@ -132,6 +132,7 @@ if QT_IMPORT_ERROR is None:
         imageMouseDragged = Signal(float, float)
         imageMouseReleased = Signal(float, float)
         viewportChanged = Signal(object)
+        fontSizeWheelRequested = Signal(int)
 
         def __init__(self) -> None:
             super().__init__()
@@ -169,10 +170,32 @@ if QT_IMPORT_ERROR is None:
             self.viewportChanged.emit(self)
 
         def wheelEvent(self, event) -> None:
-            factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-            self._zoom *= factor
-            self.scale(factor, factor)
-            self.viewportChanged.emit(self)
+            modifiers = event.modifiers()
+            angle = event.angleDelta()
+            pixel = event.pixelDelta()
+            delta_y = angle.y() or pixel.y()
+            horizontal_modifier = Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier
+            if modifiers & Qt.KeyboardModifier.AltModifier:
+                if delta_y:
+                    step = 1 if delta_y > 0 else -1
+                    self.fontSizeWheelRequested.emit(step * 2)
+                event.accept()
+                return
+            if modifiers & horizontal_modifier:
+                delta = angle.y() or angle.x() or pixel.y() or pixel.x()
+                if delta:
+                    bar = self.horizontalScrollBar()
+                    bar.setValue(bar.value() - delta)
+                event.accept()
+                return
+            if delta_y:
+                factor = 1.15 if delta_y > 0 else 1 / 1.15
+                self._zoom *= factor
+                self.scale(factor, factor)
+                self.viewportChanged.emit(self)
+                event.accept()
+                return
+            super().wheelEvent(event)
 
         def scrollContentsBy(self, dx: int, dy: int) -> None:
             super().scrollContentsBy(dx, dy)
@@ -705,6 +728,8 @@ if QT_IMPORT_ERROR is None:
             self.toggle_right_panel_action: QAction | None = None
             self.increase_font_action: QAction | None = None
             self.decrease_font_action: QAction | None = None
+            self.increase_font_10_action: QAction | None = None
+            self.decrease_font_10_action: QAction | None = None
             self.delete_box_action: QAction | None = None
             self.move_box_actions: list[QAction] = []
             self.measure_dirty = False
@@ -948,6 +973,25 @@ if QT_IMPORT_ERROR is None:
             self.decrease_font_action.setEnabled(False)
             self.addAction(self.decrease_font_action)
 
+            self.increase_font_10_action = QAction('字體+10', self)
+            self.increase_font_10_action.setShortcuts([
+                QKeySequence('Meta+Shift++'),
+                QKeySequence('Meta+Shift+='),
+                QKeySequence('Ctrl+Shift++'),
+                QKeySequence('Ctrl+Shift+='),
+            ])
+            self.increase_font_10_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.increase_font_10_action.triggered.connect(lambda: self.nudge_selected_font_size(10))
+            self.increase_font_10_action.setEnabled(False)
+            self.addAction(self.increase_font_10_action)
+
+            self.decrease_font_10_action = QAction('字體-10', self)
+            self.decrease_font_10_action.setShortcuts([QKeySequence('Meta+Shift+-'), QKeySequence('Ctrl+Shift+-')])
+            self.decrease_font_10_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.decrease_font_10_action.triggered.connect(lambda: self.nudge_selected_font_size(-10))
+            self.decrease_font_10_action.setEnabled(False)
+            self.addAction(self.decrease_font_10_action)
+
             self.delete_box_action = QAction('刪除文字框', self)
             self.delete_box_action.setShortcuts([QKeySequence(Qt.Key.Key_Delete), QKeySequence(Qt.Key.Key_Backspace)])
             self.delete_box_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1158,6 +1202,8 @@ if QT_IMPORT_ERROR is None:
             self.bt_view.imageMouseLeft.connect(lambda: self.bt_view.set_background_pan_enabled(False))
             self.bt_view.imageMouseDragged.connect(self.handle_bt_mouse_drag)
             self.bt_view.imageMouseReleased.connect(self.handle_bt_mouse_release)
+            self.bt_view.fontSizeWheelRequested.connect(self.nudge_selected_font_size)
+            self.view.fontSizeWheelRequested.connect(self.nudge_selected_font_size)
             self.bt_view.viewportChanged.connect(self.sync_viewports_from)
             self.view.viewportChanged.connect(self.sync_viewports_from)
             self.navigator.navigateRequested.connect(self.center_views_on)
@@ -2216,14 +2262,19 @@ if QT_IMPORT_ERROR is None:
                 self.prev_page_action.setEnabled(has_pages and self.page_list.currentRow() > 0)
             if self.next_page_action is not None:
                 self.next_page_action.setEnabled(has_pages and self.page_list.currentRow() < len(self.page_names) - 1)
+            has_selected_bt = self.selected_bt_item() is not None
             if self.increase_font_action is not None:
-                self.increase_font_action.setEnabled(self.selected_bt_item() is not None)
+                self.increase_font_action.setEnabled(has_selected_bt)
             if self.decrease_font_action is not None:
-                self.decrease_font_action.setEnabled(self.selected_bt_item() is not None)
+                self.decrease_font_action.setEnabled(has_selected_bt)
+            if self.increase_font_10_action is not None:
+                self.increase_font_10_action.setEnabled(has_selected_bt)
+            if self.decrease_font_10_action is not None:
+                self.decrease_font_10_action.setEnabled(has_selected_bt)
             if self.delete_box_action is not None:
-                self.delete_box_action.setEnabled(self.selected_bt_item() is not None)
+                self.delete_box_action.setEnabled(has_selected_bt)
             for action in self.move_box_actions:
-                action.setEnabled(self.selected_bt_item() is not None)
+                action.setEnabled(has_selected_bt)
             suffix = ' *' if self.bt_dirty else ''
             self.setWindowTitle(f'CTD / MEO BT 編輯器{suffix}')
 
