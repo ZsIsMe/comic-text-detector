@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -147,13 +148,25 @@ def resolve_image_path(image_dir: Path, page_name: str) -> Path:
     raise FileNotFoundError(f'找不到原圖：{page_name}')
 
 
+def natural_sort_key(name: str) -> list[tuple[int, str | int]]:
+    parts = re.split(r'(\d+)', name)
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in parts
+        if part
+    ]
+
+
 def find_source_images(image_dir: Path) -> list[str]:
     if not image_dir.is_dir():
         return []
     return sorted(
-        path.name
-        for path in image_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        [
+            path.name
+            for path in image_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ],
+        key=natural_sort_key,
     )
 
 
@@ -307,7 +320,7 @@ class CtdOverlayProcessor:
         names.update((self.aligned_box_map.get('transMap') or {}).keys())
         names.update((self.block_map.get('blockMap') or {}).keys())
         names.update(self.source_images)
-        return sorted(names)
+        return sorted(names, key=natural_sort_key)
 
     def missing_required_data(self) -> list[Path]:
         paths = [
