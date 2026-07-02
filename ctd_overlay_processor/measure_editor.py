@@ -14,7 +14,10 @@ from PySide6.QtGui import QAction, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -135,6 +138,7 @@ class MeasureEditorWindow(QMainWindow):
         self.undo_button = QPushButton('撤銷')
         self.copy_button = QPushButton('複製當前文字框')
         self.delete_button = QPushButton('刪除當前文字框')
+        self.uniform_font_button = QPushButton('統一調整字體大小')
         self.status_label = QLabel('尚未修改')
         self.status_label.setWordWrap(True)
         self.save_action = QAction('保存 measure.json', self)
@@ -226,6 +230,7 @@ class MeasureEditorWindow(QMainWindow):
         right_layout.addWidget(self.need_inpaint_check)
         right_layout.addWidget(self.copy_button)
         right_layout.addWidget(self.delete_button)
+        right_layout.addWidget(self.uniform_font_button)
         right_layout.addWidget(self.undo_button)
         right_layout.addWidget(self.save_button)
         right_layout.addWidget(self.status_label)
@@ -310,6 +315,7 @@ class MeasureEditorWindow(QMainWindow):
         self.undo_action.triggered.connect(self.undo_last_change)
         self.copy_button.clicked.connect(self.copy_selected_item)
         self.delete_button.clicked.connect(self.delete_selected_item)
+        self.uniform_font_button.clicked.connect(self.show_uniform_font_size_dialog)
 
     def current_page_name(self) -> str | None:
         if 0 <= self.current_page_row < len(self.page_names):
@@ -589,6 +595,85 @@ class MeasureEditorWindow(QMainWindow):
         self.mark_dirty(status)
         self.refresh_after_measure_change(refit=False)
 
+    def show_uniform_font_size_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle('統一調整字體大小')
+        layout = QVBoxLayout(dialog)
+
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel('範圍'))
+        scope_combo = QComboBox()
+        scope_combo.addItem('當頁', 'current')
+        scope_combo.addItem('全部', 'all')
+        scope_row.addWidget(scope_combo, 1)
+        layout.addLayout(scope_row)
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel('字體大小'))
+        size_spin = QSpinBox()
+        size_spin.setRange(1, 999)
+        size_spin.setValue(positive_int(self.settings.value(self.settings_key('uniform_font_size'), 24), 24))
+        size_spin.selectAll()
+        size_row.addWidget(size_spin, 1)
+        layout.addLayout(size_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('確認')
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        size = int(size_spin.value())
+        self.settings.setValue(self.settings_key('uniform_font_size'), size)
+        self.apply_uniform_font_size(scope_combo.currentData() or 'current', size)
+
+    def apply_uniform_font_size(self, scope: str, size: int) -> None:
+        size = max(1, min(999, int(size)))
+        pages = self.measure.setdefault('pages', {})
+        if scope == 'all':
+            target_page_names = [
+                page_name
+                for page_name, items in pages.items()
+                if isinstance(items, list)
+            ]
+        else:
+            current_name = self.current_page_name()
+            target_page_names = [current_name] if current_name else []
+        if not target_page_names:
+            self.status_label.setText('沒有可調整的 measure 頁面。')
+            return
+
+        before_pages: dict[str, list[dict[str, Any]]] = {}
+        changed = 0
+        for page_name in target_page_names:
+            items = pages.get(page_name)
+            if not isinstance(items, list):
+                continue
+            before_pages[page_name] = copy.deepcopy(items)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('font_size') == size:
+                    continue
+                item['font_size'] = size
+                changed += 1
+        if changed == 0:
+            self.status_label.setText(f'字體大小已經都是 {size}，沒有修改。')
+            return
+
+        self.push_undo_pages_snapshot(
+            '統一調整字體大小',
+            before_pages,
+            self.current_page_name(),
+            self.selected_index,
+        )
+        scope_text = '全部頁面' if scope == 'all' else '當前頁'
+        self.mark_dirty(f'已把{scope_text} {changed} 個文字框字體大小改為 {size}，尚未保存。')
+        self.refresh_after_measure_change(refit=False)
+
     def measure_xyxy_from_item(self, item: dict[str, Any]) -> tuple[int, int, int, int] | None:
         return xyxy_from_item(item)
 
@@ -780,12 +865,44 @@ class MeasureEditorWindow(QMainWindow):
             }
         )
 
+    def push_undo_pages_snapshot(
+        self,
+        label: str,
+        before_pages: dict[str, list[dict[str, Any]]],
+        selected_page_name: str | None,
+        before_selected: int | None,
+    ) -> None:
+        if not before_pages:
+            return
+        self.undo_stack.append(
+            {
+                'label': label,
+                'pages': copy.deepcopy(before_pages),
+                'selected_page_name': selected_page_name,
+                'selected_index': before_selected,
+            }
+        )
+
     def undo_last_change(self) -> None:
         if not self.undo_stack:
             self.status_label.setText('沒有可撤銷的 measure 修改。')
             self.update_action_state()
             return
         entry = self.undo_stack.pop()
+        if isinstance(entry.get('pages'), dict):
+            pages = self.measure.setdefault('pages', {})
+            for page_name, items in entry['pages'].items():
+                pages[str(page_name)] = copy.deepcopy(items)
+            selected_page_name = str(entry.get('selected_page_name') or '')
+            if selected_page_name in self.page_names and selected_page_name != self.current_page_name():
+                self.page_list.setCurrentRow(self.page_names.index(selected_page_name))
+            selected = entry.get('selected_index')
+            self.selected_index = selected if isinstance(selected, int) else None
+            if self.selected_index is not None and not (0 <= self.selected_index < len(self.current_items())):
+                self.selected_index = None
+            self.mark_dirty(f'已撤銷：{entry.get("label", "measure 修改")}，尚未保存。')
+            self.refresh_after_measure_change(refit=False)
+            return
         page_name = str(entry.get('page_name') or '')
         if page_name not in self.page_names:
             self.status_label.setText('撤銷失敗：找不到原頁面。')
