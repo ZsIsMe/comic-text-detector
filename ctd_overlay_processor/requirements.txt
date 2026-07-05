@@ -3,3 +3,8 @@ PySide6
 pyclipper
 requests
 shapely
+transformers==4.57.1
+safetensors
+accelerate
+einops
+sentencepiece

@@ -47,6 +47,7 @@ try:
         resolve_image_path,
         xyxy_from_item,
     )
+    from .measure_ocr_dialog import MeasureOcrDialog
 except ImportError:
     from measure_view import (
         MeasureImageView,
@@ -64,6 +65,7 @@ except ImportError:
         resolve_image_path,
         xyxy_from_item,
     )
+    from measure_ocr_dialog import MeasureOcrDialog
 
 
 def qimage_size(path: Path) -> tuple[int, int] | None:
@@ -139,6 +141,7 @@ class MeasureEditorWindow(QMainWindow):
         self.copy_button = QPushButton('複製當前文字框')
         self.delete_button = QPushButton('刪除當前文字框')
         self.uniform_font_button = QPushButton('統一調整字體大小')
+        self.ocr_button = QPushButton('OCR 圖片文本')
         self.status_label = QLabel('尚未修改')
         self.status_label.setWordWrap(True)
         self.save_action = QAction('保存 measure.json', self)
@@ -231,6 +234,7 @@ class MeasureEditorWindow(QMainWindow):
         right_layout.addWidget(self.copy_button)
         right_layout.addWidget(self.delete_button)
         right_layout.addWidget(self.uniform_font_button)
+        right_layout.addWidget(self.ocr_button)
         right_layout.addWidget(self.undo_button)
         right_layout.addWidget(self.save_button)
         right_layout.addWidget(self.status_label)
@@ -316,6 +320,7 @@ class MeasureEditorWindow(QMainWindow):
         self.copy_button.clicked.connect(self.copy_selected_item)
         self.delete_button.clicked.connect(self.delete_selected_item)
         self.uniform_font_button.clicked.connect(self.show_uniform_font_size_dialog)
+        self.ocr_button.clicked.connect(self.open_ocr_dialog)
 
     def current_page_name(self) -> str | None:
         if 0 <= self.current_page_row < len(self.page_names):
@@ -957,6 +962,29 @@ class MeasureEditorWindow(QMainWindow):
         self.status_label.setText(f'已保存：{self.measure_path}')
         self.update_action_state()
         self.saved.emit()
+
+    def open_ocr_dialog(self) -> None:
+        if not self.measure_path.is_file() and not self.dirty:
+            QMessageBox.information(self, '缺少 measure.json', '請先生成 CTD，確保 ctd/measure.json 已存在。')
+            return
+        if self.dirty:
+            result = QMessageBox.question(
+                self,
+                '尚未保存',
+                'OCR 會讀取磁碟上的 measure.json。要先保存目前修改再開始嗎？',
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if result != QMessageBox.StandardButton.Save:
+                return
+            self.save_measure()
+
+        dialog = MeasureOcrDialog(self.processor, self.current_page_name(), self)
+        dialog.completed.connect(self.handle_ocr_completed)
+        dialog.exec()
+
+    def handle_ocr_completed(self, output_path: str) -> None:
+        self.status_label.setText(f'OCR 已完成：{output_path}')
 
     def render_page(self, *_, refit: bool = True) -> None:
         if self.page is None:

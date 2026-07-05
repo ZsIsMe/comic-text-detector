@@ -771,6 +771,8 @@ if QT_IMPORT_ERROR is None:
             self.show_npz_smoothed = QCheckBox('NPZ 平滑遮罩')
             self.show_npz_outer = QCheckBox('NPZ 外輪廓遮罩')
             self.show_font_labels = QCheckBox('字級標籤')
+            self.show_popover_check = QCheckBox('預覽浮窗')
+            self.show_popover_check.setToolTip('顯示/隱藏 _bt 匹配的局部預覽浮窗 (Command+P)')
             self.navigator = NavigatorWidget()
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
@@ -799,6 +801,7 @@ if QT_IMPORT_ERROR is None:
             self.need_inpaint_check = QCheckBox('需要修復/描邊')
 
             self._restore_layer_checkbox_states()
+            self.show_popover_check.setChecked(self._settings_bool('ui/show_match_popover', True))
             self.opacity_slider.setRange(5, 90)
             self.opacity_slider.setValue(35)
 
@@ -927,6 +930,13 @@ if QT_IMPORT_ERROR is None:
             self.toggle_right_panel_action.setToolTip('展開/收起右邊圖片和最右功能區')
             self.toggle_right_panel_action.triggered.connect(self.toggle_right_panel)
             toolbar.addAction(self.toggle_right_panel_action)
+
+            toolbar.addWidget(self.show_popover_check)
+            toggle_popover_action = QAction('切換預覽浮窗', self)
+            toggle_popover_action.setShortcuts([QKeySequence('Meta+P'), QKeySequence('Ctrl+P')])
+            toggle_popover_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            toggle_popover_action.triggered.connect(self.toggle_match_popover_enabled)
+            self.addAction(toggle_popover_action)
 
             self.prev_page_action = QAction('上一頁', self)
             self.prev_page_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
@@ -1207,6 +1217,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_view.viewportChanged.connect(self.sync_viewports_from)
             self.view.viewportChanged.connect(self.sync_viewports_from)
             self.navigator.navigateRequested.connect(self.center_views_on)
+            self.show_popover_check.stateChanged.connect(self.handle_match_popover_setting_changed)
             self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
             self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -1260,6 +1271,22 @@ if QT_IMPORT_ERROR is None:
         def handle_layer_checkbox_changed(self, *_: object) -> None:
             self._save_layer_checkbox_states()
             self.render_current_page()
+
+        def match_popover_enabled(self) -> bool:
+            return self.show_popover_check.isChecked()
+
+        def handle_match_popover_setting_changed(self, *_: object) -> None:
+            enabled = self.match_popover_enabled()
+            self.settings.setValue('ui/show_match_popover', enabled)
+            if not enabled:
+                self.bt_match_popover.hide()
+                return
+            item = self.selected_bt_item()
+            if item is not None:
+                self.show_bt_match_popover(item)
+
+        def toggle_match_popover_enabled(self, *_: object) -> None:
+            self.show_popover_check.setChecked(not self.show_popover_check.isChecked())
 
         def restore_right_panel_state(self) -> None:
             collapsed = self._settings_bool('right_panel/collapsed', False)
@@ -1962,6 +1989,9 @@ if QT_IMPORT_ERROR is None:
 
         def show_bt_match_popover(self, item: dict[str, Any]) -> None:
             self._popover_bt_item = item
+            if not self.match_popover_enabled():
+                self.bt_match_popover.hide()
+                return
             box = self.measure_box_for_bt_item(item)
             if box is None:
                 self.bt_match_popover.hide()
@@ -2013,6 +2043,9 @@ if QT_IMPORT_ERROR is None:
             self.bt_match_popover.move(global_pos)
 
         def update_popover_with_char_box(self, item: dict) -> None:
+            if not self.match_popover_enabled():
+                self.bt_match_popover.hide()
+                return
             source_index = item.get('source_block_index', '-')
             box = None
             try:
