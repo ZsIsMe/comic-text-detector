@@ -725,6 +725,191 @@ if QT_IMPORT_ERROR is None:
         return number if number >= minimum else default
 
 
+    class RangeSlider(QWidget):
+        rangeChanged = Signal(int, int)
+
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self._minimum = 1
+            self._maximum = 100
+            self._lower = 1
+            self._upper = 100
+            self._active_handle: str | None = None
+            self.setMinimumHeight(44)
+            self.setMouseTracking(True)
+
+        def sizeHint(self) -> QSize:
+            return QSize(260, 44)
+
+        def setRange(self, minimum: int, maximum: int) -> None:
+            self._minimum = int(minimum)
+            self._maximum = max(self._minimum, int(maximum))
+            self.setValues(self._lower, self._upper)
+
+        def setValues(self, lower: int, upper: int) -> None:
+            lower = max(self._minimum, min(int(lower), self._maximum))
+            upper = max(self._minimum, min(int(upper), self._maximum))
+            if lower > upper:
+                lower, upper = upper, lower
+            changed = lower != self._lower or upper != self._upper
+            self._lower = lower
+            self._upper = upper
+            self.update()
+            if changed:
+                self.rangeChanged.emit(self._lower, self._upper)
+
+        def lowerValue(self) -> int:
+            return self._lower
+
+        def upperValue(self) -> int:
+            return self._upper
+
+        def _groove_rect(self) -> QRectF:
+            margin = 16
+            y = self.height() / 2.0 - 3
+            return QRectF(margin, y, max(1, self.width() - margin * 2), 6)
+
+        def _value_to_x(self, value: int) -> float:
+            groove = self._groove_rect()
+            if self._maximum <= self._minimum:
+                return groove.left()
+            ratio = (value - self._minimum) / (self._maximum - self._minimum)
+            return groove.left() + ratio * groove.width()
+
+        def _x_to_value(self, x: float) -> int:
+            groove = self._groove_rect()
+            if groove.width() <= 0 or self._maximum <= self._minimum:
+                return self._minimum
+            ratio = max(0.0, min(1.0, (x - groove.left()) / groove.width()))
+            return int(round(self._minimum + ratio * (self._maximum - self._minimum)))
+
+        def paintEvent(self, event) -> None:
+            super().paintEvent(event)
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            groove = self._groove_rect()
+            lower_x = self._value_to_x(self._lower)
+            upper_x = self._value_to_x(self._upper)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(58, 63, 70))
+            painter.drawRoundedRect(groove, 3, 3)
+            painter.setBrush(QColor(80, 160, 255))
+            painter.drawRoundedRect(QRectF(lower_x, groove.top(), upper_x - lower_x, groove.height()), 3, 3)
+            for x, active in ((lower_x, self._active_handle == 'lower'), (upper_x, self._active_handle == 'upper')):
+                painter.setBrush(QColor(245, 248, 252) if active else QColor(218, 224, 230))
+                painter.setPen(QPen(QColor(22, 26, 30), 1))
+                painter.drawEllipse(QPointF(x, groove.center().y()), 8, 8)
+            painter.end()
+
+        def mousePressEvent(self, event) -> None:
+            if event.button() != Qt.MouseButton.LeftButton:
+                super().mousePressEvent(event)
+                return
+            x = event.position().x()
+            lower_distance = abs(x - self._value_to_x(self._lower))
+            upper_distance = abs(x - self._value_to_x(self._upper))
+            self._active_handle = 'lower' if lower_distance <= upper_distance else 'upper'
+            self._move_active_handle(x)
+            event.accept()
+
+        def mouseMoveEvent(self, event) -> None:
+            if self._active_handle is not None and event.buttons() & Qt.MouseButton.LeftButton:
+                self._move_active_handle(event.position().x())
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            if event.button() == Qt.MouseButton.LeftButton and self._active_handle is not None:
+                self._active_handle = None
+                self.update()
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+        def _move_active_handle(self, x: float) -> None:
+            value = self._x_to_value(x)
+            if self._active_handle == 'lower':
+                self.setValues(min(value, self._upper), self._upper)
+            elif self._active_handle == 'upper':
+                self.setValues(self._lower, max(value, self._lower))
+
+
+    class FontSizeRegularizeDialog(QDialog):
+        def __init__(self, counts: dict[int, int], parent=None) -> None:
+            super().__init__(parent)
+            self.setWindowTitle('規整字體大小')
+            self.counts = {int(size): int(count) for size, count in counts.items() if int(size) > 0 and int(count) > 0}
+            sizes = sorted(self.counts)
+            minimum = sizes[0]
+            maximum = sizes[-1]
+
+            self.range_slider = RangeSlider(self)
+            self.range_slider.setRange(minimum, maximum)
+            self.range_slider.setValues(minimum, maximum)
+            self.range_label = QLabel()
+            self.preview_label = QLabel()
+            self.preview_label.setWordWrap(True)
+            self.target_spin = QSpinBox()
+            self.target_spin.setRange(1, 999)
+            self.target_spin.setSuffix(' px')
+            mode_size = max(sizes, key=lambda size: (self.counts[size], -size))
+            self.target_spin.setValue(mode_size)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setText('確認')
+            buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+            buttons.accepted.connect(self.accept)
+            buttons.rejected.connect(self.reject)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(14, 14, 14, 14)
+            layout.setSpacing(10)
+            layout.addWidget(self.range_label)
+            layout.addWidget(self.range_slider)
+            target_row = QHBoxLayout()
+            target_row.addWidget(QLabel('改為'))
+            target_row.addWidget(self.target_spin)
+            target_row.addStretch(1)
+            layout.addLayout(target_row)
+            layout.addWidget(self.preview_label)
+            layout.addWidget(buttons)
+
+            self.range_slider.rangeChanged.connect(self.update_preview)
+            self.target_spin.valueChanged.connect(self.update_preview)
+            self.update_preview()
+            self.resize(420, self.sizeHint().height())
+
+        def selected_range(self) -> tuple[int, int]:
+            return self.range_slider.lowerValue(), self.range_slider.upperValue()
+
+        def target_size(self) -> int:
+            return int(self.target_spin.value())
+
+        def affected_count(self) -> int:
+            lower, upper = self.selected_range()
+            return sum(count for size, count in self.counts.items() if lower <= size <= upper)
+
+        def changed_count(self) -> int:
+            lower, upper = self.selected_range()
+            target = self.target_size()
+            return sum(count for size, count in self.counts.items() if lower <= size <= upper and size != target)
+
+        def update_preview(self, *_args) -> None:
+            lower, upper = self.selected_range()
+            target = self.target_size()
+            affected_sizes = [size for size in sorted(self.counts) if lower <= size <= upper]
+            changed_sizes = [size for size in affected_sizes if size != target]
+            affected = sum(self.counts[size] for size in affected_sizes)
+            changed = sum(self.counts[size] for size in changed_sizes)
+            self.range_label.setText(f'範圍：{lower} - {upper} px')
+            size_text = ', '.join(str(size) for size in changed_sizes) if changed_sizes else '無'
+            self.preview_label.setText(
+                f'將範圍內 {affected} 條 _bt 字體大小改為 {target} px；'
+                f'實際會修改 {changed} 條。涉及字級：{size_text}'
+            )
+
+
     class CtdOverlayViewer(QMainWindow):
         DEFAULT_LAYER_CHECKED = frozenset(('show_char_boxes', 'show_font_labels'))
 
@@ -818,6 +1003,7 @@ if QT_IMPORT_ERROR is None:
             self.open_bt_button = QPushButton('打開 _bt.json')
             self.save_button = QPushButton('保存 _bt.json')
             self.even_font_button = QPushButton('字體取偶數')
+            self.regularize_font_button = QPushButton('規整字體大小')
             self.copy_bt_button = QPushButton('複製當前文字框')
             self.measure_preview_button = QPushButton('測量角度')
             self.measure_preview_button.setToolTip('打開測量角度 (Command+M)')
@@ -1172,6 +1358,7 @@ if QT_IMPORT_ERROR is None:
             )
             self.even_font_button.clicked.connect(self.preview_even_font_sizes)
             self.even_font_button.hide()
+            self.regularize_font_button.clicked.connect(self.open_regularize_font_size_dialog)
 
             layout.addWidget(QLabel('當前 _bt 條目'))
             layout.addWidget(self.box_editor_title)
@@ -1209,6 +1396,7 @@ if QT_IMPORT_ERROR is None:
             hint.setWordWrap(True)
             layout.addWidget(hint)
             layout.addWidget(title)
+            layout.addWidget(self.regularize_font_button)
             layout.addWidget(self.font_size_table, 2)
             layout.addWidget(self.even_font_button)
             layout.addStretch(1)
@@ -1915,6 +2103,77 @@ if QT_IMPORT_ERROR is None:
                         counts[size] = counts.get(size, 0) + 1
             return counts
 
+        def bt_font_size_counts(self) -> dict[int, int]:
+            if self.bt_data is None:
+                return {}
+            counts: dict[int, int] = {}
+            pages = self.bt_data.get('transMap') or {}
+            if not isinstance(pages, dict):
+                return counts
+            for items in pages.values():
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    size = positive_int(item.get('font-size'), 0)
+                    if size > 0:
+                        counts[size] = counts.get(size, 0) + 1
+            return counts
+
+        def open_regularize_font_size_dialog(self) -> None:
+            if self.bt_data is None:
+                self.status_label.setText('請先打開 _bt.json，再規整字體大小。')
+                return
+            counts = self.bt_font_size_counts()
+            if not counts:
+                self.status_label.setText('_bt.json 中沒有可規整的字體大小。')
+                return
+            dialog = FontSizeRegularizeDialog(counts, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            lower, upper = dialog.selected_range()
+            target = dialog.target_size()
+            self.regularize_bt_font_sizes(lower, upper, target)
+
+        def regularize_bt_font_sizes(self, lower: int, upper: int, target: int) -> None:
+            if self.bt_data is None:
+                return
+            lower, upper = sorted((int(lower), int(upper)))
+            target = max(1, int(target))
+            pages = self.bt_data.get('transMap') or {}
+            if not isinstance(pages, dict):
+                return
+            changed = 0
+            affected = 0
+            for items in pages.values():
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    size = positive_int(item.get('font-size'), 0)
+                    if lower <= size <= upper:
+                        affected += 1
+                        if size != target:
+                            item['font-size'] = target
+                            changed += 1
+            if changed <= 0:
+                self.status_label.setText(f'{lower}-{upper} px 範圍內沒有需要改為 {target} px 的 _bt 條目。')
+                return
+            self.mark_bt_dirty()
+            if self.selected_bt_items():
+                self.populate_box_editor_for_selection()
+            else:
+                self.set_box_editor_enabled(False)
+            self.update_bt_item_list()
+            self.update_font_size_list()
+            self.render_bt_page(refit=False)
+            self.update_action_state()
+            self.status_label.setText(
+                f'已將 {lower}-{upper} px 範圍內 {affected} 條 _bt 中的 {changed} 條改為 {target} px，尚未保存。'
+            )
+
         def even_font_size_preview(self) -> tuple[dict[int, int], int]:
             if self.processor is None:
                 return {}, 0
@@ -2433,7 +2692,7 @@ if QT_IMPORT_ERROR is None:
             if not selected_indices or page_name is None:
                 self.status_label.setText('請先選擇一條 _bt 文字，再打開測量角度。')
                 return
-            image = self.load_bt_base_image(page_name)
+            image = self.load_bt_source_image(page_name)
             if image is None or image.isNull():
                 self.status_label.setText('無法讀取目前頁面的圖片。')
                 return
@@ -3525,7 +3784,7 @@ if QT_IMPORT_ERROR is None:
                     return path
             return None
 
-        def load_bt_base_image(self, page_name: str) -> QImage | None:
+        def load_bt_source_image(self, page_name: str) -> QImage | None:
             if self.processor is None:
                 return None
             image_path = self.processor.image_dir / page_name
@@ -3534,8 +3793,12 @@ if QT_IMPORT_ERROR is None:
             image = QImage(str(image_path))
             if image.isNull():
                 return None
-            image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+            return image.convertToFormat(QImage.Format.Format_RGBA8888)
 
+        def load_bt_base_image(self, page_name: str) -> QImage | None:
+            image = self.load_bt_source_image(page_name)
+            if image is None:
+                return None
             if not self.show_bt_inpainted:
                 return image
             overlay_path = self.bt_inpainted_overlay_path(page_name)
