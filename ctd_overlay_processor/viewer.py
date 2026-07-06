@@ -22,6 +22,7 @@ import numpy as np
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 QT_WEBENGINE_AVAILABLE = False
 QWebEngineView = None
+BtMeasurementDialog = None
 try:
     from PySide6.QtCore import QEvent, QPointF, QProcess, QRectF, QSize, QSettings, Qt, QTimer, Signal
     from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap
@@ -90,6 +91,10 @@ except ImportError:
 
 
 if QT_IMPORT_ERROR is None:
+    try:
+        from .bt_measurement_dialog import BtMeasurementDialog
+    except ImportError:
+        from bt_measurement_dialog import BtMeasurementDialog
 
 
     def qimage_size(path: Path) -> tuple[int, int] | None:
@@ -155,6 +160,7 @@ if QT_IMPORT_ERROR is None:
             self._background_pan_start = None
             self._background_pan_h = 0
             self._background_pan_v = 0
+            self._background_pan_button = Qt.MouseButton.NoButton
 
         def set_background_pan_enabled(self, enabled: bool) -> None:
             self._background_pan_enabled = enabled
@@ -223,30 +229,48 @@ if QT_IMPORT_ERROR is None:
             else:
                 self.imageMouseLeft.emit()
 
+        def _start_background_pan(self, event) -> None:
+            self._background_panning = True
+            self._background_pan_button = event.button()
+            self._background_pan_start = event.position().toPoint()
+            self._background_pan_h = self.horizontalScrollBar().value()
+            self._background_pan_v = self.verticalScrollBar().value()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+        def _finish_background_pan(self) -> None:
+            self._background_panning = False
+            self._background_pan_button = Qt.MouseButton.NoButton
+            self._background_pan_start = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor if self._background_pan_enabled else Qt.CursorShape.ArrowCursor)
+
         def mousePressEvent(self, event) -> None:
+            if event.button() == Qt.MouseButton.RightButton:
+                self._start_background_pan(event)
+                event.accept()
+                return
             scene_point = self.mapToScene(event.position().toPoint())
             pixmap_rect = QRectF(self.pixmap_item.pixmap().rect())
             if event.button() == Qt.MouseButton.LeftButton and pixmap_rect.contains(scene_point):
                 self._mouse_down_on_image = True
                 self.imageMousePressed.emit(scene_point.x(), scene_point.y())
                 if self._background_pan_enabled:
-                    self._background_panning = True
-                    self._background_pan_start = event.position().toPoint()
-                    self._background_pan_h = self.horizontalScrollBar().value()
-                    self._background_pan_v = self.verticalScrollBar().value()
-                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    self._start_background_pan(event)
                 event.accept()
                 return
             super().mousePressEvent(event)
 
         def mouseReleaseEvent(self, event) -> None:
+            if self._background_panning and event.button() == self._background_pan_button:
+                if self._mouse_down_on_image and event.button() == Qt.MouseButton.LeftButton:
+                    scene_point = self.mapToScene(event.position().toPoint())
+                    self.imageMouseReleased.emit(scene_point.x(), scene_point.y())
+                    self._mouse_down_on_image = False
+                self._finish_background_pan()
+                event.accept()
+                return
             scene_point = self.mapToScene(event.position().toPoint())
             if self._mouse_down_on_image and event.button() == Qt.MouseButton.LeftButton:
                 self.imageMouseReleased.emit(scene_point.x(), scene_point.y())
-                if self._background_panning:
-                    self._background_panning = False
-                    self._background_pan_start = None
-                    self.setCursor(Qt.CursorShape.OpenHandCursor if self._background_pan_enabled else Qt.CursorShape.ArrowCursor)
                 self._mouse_down_on_image = False
                 event.accept()
                 return
@@ -356,333 +380,6 @@ if QT_IMPORT_ERROR is None:
                 event.accept()
                 return
             super().mouseReleaseEvent(event)
-
-
-    class BtMeasurementCanvas(QWidget):
-        changed = Signal()
-
-        def __init__(
-            self,
-            image: QImage,
-            *,
-            text: str,
-            orientation: str,
-            font_family: str,
-            color: QColor,
-            stroke_color: QColor,
-            stroke_weight: float,
-            center: QPointF,
-            font_size: float,
-            rotation: float,
-            display_scale: float | None = None,
-            parent=None,
-        ) -> None:
-            super().__init__(parent)
-            self.setMouseTracking(True)
-            self._image = image.convertToFormat(QImage.Format.Format_RGBA8888)
-            self._pixmap = QPixmap.fromImage(self._image)
-            self._display_scale = display_scale
-            self.text = text.replace('\\n', '\n').replace('\r\n', '\n').replace('\r', '\n')
-            self.orientation = orientation
-            self.font_family = font_family
-            self.color = color
-            self.stroke_color = stroke_color
-            self.stroke_weight = max(0.0, stroke_weight)
-            self.text_center = QPointF(center)
-            self.line_start, self.line_end = self._line_from_measurement(center, font_size, rotation)
-            self._drag_mode: str | None = None
-            self.setMinimumSize(self.sizeHint())
-
-        def sizeHint(self) -> QSize:
-            margin = 24
-            if self._display_scale is None:
-                return QSize(720, 520)
-            return QSize(
-                max(320, int(round(self._image.width() * self._display_scale)) + margin),
-                max(240, int(round(self._image.height() * self._display_scale)) + margin),
-            )
-
-        @staticmethod
-        def normalized_rotation(value: float) -> float:
-            angle = float(value)
-            while angle > 180.0:
-                angle -= 360.0
-            while angle <= -180.0:
-                angle += 360.0
-            return round(angle, 2)
-
-        @staticmethod
-        def _line_from_measurement(center: QPointF, length: float, rotation: float) -> tuple[QPointF, QPointF]:
-            length = max(1.0, float(length))
-            radians = math.radians(float(rotation))
-            dx = math.cos(radians) * length / 2.0
-            dy = -math.sin(radians) * length / 2.0
-            return QPointF(center.x() - dx, center.y() - dy), QPointF(center.x() + dx, center.y() + dy)
-
-        def font_size(self) -> float:
-            dx = self.line_end.x() - self.line_start.x()
-            dy = self.line_end.y() - self.line_start.y()
-            return max(1.0, math.hypot(dx, dy))
-
-        def rotation(self) -> float:
-            dx = self.line_end.x() - self.line_start.x()
-            dy = self.line_end.y() - self.line_start.y()
-            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-                return 0.0
-            return self.normalized_rotation(math.degrees(math.atan2(-dy, dx)))
-
-        def _display_rect(self) -> QRectF:
-            image_w = max(1, self._image.width())
-            image_h = max(1, self._image.height())
-            margin = 12
-            if self._display_scale is None:
-                available_w = max(1, self.width() - margin * 2)
-                available_h = max(1, self.height() - margin * 2)
-                scale = min(available_w / image_w, available_h / image_h)
-            else:
-                scale = max(0.01, self._display_scale)
-            display_w = image_w * scale
-            display_h = image_h * scale
-            return QRectF((self.width() - display_w) / 2.0, (self.height() - display_h) / 2.0, display_w, display_h)
-
-        def _scale(self) -> float:
-            rect = self._display_rect()
-            return rect.width() / max(1, self._image.width())
-
-        def _to_widget(self, point: QPointF) -> QPointF:
-            rect = self._display_rect()
-            scale = self._scale()
-            return QPointF(rect.left() + point.x() * scale, rect.top() + point.y() * scale)
-
-        def _to_image(self, point: QPointF) -> QPointF:
-            rect = self._display_rect()
-            scale = max(1e-6, self._scale())
-            x = (point.x() - rect.left()) / scale
-            y = (point.y() - rect.top()) / scale
-            return self._clamp_image_point(QPointF(x, y))
-
-        def _clamp_image_point(self, point: QPointF) -> QPointF:
-            return QPointF(
-                max(0.0, min(point.x(), max(0.0, self._image.width() - 1.0))),
-                max(0.0, min(point.y(), max(0.0, self._image.height() - 1.0))),
-            )
-
-        def _hit_test(self, widget_point: QPointF) -> str | None:
-            start = self._to_widget(self.line_start)
-            end = self._to_widget(self.line_end)
-            text = self._to_widget(self.text_center)
-            if math.hypot(widget_point.x() - start.x(), widget_point.y() - start.y()) <= 14:
-                return 'line_start'
-            if math.hypot(widget_point.x() - end.x(), widget_point.y() - end.y()) <= 14:
-                return 'line_end'
-            if math.hypot(widget_point.x() - text.x(), widget_point.y() - text.y()) <= 28:
-                return 'text'
-            return None
-
-        def mousePressEvent(self, event) -> None:
-            if event.button() != Qt.MouseButton.LeftButton:
-                super().mousePressEvent(event)
-                return
-            self._drag_mode = self._hit_test(event.position())
-            if self._drag_mode is None:
-                self.text_center = self._to_image(event.position())
-                self._drag_mode = 'text'
-                self.changed.emit()
-                self.update()
-            event.accept()
-
-        def mouseMoveEvent(self, event) -> None:
-            if self._drag_mode is not None and event.buttons() & Qt.MouseButton.LeftButton:
-                image_point = self._to_image(event.position())
-                if self._drag_mode == 'line_start':
-                    self.line_start = image_point
-                elif self._drag_mode == 'line_end':
-                    self.line_end = image_point
-                elif self._drag_mode == 'text':
-                    self.text_center = image_point
-                self.changed.emit()
-                self.update()
-                event.accept()
-                return
-            mode = self._hit_test(event.position())
-            if mode in {'line_start', 'line_end'}:
-                self.setCursor(Qt.CursorShape.CrossCursor)
-            elif mode == 'text':
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
-            else:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-            super().mouseMoveEvent(event)
-
-        def mouseReleaseEvent(self, event) -> None:
-            if event.button() == Qt.MouseButton.LeftButton and self._drag_mode is not None:
-                self._drag_mode = None
-                event.accept()
-                return
-            super().mouseReleaseEvent(event)
-
-        def paintEvent(self, event) -> None:
-            super().paintEvent(event)
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-            painter.fillRect(self.rect(), QColor(18, 20, 22))
-            display_rect = self._display_rect()
-            painter.drawPixmap(display_rect, self._pixmap, QRectF(self._pixmap.rect()))
-            painter.setPen(QPen(QColor(75, 80, 86), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(display_rect)
-            self._draw_text_preview(painter)
-            self._draw_measurement_line(painter)
-            painter.end()
-
-        def _draw_measurement_line(self, painter: QPainter) -> None:
-            start = self._to_widget(self.line_start)
-            end = self._to_widget(self.line_end)
-            painter.setPen(QPen(QColor(255, 230, 80), 3))
-            painter.drawLine(start, end)
-            painter.setBrush(QColor(255, 245, 170))
-            painter.setPen(QPen(QColor(35, 30, 10), 1))
-            for point in (start, end):
-                painter.drawEllipse(point, 7, 7)
-            center = self._to_widget(self.text_center)
-            painter.setBrush(QColor(80, 180, 255))
-            painter.setPen(QPen(QColor(10, 45, 70), 1))
-            painter.drawEllipse(center, 6, 6)
-
-        def _draw_text_preview(self, painter: QPainter) -> None:
-            text = self.text.strip()
-            if not text:
-                return
-            scale = self._scale()
-            font_size = max(1.0, self.font_size() * scale)
-            center = self._to_widget(self.text_center)
-            painter.save()
-            painter.translate(center)
-            painter.rotate(-self.rotation())
-            font = QFont(self.font_family)
-            font.setPixelSize(max(1, int(round(font_size))))
-            font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-            painter.setFont(font)
-            stroke_px = max(0, int(round(self.stroke_weight * scale)))
-            if self.orientation == 'horizontal':
-                self._draw_horizontal_text(painter, text, stroke_px)
-            else:
-                self._draw_vertical_text(painter, text, stroke_px)
-            painter.restore()
-
-        def _draw_text_at(self, painter: QPainter, x: float, y: float, text: str, stroke_px: int) -> None:
-            if stroke_px > 0:
-                painter.setPen(QPen(self.stroke_color, 1))
-                for dx in range(-stroke_px, stroke_px + 1):
-                    for dy in range(-stroke_px, stroke_px + 1):
-                        if dx == 0 and dy == 0:
-                            continue
-                        if dx * dx + dy * dy <= stroke_px * stroke_px:
-                            painter.drawText(QPointF(x + dx, y + dy), text)
-            painter.setPen(QPen(self.color, 1))
-            painter.drawText(QPointF(x, y), text)
-
-        def _draw_horizontal_text(self, painter: QPainter, text: str, stroke_px: int) -> None:
-            metrics = painter.fontMetrics()
-            lines = text.replace('\\n', '\n').splitlines() or ['']
-            line_h = metrics.height()
-            total_h = line_h * len(lines)
-            y = -total_h / 2.0 + metrics.ascent()
-            for line in lines:
-                x = -metrics.horizontalAdvance(line) / 2.0
-                self._draw_text_at(painter, x, y, line, stroke_px)
-                y += line_h
-
-        def _draw_vertical_text(self, painter: QPainter, text: str, stroke_px: int) -> None:
-            metrics = painter.fontMetrics()
-            lines = text.replace('\\n', '\n').splitlines() or ['']
-            line_h = metrics.height()
-            column_w = max(1, metrics.maxWidth())
-            max_chars = max((len(line) for line in lines), default=1)
-            total_w = column_w * len(lines)
-            for column_index, line in enumerate(lines):
-                x = total_w / 2.0 - column_w * (column_index + 0.5)
-                y = -line_h * max_chars / 2.0 + metrics.ascent()
-                for char in line:
-                    self._draw_text_at(painter, x - metrics.horizontalAdvance(char) / 2.0, y, char, stroke_px)
-                    y += line_h
-
-
-    class BtMeasurementDialog(QDialog):
-        def __init__(
-            self,
-            image: QImage,
-            *,
-            crop_origin: QPointF,
-            item: dict[str, Any],
-            center: QPointF,
-            font_size: float,
-            rotation: float,
-            display_scale: float | None,
-            orientation: str,
-            color: QColor,
-            stroke_color: QColor,
-            stroke_weight: float,
-            font_family: str,
-            parent=None,
-        ) -> None:
-            super().__init__(parent)
-            self.setWindowTitle('測量預覽')
-            self.resize(860, 680)
-            self.crop_origin = crop_origin
-            self.canvas = BtMeasurementCanvas(
-                image,
-                text=str(item.get('text') or ''),
-                orientation=orientation,
-                font_family=font_family,
-                color=color,
-                stroke_color=stroke_color,
-                stroke_weight=stroke_weight,
-                center=center,
-                font_size=font_size,
-                rotation=rotation,
-                display_scale=display_scale,
-                parent=self,
-            )
-            self.info_label = QLabel()
-            self.info_label.setWordWrap(True)
-            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-            buttons.button(QDialogButtonBox.StandardButton.Ok).setText('確認')
-            buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
-            buttons.accepted.connect(self.accept)
-            buttons.rejected.connect(self.reject)
-
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(10, 10, 10, 10)
-            layout.setSpacing(8)
-            layout.addWidget(self.canvas, 1)
-            layout.addWidget(self.info_label)
-            layout.addWidget(buttons)
-            self.canvas.changed.connect(self.update_info)
-            self.update_info()
-            self.resize(self.sizeHint())
-
-        def update_info(self) -> None:
-            center = self.global_center()
-            self.info_label.setText(
-                f'字體大小：{int(round(self.canvas.font_size()))} px    '
-                f'旋轉：{self.canvas.rotation():g} deg    '
-                f'中心：{center.x():.1f}, {center.y():.1f}'
-            )
-
-        def global_center(self) -> QPointF:
-            return QPointF(
-                self.crop_origin.x() + self.canvas.text_center.x(),
-                self.crop_origin.y() + self.canvas.text_center.y(),
-            )
-
-        def result_updates(self) -> dict[str, object]:
-            center = self.global_center()
-            return {
-                'font-size': max(1, int(round(self.canvas.font_size()))),
-                'rotation': self.canvas.rotation(),
-                'center_pixel': [center.x(), center.y()],
-            }
 
 
     class BtMatchPopover(QFrame):
@@ -1066,6 +763,7 @@ if QT_IMPORT_ERROR is None:
             self.rotate_clockwise_action: QAction | None = None
             self.copy_box_action: QAction | None = None
             self.delete_box_action: QAction | None = None
+            self.measure_angle_action: QAction | None = None
             self.move_box_actions: list[QAction] = []
             self.measure_dirty = False
             self.current_page_row = -1
@@ -1121,7 +819,8 @@ if QT_IMPORT_ERROR is None:
             self.save_button = QPushButton('保存 _bt.json')
             self.even_font_button = QPushButton('字體取偶數')
             self.copy_bt_button = QPushButton('複製當前文字框')
-            self.measure_preview_button = QPushButton('測量預覽')
+            self.measure_preview_button = QPushButton('測量角度')
+            self.measure_preview_button.setToolTip('打開測量角度 (Command+M)')
             self.char_info_label = QLabel('游標單字框：未選中')
             self.char_info_label.setWordWrap(True)
             self.box_editor_title = QLabel('未選擇文字框')
@@ -1363,6 +1062,13 @@ if QT_IMPORT_ERROR is None:
             self.copy_box_action.triggered.connect(self.copy_selected_box)
             self.copy_box_action.setEnabled(False)
             self.addAction(self.copy_box_action)
+
+            self.measure_angle_action = QAction('測量角度', self)
+            self.measure_angle_action.setShortcuts([QKeySequence('Meta+M'), QKeySequence('Ctrl+M')])
+            self.measure_angle_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.measure_angle_action.triggered.connect(self.open_bt_measurement_dialog)
+            self.measure_angle_action.setEnabled(False)
+            self.addAction(self.measure_angle_action)
 
             self.delete_box_action = QAction('刪除文字框', self)
             self.delete_box_action.setShortcuts([QKeySequence(Qt.Key.Key_Delete), QKeySequence(Qt.Key.Key_Backspace)])
@@ -2351,7 +2057,7 @@ if QT_IMPORT_ERROR is None:
             active_index = self.selected_bt_index if self.selected_bt_index is not None else selected_items[0][0]
             self.box_editor_title.setText(f'已選擇 {len(selected_items)} 條；active={active_index + 1}{suffix}')
             self.bt_text_edit.setEnabled(False)
-            self.measure_preview_button.setEnabled(False)
+            self.measure_preview_button.setEnabled(True)
             self.copy_bt_button.setText('複製選中文字框')
             self.bt_match_popover.hide()
             self._popover_bt_item = None
@@ -2722,60 +2428,96 @@ if QT_IMPORT_ERROR is None:
             }
 
         def open_bt_measurement_dialog(self) -> None:
-            item = self.selected_bt_item()
+            selected_indices = self.selected_bt_indices_list()
             page_name = self.current_page_name()
-            if self.has_multiple_bt_selection():
-                self.status_label.setText('測量預覽只支持單個 _bt 條目；請先取消多選。')
-                return
-            if item is None or page_name is None:
-                self.status_label.setText('請先選擇一條 _bt 文字，再打開測量預覽。')
+            if not selected_indices or page_name is None:
+                self.status_label.setText('請先選擇一條 _bt 文字，再打開測量角度。')
                 return
             image = self.load_bt_base_image(page_name)
             if image is None or image.isNull():
                 self.status_label.setText('無法讀取目前頁面的圖片。')
                 return
-            center = self.bt_center_pixel_from_item(item)
-            if center is None:
-                self.status_label.setText('目前 _bt 條目沒有可用中心點。')
+            view_crop_rect, view_display_scale = self.measurement_view_crop_rect(image)
+            items = self.bt_items_for_page(page_name)
+            targets: list[tuple[int, dict[str, Any], tuple[float, float], tuple[int, int, int, int] | None]] = []
+            target_rects: list[QRectF] = []
+            centers: list[QPointF] = []
+            for index in selected_indices:
+                if index < 0 or index >= len(items) or not isinstance(items[index], dict):
+                    continue
+                item = items[index]
+                center = self.bt_center_pixel_from_item(item)
+                if center is None:
+                    continue
+                xyxy = self.bt_xyxy_from_item(item)
+                centers.append(QPointF(center[0], center[1]))
+                if xyxy is not None:
+                    x1, y1, x2, y2 = xyxy
+                    target_rects.append(QRectF(x1, y1, max(1, x2 - x1), max(1, y2 - y1)))
+                else:
+                    target_rects.append(QRectF(center[0] - 25, center[1] - 25, 50, 50))
+                targets.append((index, item, center, xyxy))
+            if not targets:
+                self.status_label.setText('無法建立測量角度裁切圖。')
                 return
-            xyxy = self.bt_xyxy_from_item(item)
-            crop_rect, display_scale = self.measurement_view_crop_rect(image)
-            if crop_rect is None:
-                crop_rect = self.measurement_crop_rect(image, center, xyxy)
-                display_scale = None
+            crop_rect, display_scale = self.measurement_multi_crop_rect(
+                image,
+                target_rects,
+                centers,
+                view_crop_rect,
+                view_display_scale,
+            )
             crop = image.copy(crop_rect.toRect())
             if crop.isNull():
-                self.status_label.setText('無法建立測量預覽裁切圖。')
+                self.status_label.setText('無法建立測量角度裁切圖。')
                 return
-            local_center = QPointF(center[0] - crop_rect.left(), center[1] - crop_rect.top())
-            font_size = positive_int(item.get('font-size'), 40)
-            color = self.qcolor_from_bt_value(item.get('color'), QColor(0, 0, 0))
-            stroke_color = self.qcolor_from_bt_value(item.get('stroke-color'), QColor(255, 255, 255))
-            stroke_weight = max(0.0, float(item.get('stroke-weight') or 0))
-            font_family = str(item.get('font') or '').strip() or 'Helvetica Neue'
+            entries: list[dict[str, object]] = []
+            for index, item, center, _xyxy in targets:
+                local_center = QPointF(center[0] - crop_rect.left(), center[1] - crop_rect.top())
+                font_size = positive_int(item.get('font-size'), 40)
+                entries.append({
+                    'item_index': index,
+                    'item': item,
+                    'crop_origin': QPointF(crop_rect.left(), crop_rect.top()),
+                    'center': local_center,
+                    'font_size': font_size,
+                    'rotation': self.normalized_rotation(item.get('rotation')),
+                    'display_scale': display_scale,
+                    'orientation': str(item.get('orientation') or 'vertical'),
+                    'color': self.qcolor_from_bt_value(item.get('color'), QColor(0, 0, 0)),
+                    'stroke_color': self.qcolor_from_bt_value(item.get('stroke-color'), QColor(255, 255, 255)),
+                    'stroke_weight': max(0.0, float(item.get('stroke-weight') or 0)),
+                    'font_family': str(item.get('font') or '').strip() or 'Helvetica Neue',
+                })
+            if not entries:
+                self.status_label.setText('無法建立測量角度裁切圖。')
+                return
             dialog = BtMeasurementDialog(
                 crop,
-                crop_origin=QPointF(crop_rect.left(), crop_rect.top()),
-                item=item,
-                center=local_center,
-                font_size=font_size,
-                rotation=self.normalized_rotation(item.get('rotation')),
+                entries=entries,
                 display_scale=display_scale,
-                orientation=str(item.get('orientation') or 'vertical'),
-                color=color,
-                stroke_color=stroke_color,
-                stroke_weight=stroke_weight,
-                font_family=font_family,
                 parent=self,
             )
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
-            updates = self.measurement_updates_for_item(item, dialog.result_updates(), image.width(), image.height())
-            if self.apply_selected_box_updates(
-                updates,
-                status='已套用測量預覽，尚未保存。',
-            ):
-                self.center_views_on(float(dialog.result_updates()['center_pixel'][0]), float(dialog.result_updates()['center_pixel'][1]))
+            results = dialog.result_updates()
+            if not results:
+                return
+            changed = self.apply_bt_updates_to_indices(
+                list(results.keys()),
+                lambda index, item: self.measurement_updates_for_item(
+                    item,
+                    results[index],
+                    image.width(),
+                    image.height(),
+                ) if index in results else {},
+                status=f'已套用 {len(results)} 條測量角度，尚未保存。' if len(results) > 1 else '已套用測量角度，尚未保存。',
+            )
+            active_result = results.get(self.selected_bt_index if self.selected_bt_index is not None else selected_indices[0])
+            if changed and active_result is not None:
+                center_pixel = active_result.get('center_pixel')
+                if isinstance(center_pixel, list) and len(center_pixel) == 2:
+                    self.center_views_on(float(center_pixel[0]), float(center_pixel[1]))
 
         def qcolor_from_bt_value(self, value: object, fallback: QColor) -> QColor:
             text = str(value or '').strip()
@@ -2787,6 +2529,32 @@ if QT_IMPORT_ERROR is None:
                 return QColor(255, 255, 255)
             color = QColor(text if text.startswith('#') else f'#{text}')
             return color if color.isValid() else QColor(fallback)
+
+        def measurement_multi_crop_rect(
+            self,
+            image: QImage,
+            target_rects: list[QRectF],
+            centers: list[QPointF],
+            view_crop_rect: QRectF | None,
+            view_display_scale: float | None,
+        ) -> tuple[QRectF, float | None]:
+            image_rect = QRectF(0, 0, image.width(), image.height())
+            if view_crop_rect is not None and centers and all(view_crop_rect.contains(center) for center in centers):
+                return view_crop_rect.intersected(image_rect), view_display_scale
+            if not target_rects:
+                return image_rect, None
+            union = QRectF(target_rects[0])
+            for rect in target_rects[1:]:
+                union = union.united(rect)
+            pad = max(96, int(round(max(union.width(), union.height()) * 0.45)))
+            desired = union.adjusted(-pad, -pad, pad, pad)
+            crop_x1 = max(0, int(math.floor(desired.left())))
+            crop_y1 = max(0, int(math.floor(desired.top())))
+            crop_x2 = min(image.width(), int(math.ceil(desired.right())))
+            crop_y2 = min(image.height(), int(math.ceil(desired.bottom())))
+            if crop_x2 <= crop_x1 or crop_y2 <= crop_y1:
+                return image_rect, None
+            return QRectF(crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1), None
 
         def measurement_view_crop_rect(self, image: QImage) -> tuple[QRectF | None, float | None]:
             if self.bt_view.sceneRect().isEmpty():
@@ -3167,6 +2935,8 @@ if QT_IMPORT_ERROR is None:
                 self.rotate_clockwise_action.setEnabled(has_selected_bt)
             if self.copy_box_action is not None:
                 self.copy_box_action.setEnabled(has_selected_bt)
+            if self.measure_angle_action is not None:
+                self.measure_angle_action.setEnabled(has_selected_bt)
             if self.delete_box_action is not None:
                 self.delete_box_action.setEnabled(has_selected_bt)
             for action in self.move_box_actions:
