@@ -753,12 +753,17 @@ def _dominant_dimension_values(values: list[float]) -> list[float]:
     return selected or valid
 
 
-RELIABLE_SQUARE_DIFF_PX = 5.0
+RELIABLE_SQUARE_MIN_DIFF_PX = 5.0
+RELIABLE_SQUARE_DIFF_RATIO = 0.16
 RELIABLE_SQUARE_MIN_COUNT = 4
 RELIABLE_SQUARE_SMALL_SAMPLE_MAX_COUNT = 4
 RELIABLE_SQUARE_SMALL_SAMPLE_MIN_COUNT = 1
 RELIABLE_SQUARE_MIN_PRIMARY_RATIO = 0.55
 SECONDARY_OUTLIER_GAP_PX = 5.0
+
+
+def _reliable_square_diff_limit(width: float, height: float) -> float:
+    return max(RELIABLE_SQUARE_MIN_DIFF_PX, max(width, height) * RELIABLE_SQUARE_DIFF_RATIO)
 
 
 def _paragraph_font_size_from_char_boxes(
@@ -816,7 +821,7 @@ def _paragraph_font_size_from_char_boxes(
             apply_secondary_outlier_filter
             and
             secondary_value > primary_size + SECONDARY_OUTLIER_GAP_PX
-            and abs(height - width) > SECONDARY_OUTLIER_GAP_PX
+            and abs(height - width) > _reliable_square_diff_limit(width, height)
         ):
             reason = 'extreme_secondary_not_square'
         if reason is not None:
@@ -855,7 +860,7 @@ def _paragraph_font_size_from_char_boxes(
         # largest side as the best observed estimate of the square font size. Short
         # paragraphs have fewer samples, so one reliable square box is enough there;
         # longer paragraphs need more agreement to avoid undersized punctuation pieces.
-        if abs(height - width) <= RELIABLE_SQUARE_DIFF_PX and candidate_size >= reliable_min_size:
+        if abs(height - width) <= _reliable_square_diff_limit(width, height) and candidate_size >= reliable_min_size:
             reliable_square_boxes.append({
                 'index': index,
                 'width': width,
@@ -891,7 +896,8 @@ def _paragraph_font_size_from_char_boxes(
         'primary_size': primary_size,
         'secondary_size': secondary_size,
         'dual_signal_font_size': max(primary_size, secondary_size),
-        'reliable_square_diff_px': RELIABLE_SQUARE_DIFF_PX,
+        'reliable_square_min_diff_px': RELIABLE_SQUARE_MIN_DIFF_PX,
+        'reliable_square_diff_ratio': RELIABLE_SQUARE_DIFF_RATIO,
         'reliable_square_min_count': RELIABLE_SQUARE_MIN_COUNT,
         'reliable_square_small_sample_max_count': RELIABLE_SQUARE_SMALL_SAMPLE_MAX_COUNT,
         'reliable_square_small_sample_min_count': RELIABLE_SQUARE_SMALL_SAMPLE_MIN_COUNT,
