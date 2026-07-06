@@ -45,6 +45,7 @@ try:
         QPushButton,
         QScrollArea,
         QSplitter,
+        QDoubleSpinBox,
         QSpinBox,
         QSlider,
         QTableWidget,
@@ -471,7 +472,8 @@ if QT_IMPORT_ERROR is None:
   }
   .text-item {
     position: absolute;
-    transform: translate(-50%, -50%);
+    transform: translate(-50%, -50%) rotate(0deg);
+    transform-origin: center center;
     font-weight: 500;
     white-space: pre-wrap;
     width: max-content;
@@ -498,6 +500,7 @@ if QT_IMPORT_ERROR is None:
     const style = el.style;
     style.left = item.x + 'px';
     style.top = item.y + 'px';
+    style.transform = 'translate(-50%, -50%) rotate(' + (-item.rotation) + 'deg)';
     style.fontSize = item.fontSize + 'px';
     style.fontFamily = item.fontFamily;
     style.color = item.color;
@@ -730,6 +733,8 @@ if QT_IMPORT_ERROR is None:
             self.decrease_font_action: QAction | None = None
             self.increase_font_10_action: QAction | None = None
             self.decrease_font_10_action: QAction | None = None
+            self.rotate_counterclockwise_action: QAction | None = None
+            self.rotate_clockwise_action: QAction | None = None
             self.delete_box_action: QAction | None = None
             self.move_box_actions: list[QAction] = []
             self.measure_dirty = False
@@ -795,6 +800,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_text_edit.setMinimumHeight(90)
             self.font_size_spin = QSpinBox()
             self.orientation_combo = QComboBox()
+            self.rotation_spin = QDoubleSpinBox()
             self.color_combo = QComboBox()
             self.stroke_weight_spin = QSpinBox()
             self.text_has_stroke_check = QCheckBox('原字描邊')
@@ -1002,6 +1008,20 @@ if QT_IMPORT_ERROR is None:
             self.decrease_font_10_action.setEnabled(False)
             self.addAction(self.decrease_font_10_action)
 
+            self.rotate_counterclockwise_action = QAction('逆時針+1', self)
+            self.rotate_counterclockwise_action.setShortcuts([QKeySequence('Meta+['), QKeySequence('Ctrl+[')])
+            self.rotate_counterclockwise_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.rotate_counterclockwise_action.triggered.connect(lambda: self.nudge_selected_rotation(1.0))
+            self.rotate_counterclockwise_action.setEnabled(False)
+            self.addAction(self.rotate_counterclockwise_action)
+
+            self.rotate_clockwise_action = QAction('順時針-1', self)
+            self.rotate_clockwise_action.setShortcuts([QKeySequence('Meta+]'), QKeySequence('Ctrl+]')])
+            self.rotate_clockwise_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.rotate_clockwise_action.triggered.connect(lambda: self.nudge_selected_rotation(-1.0))
+            self.rotate_clockwise_action.setEnabled(False)
+            self.addAction(self.rotate_clockwise_action)
+
             self.delete_box_action = QAction('刪除文字框', self)
             self.delete_box_action.setShortcuts([QKeySequence(Qt.Key.Key_Delete), QKeySequence(Qt.Key.Key_Backspace)])
             self.delete_box_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1114,6 +1134,10 @@ if QT_IMPORT_ERROR is None:
             self.font_size_spin.setSuffix(' px')
             self.orientation_combo.addItem('直排', 'vertical')
             self.orientation_combo.addItem('橫排', 'horizontal')
+            self.rotation_spin.setRange(-180.0, 180.0)
+            self.rotation_spin.setDecimals(2)
+            self.rotation_spin.setSingleStep(1.0)
+            self.rotation_spin.setSuffix(' deg')
             self.color_combo.addItem('黑', 'black')
             self.color_combo.addItem('白', 'white')
             self.stroke_weight_spin.setRange(0, 99)
@@ -1124,6 +1148,8 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.font_size_spin)
             layout.addWidget(QLabel('方向'))
             layout.addWidget(self.orientation_combo)
+            layout.addWidget(QLabel('旋轉角度'))
+            layout.addWidget(self.rotation_spin)
             layout.addWidget(QLabel('文字顏色'))
             layout.addWidget(self.color_combo)
             layout.addWidget(QLabel('描邊粗細'))
@@ -1221,6 +1247,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
             self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.rotation_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.color_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
             self.stroke_weight_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.text_has_stroke_check.stateChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -1688,6 +1715,17 @@ if QT_IMPORT_ERROR is None:
             color = str(item.get('color') or '#000000').lower()
             return 'white' if color in {'#ffffff', 'ffffff', 'white'} else 'black'
 
+        def normalized_rotation(self, value: object) -> float:
+            try:
+                angle = float(value)
+            except (TypeError, ValueError):
+                return 0.0
+            while angle > 180.0:
+                angle -= 360.0
+            while angle <= -180.0:
+                angle += 360.0
+            return round(angle, 2)
+
         def bt_font_label(self, item: dict[str, Any]) -> str:
             orientation = str(item.get('orientation') or 'vertical')
             direction = 'H' if orientation == 'horizontal' else 'V'
@@ -1823,6 +1861,7 @@ if QT_IMPORT_ERROR is None:
                 self.bt_text_edit,
                 self.font_size_spin,
                 self.orientation_combo,
+                self.rotation_spin,
                 self.color_combo,
                 self.stroke_weight_spin,
                 self.text_has_stroke_check,
@@ -1834,6 +1873,7 @@ if QT_IMPORT_ERROR is None:
                 previous_updating = self._updating_editor
                 self._updating_editor = True
                 self.bt_text_edit.clear()
+                self.rotation_spin.setValue(0.0)
                 self._updating_editor = previous_updating
             self.update_bt_item_list()
             self.update_action_state()
@@ -2132,6 +2172,7 @@ if QT_IMPORT_ERROR is None:
             self.font_size_spin.setValue(positive_int(item.get('font-size'), 40))
             orientation_index = self.orientation_combo.findData(item.get('orientation') or 'vertical')
             self.orientation_combo.setCurrentIndex(max(0, orientation_index))
+            self.rotation_spin.setValue(self.normalized_rotation(item.get('rotation')))
             color_index = self.color_combo.findData(self.bt_text_color(item))
             self.color_combo.setCurrentIndex(max(0, color_index))
             stroke_weight = int(round(float(item.get('stroke-weight') or 0)))
@@ -2151,6 +2192,7 @@ if QT_IMPORT_ERROR is None:
                 'text': self.bt_text_edit.toPlainText(),
                 'font-size': int(self.font_size_spin.value()),
                 'orientation': self.orientation_combo.currentData() or 'vertical',
+                'rotation': self.normalized_rotation(self.rotation_spin.value()),
                 'color': '#FFFFFF' if color == 'white' else '#000000',
                 'stroke-color': '#000000' if color == 'white' else '#FFFFFF',
                 'stroke-weight': stroke_weight,
@@ -2245,6 +2287,21 @@ if QT_IMPORT_ERROR is None:
             sign = '+' if delta > 0 else ''
             self.apply_selected_box_updates({'font-size': size}, status=f'已將當前 _bt 條目字體大小 {sign}{delta} 到 {size}，尚未保存。')
 
+        def nudge_selected_rotation(self, delta: float) -> None:
+            item = self.selected_bt_item()
+            if item is None:
+                self.status_label.setText('請先選擇一條 _bt 文字，再使用旋轉快捷鍵。')
+                return
+            current = self.normalized_rotation(item.get('rotation'))
+            rotation = self.normalized_rotation(current + delta)
+            if rotation == current:
+                return
+            sign = '+' if delta > 0 else ''
+            self.apply_selected_box_updates(
+                {'rotation': rotation},
+                status=f'已將當前 _bt 條目旋轉 {sign}{delta:g} 度到 {rotation:g} 度，尚未保存。',
+            )
+
         def nudge_selected_box_position(self, dx: int, dy: int) -> None:
             item = self.selected_bt_item()
             if item is None:
@@ -2304,6 +2361,10 @@ if QT_IMPORT_ERROR is None:
                 self.increase_font_10_action.setEnabled(has_selected_bt)
             if self.decrease_font_10_action is not None:
                 self.decrease_font_10_action.setEnabled(has_selected_bt)
+            if self.rotate_counterclockwise_action is not None:
+                self.rotate_counterclockwise_action.setEnabled(has_selected_bt)
+            if self.rotate_clockwise_action is not None:
+                self.rotate_clockwise_action.setEnabled(has_selected_bt)
             if self.delete_box_action is not None:
                 self.delete_box_action.setEnabled(has_selected_bt)
             for action in self.move_box_actions:
@@ -2385,6 +2446,8 @@ if QT_IMPORT_ERROR is None:
             if 'xyxy_pixel' in normalized_updates:
                 xyxy = tuple(int(v) for v in normalized_updates['xyxy_pixel'])
                 normalized_updates['xyxy_pixel'] = list(self.clamp_xyxy(xyxy))
+            if 'rotation' in normalized_updates:
+                normalized_updates['rotation'] = self.normalized_rotation(normalized_updates['rotation'])
             if not self.updates_change_item(item, normalized_updates):
                 return False
             self.push_bt_undo(status)
@@ -2925,6 +2988,7 @@ if QT_IMPORT_ERROR is None:
                     'id': str(item.get('index', index)),
                     'x': round(float(point.x()), 3),
                     'y': round(float(point.y()), 3),
+                    'rotation': self.normalized_rotation(item.get('rotation')),
                     'text': self.prepare_html_bt_text(text, orientation),
                     'fontSize': round(float(display_font_size), 3),
                     'fontFamily': font_family,
