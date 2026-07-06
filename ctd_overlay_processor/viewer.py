@@ -1045,6 +1045,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_path: Path | None = None
             self.bt_dirty = False
             self.selected_bt_index: int | None = None
+            self.selected_bt_indices: set[int] = set()
             self.bt_undo_stack: list[dict[str, object]] = []
             self.detect_process: QProcess | None = None
             self.detect_output_chunks: list[str] = []
@@ -1080,6 +1081,9 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_start: tuple[float, float] | None = None
             self._bt_drag_original: tuple[int, int, int, int] | None = None
             self._bt_drag_original_item: dict[str, Any] | None = None
+            self._bt_drag_original_items: list[dict[str, Any]] | None = None
+            self._bt_drag_original_xyxys: dict[int, tuple[int, int, int, int]] = {}
+            self._bt_drag_indices: list[int] = []
             self._bt_drag_temporary = False
             self.show_bt_inpainted = True
 
@@ -1403,7 +1407,7 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.bt_stats_label)
             layout.addWidget(QLabel('當前頁 _bt 條目'))
             self.bt_item_list.setMinimumHeight(260)
-            self.bt_item_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+            self.bt_item_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
             layout.addWidget(self.bt_item_list, 2)
             layout.addWidget(QLabel('游標資訊'))
             layout.addWidget(self.char_info_label)
@@ -1558,6 +1562,7 @@ if QT_IMPORT_ERROR is None:
         def _connect_signals(self) -> None:
             self.page_list.currentRowChanged.connect(self.handle_page_row_changed)
             self.bt_item_list.currentRowChanged.connect(self.handle_bt_item_row_changed)
+            self.bt_item_list.itemSelectionChanged.connect(self.handle_bt_item_selection_changed)
             for widget in (
                 self.show_mask,
                 self.show_npz_smoothed,
@@ -1642,12 +1647,12 @@ if QT_IMPORT_ERROR is None:
             self.render_current_page()
 
         def match_popover_enabled(self) -> bool:
-            return self.show_popover_check.isChecked()
+            return self.show_popover_check.isChecked() and not self.has_multiple_bt_selection()
 
         def handle_match_popover_setting_changed(self, *_: object) -> None:
-            enabled = self.match_popover_enabled()
+            enabled = self.show_popover_check.isChecked()
             self.settings.setValue('ui/show_match_popover', enabled)
-            if not enabled:
+            if not self.match_popover_enabled():
                 self.bt_match_popover.hide()
                 return
             item = self.selected_bt_item()
@@ -1900,6 +1905,37 @@ if QT_IMPORT_ERROR is None:
             item = items[self.selected_bt_index]
             return item if isinstance(item, dict) else None
 
+        def selected_bt_indices_list(self) -> list[int]:
+            items = self.bt_items_for_page()
+            valid = [
+                index for index in sorted(self.selected_bt_indices)
+                if 0 <= index < len(items) and isinstance(items[index], dict)
+            ]
+            if self.selected_bt_index is not None and self.selected_bt_index not in valid:
+                if 0 <= self.selected_bt_index < len(items) and isinstance(items[self.selected_bt_index], dict):
+                    valid.append(self.selected_bt_index)
+            return sorted(valid)
+
+        def selected_bt_items(self) -> list[tuple[int, dict[str, Any]]]:
+            items = self.bt_items_for_page()
+            return [
+                (index, items[index])
+                for index in self.selected_bt_indices_list()
+                if isinstance(items[index], dict)
+            ]
+
+        def has_multiple_bt_selection(self) -> bool:
+            return len(self.selected_bt_indices_list()) > 1
+
+        def active_bt_index_from_selection(self, indices: set[int] | list[int], fallback: int | None = None) -> int | None:
+            items = self.bt_items_for_page()
+            valid = sorted(index for index in indices if 0 <= index < len(items) and isinstance(items[index], dict))
+            if fallback is not None and fallback in valid:
+                return fallback
+            if self.selected_bt_index in valid:
+                return self.selected_bt_index
+            return valid[0] if valid else None
+
         def bt_item_status(self, item: dict[str, Any]) -> str:
             raw_status = str(item.get('match_status') or '').lower()
             if raw_status == 'manual':
@@ -1964,9 +2000,16 @@ if QT_IMPORT_ERROR is None:
                         list_item.setBackground(QBrush(QColor(214, 245, 223)))
                         list_item.setForeground(QBrush(QColor(18, 92, 50)))
                         list_item.setToolTip('已手動套用 measure 框。')
-            if self.selected_bt_index is not None and 0 <= self.selected_bt_index < len(items):
-                self.bt_item_list.setCurrentRow(self.selected_bt_index)
-            else:
+            selected_indices = set(self.selected_bt_indices_list())
+            if self.selected_bt_index is not None:
+                selected_indices.add(self.selected_bt_index)
+            active_index = self.active_bt_index_from_selection(selected_indices, self.selected_bt_index)
+            for index in selected_indices:
+                if 0 <= index < self.bt_item_list.count():
+                    self.bt_item_list.item(index).setSelected(True)
+            if active_index is not None and 0 <= active_index < len(items):
+                self.bt_item_list.setCurrentRow(active_index)
+            elif not selected_indices:
                 self.bt_item_list.clearSelection()
                 self.bt_item_list.setCurrentRow(-1)
             self.bt_item_list.blockSignals(False)
@@ -1980,8 +2023,25 @@ if QT_IMPORT_ERROR is None:
             if not isinstance(index, int):
                 self.select_bt_item(None)
                 return
-            if index != self.selected_bt_index:
-                self.select_bt_item(index, center=True)
+            selected = {
+                selected_item.data(Qt.ItemDataRole.UserRole)
+                for selected_item in self.bt_item_list.selectedItems()
+            }
+            selected_indices = {value for value in selected if isinstance(value, int)}
+            if not selected_indices:
+                selected_indices = {index}
+            self.set_bt_selection(selected_indices, active_index=index, center=True, sync_list=False)
+
+        def handle_bt_item_selection_changed(self) -> None:
+            selected = {
+                selected_item.data(Qt.ItemDataRole.UserRole)
+                for selected_item in self.bt_item_list.selectedItems()
+            }
+            selected_indices = {value for value in selected if isinstance(value, int)}
+            current_item = self.bt_item_list.currentItem()
+            current_index = current_item.data(Qt.ItemDataRole.UserRole) if current_item is not None else None
+            active_index = current_index if isinstance(current_index, int) else None
+            self.set_bt_selection(selected_indices, active_index=active_index, sync_list=False)
 
         def load_bt_json_path(self, path: Path, *, remember: bool = True) -> None:
             path = path.expanduser().resolve()
@@ -1992,6 +2052,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_path = path
             self.bt_dirty = False
             self.selected_bt_index = None
+            self.selected_bt_indices.clear()
             self.bt_undo_stack.clear()
             self.bt_path_label.setText(str(path))
             self.set_box_editor_enabled(False)
@@ -2106,6 +2167,7 @@ if QT_IMPORT_ERROR is None:
             description: str,
             items: list[dict[str, Any]],
             selected_index: int | None,
+            selected_indices: set[int] | list[int] | None = None,
         ) -> None:
             page_name = self.current_page_name()
             if page_name is None:
@@ -2114,6 +2176,7 @@ if QT_IMPORT_ERROR is None:
                 'page_name': page_name,
                 'items': copy.deepcopy(items),
                 'selected_index': selected_index,
+                'selected_indices': sorted(selected_indices or []),
                 'description': description,
             })
             if len(self.bt_undo_stack) > 200:
@@ -2241,6 +2304,7 @@ if QT_IMPORT_ERROR is None:
                 widget.setEnabled(enabled)
             if not enabled:
                 self.box_editor_title.setText('未選擇 _bt 條目')
+                self.copy_bt_button.setText('複製當前文字框')
                 previous_updating = self._updating_editor
                 self._updating_editor = True
                 self.bt_text_edit.clear()
@@ -2249,22 +2313,88 @@ if QT_IMPORT_ERROR is None:
             self.update_bt_item_list()
             self.update_action_state()
 
-        def select_bt_item(self, index: int | None, *, center: bool = False) -> None:
+        def selection_mixed_bt_fields(self, selected_items: list[tuple[int, dict[str, Any]]]) -> list[str]:
+            if len(selected_items) <= 1:
+                return []
+            getters = (
+                ('字體', lambda item: positive_int(item.get('font-size'), 40)),
+                ('旋轉', lambda item: self.normalized_rotation(item.get('rotation'))),
+                ('方向', lambda item: item.get('orientation') or 'vertical'),
+                ('顏色', lambda item: self.bt_text_color(item)),
+                ('描邊', lambda item: positive_int(item.get('stroke-weight'), 0)),
+                ('修復', lambda item: item.get('need_inpaint') is True),
+            )
+            mixed: list[str] = []
+            for label, getter in getters:
+                values = [getter(item) for _, item in selected_items]
+                if any(value != values[0] for value in values[1:]):
+                    mixed.append(label)
+            return mixed
+
+        def populate_box_editor_for_selection(self) -> None:
+            selected_items = self.selected_bt_items()
+            if not selected_items:
+                self.set_box_editor_enabled(False)
+                return
+            active_item = self.selected_bt_item() or selected_items[0][1]
+            self.populate_box_editor_from_bt(active_item)
+            if len(selected_items) <= 1:
+                self.bt_text_edit.setEnabled(True)
+                self.measure_preview_button.setEnabled(True)
+                self.copy_bt_button.setText('複製當前文字框')
+                return
+            self._updating_editor = True
+            self.bt_text_edit.setPlainText('多選時不批量修改文字')
+            self._updating_editor = False
+            mixed = self.selection_mixed_bt_fields(selected_items)
+            suffix = f'；混合：{", ".join(mixed)}' if mixed else ''
+            active_index = self.selected_bt_index if self.selected_bt_index is not None else selected_items[0][0]
+            self.box_editor_title.setText(f'已選擇 {len(selected_items)} 條；active={active_index + 1}{suffix}')
+            self.bt_text_edit.setEnabled(False)
+            self.measure_preview_button.setEnabled(False)
+            self.copy_bt_button.setText('複製選中文字框')
+            self.bt_match_popover.hide()
+            self._popover_bt_item = None
+
+        def set_bt_selection(
+            self,
+            indices: set[int] | list[int] | None,
+            *,
+            active_index: int | None = None,
+            center: bool = False,
+            sync_list: bool = True,
+        ) -> None:
             items = self.bt_items_for_page()
-            if index is None or index < 0 or index >= len(items):
+            valid_indices = {
+                index for index in (indices or set())
+                if 0 <= index < len(items) and isinstance(items[index], dict)
+            }
+            active_index = self.active_bt_index_from_selection(valid_indices, active_index)
+            if active_index is None:
                 self.selected_bt_index = None
+                self.selected_bt_indices.clear()
                 self._popover_bt_item = None
                 self.bt_match_popover.hide()
                 self.set_box_editor_enabled(False)
-                self.update_bt_item_list()
+                if sync_list:
+                    self.update_bt_item_list()
                 self.render_bt_page(refit=False)
                 return
-            self.selected_bt_index = index
-            self.populate_box_editor_from_bt(items[index])
-            self.update_bt_item_list()
+            valid_indices.add(active_index)
+            self.selected_bt_index = active_index
+            self.selected_bt_indices = valid_indices
+            self.populate_box_editor_for_selection()
+            if sync_list:
+                self.update_bt_item_list()
             self.render_bt_page(refit=False)
+            if len(valid_indices) > 1:
+                self._popover_bt_item = None
+                self.bt_match_popover.hide()
             if center:
-                self.center_views_on_bt_item(items[index])
+                self.center_views_on_bt_item(items[active_index])
+
+        def select_bt_item(self, index: int | None, *, center: bool = False) -> None:
+            self.set_bt_selection({index} if index is not None else set(), active_index=index, center=center)
 
         def center_views_on_bt_item(self, item: dict[str, Any]) -> None:
             xyxy = self.bt_xyxy_from_item(item)
@@ -2399,10 +2529,11 @@ if QT_IMPORT_ERROR is None:
             return scaled, scaled_regions
 
         def show_bt_match_popover(self, item: dict[str, Any]) -> None:
-            self._popover_bt_item = item
             if not self.match_popover_enabled():
+                self._popover_bt_item = None
                 self.bt_match_popover.hide()
                 return
+            self._popover_bt_item = item
             box = self.measure_box_for_bt_item(item)
             if box is None:
                 self.bt_match_popover.hide()
@@ -2559,6 +2690,26 @@ if QT_IMPORT_ERROR is None:
             stroke_weight = int(self.stroke_weight_spin.value())
             if self.text_has_stroke_check.isChecked() and stroke_weight <= 0:
                 stroke_weight = max(1, int(np.ceil(float(self.font_size_spin.value()) / 8.0)))
+            if self.has_multiple_bt_selection():
+                sender = self.sender()
+                if sender is self.font_size_spin:
+                    return {'font-size': int(self.font_size_spin.value())}
+                if sender is self.orientation_combo:
+                    return {'orientation': self.orientation_combo.currentData() or 'vertical'}
+                if sender is self.rotation_spin:
+                    return {'rotation': self.normalized_rotation(self.rotation_spin.value())}
+                if sender is self.color_combo:
+                    return {
+                        'color': '#FFFFFF' if color == 'white' else '#000000',
+                        'stroke-color': '#000000' if color == 'white' else '#FFFFFF',
+                    }
+                if sender is self.stroke_weight_spin:
+                    return {'stroke-weight': stroke_weight}
+                if sender is self.text_has_stroke_check:
+                    return {'stroke-weight': stroke_weight if self.text_has_stroke_check.isChecked() else 0}
+                if sender is self.need_inpaint_check:
+                    return {'need_inpaint': self.need_inpaint_check.isChecked()}
+                return None
             return {
                 'text': self.bt_text_edit.toPlainText(),
                 'font-size': int(self.font_size_spin.value()),
@@ -2573,6 +2724,9 @@ if QT_IMPORT_ERROR is None:
         def open_bt_measurement_dialog(self) -> None:
             item = self.selected_bt_item()
             page_name = self.current_page_name()
+            if self.has_multiple_bt_selection():
+                self.status_label.setText('測量預覽只支持單個 _bt 條目；請先取消多選。')
+                return
             if item is None or page_name is None:
                 self.status_label.setText('請先選擇一條 _bt 文字，再打開測量預覽。')
                 return
@@ -2758,6 +2912,9 @@ if QT_IMPORT_ERROR is None:
             return updates
 
         def apply_measure_box_to_selected_bt(self, box: BoxOverlay) -> bool:
+            if self.has_multiple_bt_selection():
+                self.status_label.setText('右側 measure 框套用只支持單個 _bt 條目；請先取消多選。')
+                return False
             item = self.selected_bt_item()
             if item is None:
                 self.status_label.setText('請先在左側選擇一條 _bt，再點右側 measure 框套用。')
@@ -2778,14 +2935,24 @@ if QT_IMPORT_ERROR is None:
             if updates is None:
                 return
             refresh_editor = QApplication.focusWidget() is not self.bt_text_edit
-            self.apply_selected_box_updates(
-                updates,
-                status='已修改當前 _bt 條目，尚未保存。',
-                refresh_editor=refresh_editor,
-            )
+            if self.has_multiple_bt_selection():
+                count = len(self.selected_bt_indices_list())
+                self.apply_bt_updates_to_indices(
+                    self.selected_bt_indices_list(),
+                    lambda _index, _item: dict(updates),
+                    status=f'已批量修改 {count} 條 _bt 條目，尚未保存。',
+                    refresh_editor=refresh_editor,
+                )
+            else:
+                self.apply_selected_box_updates(
+                    updates,
+                    status='已修改當前 _bt 條目，尚未保存。',
+                    refresh_editor=refresh_editor,
+                )
 
         def apply_font_size_from_table(self, row: int, column: int) -> None:
-            if self.selected_bt_item() is None:
+            selected_indices = self.selected_bt_indices_list()
+            if not selected_indices:
                 self.status_label.setText('請先在左側選擇一條 _bt 文字，再點右側字級。')
                 return
             item = self.font_size_table.item(row, 0)
@@ -2795,12 +2962,32 @@ if QT_IMPORT_ERROR is None:
                 size = int(item.text())
             except ValueError:
                 return
-            self.apply_selected_box_updates({'font-size': size}, status=f'已把當前 _bt 條目字體大小改為 {size}，尚未保存。')
+            if len(selected_indices) > 1:
+                self.apply_bt_updates_to_indices(
+                    selected_indices,
+                    lambda _index, _item: {'font-size': size},
+                    status=f'已把 {len(selected_indices)} 條 _bt 條目字體大小改為 {size}，尚未保存。',
+                )
+            else:
+                self.apply_selected_box_updates({'font-size': size}, status=f'已把當前 _bt 條目字體大小改為 {size}，尚未保存。')
 
         def nudge_selected_font_size(self, delta: int) -> None:
+            selected_indices = self.selected_bt_indices_list()
+            if not selected_indices:
+                self.status_label.setText('請先選擇一條 _bt 文字，再使用字體大小快捷鍵。')
+                return
+            sign = '+' if delta > 0 else ''
+            if len(selected_indices) > 1:
+                self.apply_bt_updates_to_indices(
+                    selected_indices,
+                    lambda _index, item: {
+                        'font-size': max(1, min(999, positive_int(item.get('font-size'), 40) + delta))
+                    },
+                    status=f'已將 {len(selected_indices)} 條 _bt 條目字體大小各自 {sign}{delta}，尚未保存。',
+                )
+                return
             item = self.selected_bt_item()
             if item is None:
-                self.status_label.setText('請先選擇一條 _bt 文字，再使用字體大小快捷鍵。')
                 return
             current = positive_int(
                 item.get('font-size'),
@@ -2809,28 +2996,48 @@ if QT_IMPORT_ERROR is None:
             size = max(1, min(999, current + delta))
             if size == current:
                 return
-            sign = '+' if delta > 0 else ''
             self.apply_selected_box_updates({'font-size': size}, status=f'已將當前 _bt 條目字體大小 {sign}{delta} 到 {size}，尚未保存。')
 
         def nudge_selected_rotation(self, delta: float) -> None:
+            selected_indices = self.selected_bt_indices_list()
+            if not selected_indices:
+                self.status_label.setText('請先選擇一條 _bt 文字，再使用旋轉快捷鍵。')
+                return
+            sign = '+' if delta > 0 else ''
+            if len(selected_indices) > 1:
+                self.apply_bt_updates_to_indices(
+                    selected_indices,
+                    lambda _index, item: {'rotation': self.normalized_rotation(self.normalized_rotation(item.get('rotation')) + delta)},
+                    status=f'已將 {len(selected_indices)} 條 _bt 條目各自旋轉 {sign}{delta:g} 度，尚未保存。',
+                )
+                return
             item = self.selected_bt_item()
             if item is None:
-                self.status_label.setText('請先選擇一條 _bt 文字，再使用旋轉快捷鍵。')
                 return
             current = self.normalized_rotation(item.get('rotation'))
             rotation = self.normalized_rotation(current + delta)
             if rotation == current:
                 return
-            sign = '+' if delta > 0 else ''
             self.apply_selected_box_updates(
                 {'rotation': rotation},
                 status=f'已將當前 _bt 條目旋轉 {sign}{delta:g} 度到 {rotation:g} 度，尚未保存。',
             )
 
         def nudge_selected_box_position(self, dx: int, dy: int) -> None:
+            selected_indices = self.selected_bt_indices_list()
+            if not selected_indices:
+                self.status_label.setText('請先選擇一條 _bt 文字，再使用方向鍵移動。')
+                return
+            move_text = f'{dx:+d},{dy:+d}'
+            if len(selected_indices) > 1:
+                self.apply_bt_updates_to_indices(
+                    selected_indices,
+                    lambda _index, item: self.move_bt_item_updates(item, dx, dy),
+                    status=f'已用方向鍵移動 {len(selected_indices)} 條 _bt 條目 {move_text}，尚未保存。',
+                )
+                return
             item = self.selected_bt_item()
             if item is None:
-                self.status_label.setText('請先選擇一條 _bt 文字，再使用方向鍵移動。')
                 return
             xyxy = self.bt_xyxy_from_item(item)
             if xyxy is None:
@@ -2839,67 +3046,99 @@ if QT_IMPORT_ERROR is None:
             new_xyxy = self.clamp_xyxy((x1 + dx, y1 + dy, x2 + dx, y2 + dy))
             if new_xyxy == xyxy:
                 return
-            move_text = f'{dx:+d},{dy:+d}'
             self.apply_selected_box_updates(
                 {'xyxy_pixel': list(new_xyxy), 'match_status': 'manual'},
                 status=f'已用方向鍵移動當前 _bt 條目 {move_text}，尚未保存。',
             )
 
+        def move_bt_item_updates(self, item: dict[str, Any], dx: int, dy: int) -> dict[str, object]:
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is None:
+                return {}
+            x1, y1, x2, y2 = xyxy
+            new_xyxy = self.clamp_xyxy((x1 + dx, y1 + dy, x2 + dx, y2 + dy))
+            if new_xyxy == xyxy:
+                return {}
+            return {'xyxy_pixel': list(new_xyxy), 'match_status': 'manual'}
+
         def copy_selected_box(self) -> None:
             if self.bt_data is None:
                 return
-            item = self.selected_bt_item()
             page_name = self.current_page_name()
-            if item is None or page_name is None or self.selected_bt_index is None:
+            selected_indices = self.selected_bt_indices_list()
+            if not selected_indices or page_name is None:
                 self.status_label.setText('請先選擇一條 _bt 文字，再複製。')
                 return
             items = self.bt_items_for_page(page_name)
             before_items = copy.deepcopy(items)
             before_selected = self.selected_bt_index
-            new_item = copy.deepcopy(item)
-            new_item['index'] = self.next_bt_index_for_page(items)
-            new_item['match_status'] = 'manual'
-            xyxy = self.bt_xyxy_from_item(new_item)
-            if xyxy is not None:
-                x1, y1, x2, y2 = xyxy
-                self.set_bt_xyxy(new_item, self.clamp_xyxy((x1 + 16, y1 + 16, x2 + 16, y2 + 16)))
-            else:
-                try:
-                    new_item['x'] = min(1.0, max(0.0, float(new_item.get('x')) + 0.01))
-                    new_item['y'] = min(1.0, max(0.0, float(new_item.get('y')) + 0.01))
-                except (TypeError, ValueError):
-                    pass
-            insert_at = self.selected_bt_index + 1
-            items.insert(insert_at, new_item)
+            before_selected_indices = set(self.selected_bt_indices)
+            next_index = self.next_bt_index_for_page(items)
+            new_items: list[dict[str, Any]] = []
+            for source_index in selected_indices:
+                if source_index < 0 or source_index >= len(items) or not isinstance(items[source_index], dict):
+                    continue
+                new_item = copy.deepcopy(items[source_index])
+                new_item['index'] = next_index
+                next_index += 1
+                new_item['match_status'] = 'manual'
+                xyxy = self.bt_xyxy_from_item(new_item)
+                if xyxy is not None:
+                    x1, y1, x2, y2 = xyxy
+                    self.set_bt_xyxy(new_item, self.clamp_xyxy((x1 + 16, y1 + 16, x2 + 16, y2 + 16)))
+                else:
+                    try:
+                        new_item['x'] = min(1.0, max(0.0, float(new_item.get('x')) + 0.01))
+                        new_item['y'] = min(1.0, max(0.0, float(new_item.get('y')) + 0.01))
+                    except (TypeError, ValueError):
+                        pass
+                new_items.append(new_item)
+            if not new_items:
+                return
+            insert_at = max(selected_indices) + 1
+            for offset, new_item in enumerate(new_items):
+                items.insert(insert_at + offset, new_item)
+            new_selection = set(range(insert_at, insert_at + len(new_items)))
+            self.selected_bt_indices = new_selection
             self.selected_bt_index = insert_at
-            self.push_bt_items_undo_snapshot('複製 _bt 條目', before_items, before_selected)
+            self.push_bt_items_undo_snapshot('複製 _bt 條目', before_items, before_selected, before_selected_indices)
             self.mark_bt_dirty()
-            self.populate_box_editor_from_bt(new_item)
+            self.populate_box_editor_for_selection()
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
-            self.status_label.setText('已複製 _bt 條目，尚未保存。')
+            if len(new_items) > 1:
+                self.status_label.setText(f'已複製 {len(new_items)} 條 _bt 條目，尚未保存。')
+            else:
+                self.status_label.setText('已複製 _bt 條目，尚未保存。')
 
         def delete_selected_box(self) -> None:
             if self.bt_data is None:
                 return
-            item = self.selected_bt_item()
-            if item is None:
+            selected_indices = self.selected_bt_indices_list()
+            if not selected_indices:
                 self.status_label.setText('請先選擇一條 _bt 文字，再刪除。')
                 return
             page_name = self.current_page_name()
             items = self.bt_items_for_page(page_name)
-            if page_name is None or self.selected_bt_index is None:
+            if page_name is None:
                 return
             before_items = copy.deepcopy(items)
             before_selected = self.selected_bt_index
-            del items[self.selected_bt_index]
+            before_selected_indices = set(self.selected_bt_indices)
+            for index in sorted(selected_indices, reverse=True):
+                if 0 <= index < len(items):
+                    del items[index]
             self.selected_bt_index = None
-            self.push_bt_items_undo_snapshot('刪除 _bt 條目', before_items, before_selected)
+            self.selected_bt_indices.clear()
+            self.push_bt_items_undo_snapshot('刪除 _bt 條目', before_items, before_selected, before_selected_indices)
             self.mark_bt_dirty()
             self.set_box_editor_enabled(False)
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
-            self.status_label.setText('已刪除 _bt 條目，尚未保存。')
+            if len(selected_indices) > 1:
+                self.status_label.setText(f'已刪除 {len(selected_indices)} 條 _bt 條目，尚未保存。')
+            else:
+                self.status_label.setText('已刪除 _bt 條目，尚未保存。')
 
         def update_action_state(self) -> None:
             can_save = self.bt_data is not None and self.bt_dirty
@@ -2913,7 +3152,7 @@ if QT_IMPORT_ERROR is None:
                 self.prev_page_action.setEnabled(has_pages and self.page_list.currentRow() > 0)
             if self.next_page_action is not None:
                 self.next_page_action.setEnabled(has_pages and self.page_list.currentRow() < len(self.page_names) - 1)
-            has_selected_bt = self.selected_bt_item() is not None
+            has_selected_bt = bool(self.selected_bt_indices_list())
             if self.increase_font_action is not None:
                 self.increase_font_action.setEnabled(has_selected_bt)
             if self.decrease_font_action is not None:
@@ -2975,6 +3214,62 @@ if QT_IMPORT_ERROR is None:
         def updates_change_item(self, item: dict, updates: dict[str, object]) -> bool:
             return any(not self.values_equal(item.get(key), value) for key, value in updates.items())
 
+        def normalized_bt_updates(self, updates: dict[str, object]) -> dict[str, object]:
+            normalized_updates = dict(updates)
+            if 'xyxy_pixel' in normalized_updates:
+                xyxy = tuple(int(v) for v in normalized_updates['xyxy_pixel'])
+                normalized_updates['xyxy_pixel'] = list(self.clamp_xyxy(xyxy))
+            if 'rotation' in normalized_updates:
+                normalized_updates['rotation'] = self.normalized_rotation(normalized_updates['rotation'])
+            return normalized_updates
+
+        def apply_bt_updates_to_indices(
+            self,
+            indices: list[int] | set[int],
+            update_builder,
+            *,
+            status: str = '已修改，尚未保存。',
+            refresh_editor: bool = True,
+        ) -> bool:
+            page_name = self.current_page_name()
+            if page_name is None:
+                return False
+            items = self.bt_items_for_page(page_name)
+            target_indices = [
+                index for index in sorted(set(indices))
+                if 0 <= index < len(items) and isinstance(items[index], dict)
+            ]
+            if not target_indices:
+                return False
+
+            changes: list[tuple[int, dict[str, object]]] = []
+            for index in target_indices:
+                updates = update_builder(index, items[index])
+                if not updates:
+                    continue
+                normalized_updates = self.normalized_bt_updates(updates)
+                if self.updates_change_item(items[index], normalized_updates):
+                    changes.append((index, normalized_updates))
+            if not changes:
+                return False
+
+            before_items = copy.deepcopy(items)
+            before_selected = self.selected_bt_index
+            before_selected_indices = set(self.selected_bt_indices)
+            self.push_bt_items_undo_snapshot(status, before_items, before_selected, before_selected_indices)
+            for index, normalized_updates in changes:
+                item = items[index]
+                if 'xyxy_pixel' in normalized_updates:
+                    self.set_bt_xyxy(item, tuple(int(v) for v in normalized_updates.pop('xyxy_pixel')))
+                item.update(normalized_updates)
+            self.mark_bt_dirty()
+            if refresh_editor:
+                self.populate_box_editor_for_selection()
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
+            self.status_label.setText(status)
+            return True
+
         def sync_box_from_measure_item(self, box: BoxOverlay, item: dict) -> None:
             xyxy = xyxy_from_item(item)
             if xyxy is not None:
@@ -3002,28 +3297,14 @@ if QT_IMPORT_ERROR is None:
             status: str = '已修改，尚未保存。',
             refresh_editor: bool = True,
         ) -> bool:
-            item = self.selected_bt_item()
-            if item is None:
+            if self.selected_bt_item() is None or self.selected_bt_index is None:
                 return False
-            normalized_updates = dict(updates)
-            if 'xyxy_pixel' in normalized_updates:
-                xyxy = tuple(int(v) for v in normalized_updates['xyxy_pixel'])
-                normalized_updates['xyxy_pixel'] = list(self.clamp_xyxy(xyxy))
-            if 'rotation' in normalized_updates:
-                normalized_updates['rotation'] = self.normalized_rotation(normalized_updates['rotation'])
-            if not self.updates_change_item(item, normalized_updates):
-                return False
-            self.push_bt_undo(status)
-            if 'xyxy_pixel' in normalized_updates:
-                self.set_bt_xyxy(item, tuple(int(v) for v in normalized_updates.pop('xyxy_pixel')))
-            item.update(normalized_updates)
-            self.mark_bt_dirty()
-            if refresh_editor:
-                self.populate_box_editor_from_bt(item)
-            self.update_bt_item_list()
-            self.render_bt_page(refit=False)
-            self.status_label.setText(status)
-            return True
+            return self.apply_bt_updates_to_indices(
+                [self.selected_bt_index],
+                lambda _index, _item: dict(updates),
+                status=status,
+                refresh_editor=refresh_editor,
+            )
 
         def undo_last_edit(self) -> None:
             if self.bt_data is None or not self.bt_undo_stack:
@@ -3040,10 +3321,20 @@ if QT_IMPORT_ERROR is None:
                 items = self.bt_items_for_page(page_name)
                 items[:] = copy.deepcopy(entry.get('items') or [])
                 selected_index = entry.get('selected_index')
-                self.selected_bt_index = selected_index if isinstance(selected_index, int) else None
+                selected_indices = entry.get('selected_indices')
+                restored_indices = {
+                    index for index in selected_indices
+                    if isinstance(index, int) and 0 <= index < len(items)
+                } if isinstance(selected_indices, list) else set()
+                if isinstance(selected_index, int) and 0 <= selected_index < len(items):
+                    restored_indices.add(selected_index)
+                    self.selected_bt_index = selected_index
+                else:
+                    self.selected_bt_index = self.active_bt_index_from_selection(restored_indices)
+                self.selected_bt_indices = restored_indices
                 self.mark_bt_dirty()
-                if self.selected_bt_item() is not None:
-                    self.populate_box_editor_from_bt(self.selected_bt_item())
+                if self.selected_bt_items():
+                    self.populate_box_editor_for_selection()
                 else:
                     self.set_box_editor_enabled(False)
                 self.update_bt_item_list()
@@ -3059,6 +3350,7 @@ if QT_IMPORT_ERROR is None:
                 insert_index = item_index if isinstance(item_index, int) else len(items)
                 items.insert(max(0, min(insert_index, len(items))), item)
             self.selected_bt_index = item_index if isinstance(item_index, int) else None
+            self.selected_bt_indices = {self.selected_bt_index} if self.selected_bt_index is not None else set()
             self.mark_bt_dirty()
             if self.selected_bt_item() is not None:
                 self.populate_box_editor_from_bt(self.selected_bt_item())
@@ -3343,6 +3635,8 @@ if QT_IMPORT_ERROR is None:
             try:
                 self.clear_hover_char_box(render=False)
                 self.selected_box_index = None
+                self.selected_bt_index = None
+                self.selected_bt_indices.clear()
                 self.show_bt_inpainted = True
                 self.set_box_editor_enabled(False)
                 image_size = qimage_size(self.processor.image_dir / page_name)
@@ -3705,17 +3999,20 @@ if QT_IMPORT_ERROR is None:
                 )
                 return
 
+            selected_indices = set(self.selected_bt_indices_list())
+            multiple_selected = len(selected_indices) > 1
             for index, item in enumerate(items):
                 xyxy = self.bt_xyxy_from_item(item)
                 if xyxy is None:
                     continue
                 x1, y1, x2, y2 = xyxy
-                selected = index == self.selected_bt_index
+                selected = index in selected_indices
                 frame_color = QColor(255, 236, 150, 210)
                 if selected:
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.setPen(QPen(frame_color, 2))
                     painter.drawRect(QRectF(x1, y1, max(1, x2 - x1), max(1, y2 - y1)))
+                if selected and index == self.selected_bt_index and not multiple_selected:
                     painter.setBrush(frame_color)
                     for hx, hy in (
                         (x1, y1), ((x1 + x2) / 2, y1), (x2, y1),
@@ -3784,7 +4081,34 @@ if QT_IMPORT_ERROR is None:
         def handle_bt_mouse_press(self, x: float, y: float) -> None:
             index, mode = self.hit_test_bt_item(x, y)
             self.bt_view.set_background_pan_enabled(index is None)
-            self.select_bt_item(index)
+            modifiers = QApplication.keyboardModifiers()
+            toggle_selection = bool(
+                modifiers & (Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier)
+            )
+            if toggle_selection and index is not None:
+                selected = set(self.selected_bt_indices_list())
+                if index in selected and len(selected) > 1:
+                    selected.remove(index)
+                    active_index = self.active_bt_index_from_selection(selected)
+                else:
+                    selected.add(index)
+                    active_index = index
+                self.set_bt_selection(selected, active_index=active_index)
+                self._bt_drag_mode = None
+                self._bt_drag_start = None
+                self._bt_drag_original = None
+                self._bt_drag_original_item = None
+                self._bt_drag_original_items = None
+                self._bt_drag_original_xyxys = {}
+                self._bt_drag_indices = []
+                self._bt_drag_temporary = False
+                return
+            if index is None:
+                self.select_bt_item(None)
+            elif index in self.selected_bt_indices_list() and self.has_multiple_bt_selection():
+                self.set_bt_selection(set(self.selected_bt_indices_list()), active_index=index)
+            else:
+                self.select_bt_item(index)
             item = self.selected_bt_item()
             xyxy = self.bt_xyxy_from_item(item) if item is not None else None
             if item is None or xyxy is None or mode is None:
@@ -3792,15 +4116,34 @@ if QT_IMPORT_ERROR is None:
                 self._bt_drag_start = None
                 self._bt_drag_original = None
                 self._bt_drag_original_item = None
+                self._bt_drag_original_items = None
+                self._bt_drag_original_xyxys = {}
+                self._bt_drag_indices = []
                 self._bt_drag_temporary = False
                 self._popover_bt_item = None
                 self.bt_match_popover.hide()
                 return
             temporary = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier)
+            drag_indices = self.selected_bt_indices_list()
+            if self.has_multiple_bt_selection():
+                mode = 'move'
+                drag_indices = [
+                    selected_index for selected_index in drag_indices
+                    if self.bt_xyxy_from_item(self.bt_items_for_page()[selected_index]) is not None
+                ]
             self._bt_drag_mode = 'move' if temporary else mode
             self._bt_drag_start = (x, y)
             self._bt_drag_original = xyxy
             self._bt_drag_original_item = copy.deepcopy(item)
+            self._bt_drag_original_items = copy.deepcopy(self.bt_items_for_page())
+            self._bt_drag_indices = drag_indices
+            self._bt_drag_original_xyxys = {}
+            items = self.bt_items_for_page()
+            for selected_index in drag_indices:
+                if 0 <= selected_index < len(items):
+                    selected_xyxy = self.bt_xyxy_from_item(items[selected_index])
+                    if selected_xyxy is not None:
+                        self._bt_drag_original_xyxys[selected_index] = selected_xyxy
             self._bt_drag_temporary = temporary
             self.show_bt_match_popover(item)
 
@@ -3814,6 +4157,18 @@ if QT_IMPORT_ERROR is None:
                 return
             dx = int(round(x - self._bt_drag_start[0]))
             dy = int(round(y - self._bt_drag_start[1]))
+            items = self.bt_items_for_page()
+            if self.has_multiple_bt_selection() and self._bt_drag_mode == 'move':
+                for index, xyxy in self._bt_drag_original_xyxys.items():
+                    if 0 <= index < len(items):
+                        x1, y1, x2, y2 = xyxy
+                        self.set_bt_xyxy(items[index], self.clamp_xyxy((x1 + dx, y1 + dy, x2 + dx, y2 + dy)))
+                self.populate_box_editor_for_selection()
+                self.update_bt_item_list()
+                self.render_bt_page(refit=False)
+                if self._bt_drag_temporary:
+                    self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
+                return
             x1, y1, x2, y2 = self._bt_drag_original
             if self._bt_drag_mode == 'move':
                 new_xyxy = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
@@ -3832,7 +4187,7 @@ if QT_IMPORT_ERROR is None:
             self.populate_box_editor_from_bt(item)
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
-            if self._popover_bt_item is item:
+            if self._popover_bt_item is item and not self.has_multiple_bt_selection():
                 self.position_bt_match_popover(item)
             if self._bt_drag_temporary:
                 self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
@@ -3841,12 +4196,18 @@ if QT_IMPORT_ERROR is None:
             item = self.selected_bt_item()
             if (
                 self._bt_drag_temporary
-                and self._bt_drag_original_item is not None
+                and (self._bt_drag_original_item is not None or self._bt_drag_original_items is not None)
                 and self.selected_bt_index is not None
             ):
                 page_name = self.current_page_name()
                 items = self.bt_items_for_page(page_name)
-                if 0 <= self.selected_bt_index < len(items):
+                if self._bt_drag_original_items is not None:
+                    items[:] = self._bt_drag_original_items
+                    self.populate_box_editor_for_selection()
+                    self.update_bt_item_list()
+                    self.render_bt_page(refit=False)
+                    self.status_label.setText('臨時移動結束，已回到原位。')
+                elif 0 <= self.selected_bt_index < len(items):
                     items[self.selected_bt_index] = self._bt_drag_original_item
                     self.populate_box_editor_from_bt(items[self.selected_bt_index])
                     self.update_bt_item_list()
@@ -3856,6 +4217,42 @@ if QT_IMPORT_ERROR is None:
                 self._bt_drag_start = None
                 self._bt_drag_original = None
                 self._bt_drag_original_item = None
+                self._bt_drag_original_items = None
+                self._bt_drag_original_xyxys = {}
+                self._bt_drag_indices = []
+                self._bt_drag_temporary = False
+                return
+            if (
+                self.has_multiple_bt_selection()
+                and self._bt_drag_original_items is not None
+                and self._bt_drag_original_xyxys
+            ):
+                page_name = self.current_page_name()
+                items = self.bt_items_for_page(page_name)
+                changed = False
+                for index, original_xyxy in self._bt_drag_original_xyxys.items():
+                    if 0 <= index < len(items):
+                        xyxy = self.bt_xyxy_from_item(items[index])
+                        if xyxy is not None and xyxy != original_xyxy:
+                            items[index]['match_status'] = 'manual'
+                            changed = True
+                if changed:
+                    self.push_bt_items_undo_snapshot(
+                        '移動 _bt 多選框',
+                        self._bt_drag_original_items,
+                        self.selected_bt_index,
+                        self.selected_bt_indices,
+                    )
+                    self.mark_bt_dirty()
+                    self.update_bt_item_list()
+                    self.status_label.setText(f'已移動 {len(self._bt_drag_original_xyxys)} 條 _bt 條目，尚未保存。')
+                self._bt_drag_mode = None
+                self._bt_drag_start = None
+                self._bt_drag_original = None
+                self._bt_drag_original_item = None
+                self._bt_drag_original_items = None
+                self._bt_drag_original_xyxys = {}
+                self._bt_drag_indices = []
                 self._bt_drag_temporary = False
                 return
             if item is not None and self._bt_drag_original is not None and self._bt_drag_original_item is not None:
@@ -3877,6 +4274,9 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_start = None
             self._bt_drag_original = None
             self._bt_drag_original_item = None
+            self._bt_drag_original_items = None
+            self._bt_drag_original_xyxys = {}
+            self._bt_drag_indices = []
             self._bt_drag_temporary = False
 
         def render_current_page(self, *_, refit: bool = True) -> None:
