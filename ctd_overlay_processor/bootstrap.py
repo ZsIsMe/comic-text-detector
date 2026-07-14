@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import venv
@@ -47,10 +48,29 @@ def run(cmd: list[str], *, cwd: Path | None = None) -> None:
         fail(f'命令失敗，退出碼 {exc.returncode}：{" ".join(cmd)}', exc.returncode)
 
 
+def is_venv_healthy(python: Path) -> bool:
+    try:
+        subprocess.check_call(
+            [str(python), '--version'],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
 def ensure_venv() -> Path:
     python = venv_python()
     if python.exists():
-        return python
+        if is_venv_healthy(python):
+            return python
+        info('虛擬環境已損壞，正在重新建立...')
+        try:
+            shutil.rmtree(VENV_DIR)
+        except Exception as exc:
+            fail(f'無法移除損壞的虛擬環境：{exc}')
 
     info('正在建立虛擬環境...')
     try:

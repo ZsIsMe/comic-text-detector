@@ -992,6 +992,8 @@ if QT_IMPORT_ERROR is None:
             self.show_npz_smoothed = QCheckBox('NPZ 平滑遮罩')
             self.show_npz_outer = QCheckBox('NPZ 外輪廓遮罩')
             self.show_font_labels = QCheckBox('字級標籤')
+            self.show_bt_font_labels_check = QCheckBox('_bt 字級標籤')
+            self.show_bt_font_labels_check.setToolTip('顯示/隱藏左側 _bt 文字框旁的字級標籤')
             self.show_popover_check = QCheckBox('預覽浮窗')
             self.show_popover_check.setToolTip('顯示/隱藏 _bt 匹配的局部預覽浮窗 (Command+P)')
             self.navigator = NavigatorWidget()
@@ -1028,6 +1030,7 @@ if QT_IMPORT_ERROR is None:
 
             self._restore_layer_checkbox_states()
             self.show_popover_check.setChecked(self._settings_bool('ui/show_match_popover', True))
+            self.show_bt_font_labels_check.setChecked(self._settings_bool('ui/show_bt_font_labels', True))
             self.opacity_slider.setRange(5, 90)
             self.opacity_slider.setValue(35)
 
@@ -1158,6 +1161,7 @@ if QT_IMPORT_ERROR is None:
             toolbar.addAction(self.toggle_right_panel_action)
 
             toolbar.addWidget(self.show_popover_check)
+            toolbar.addWidget(self.show_bt_font_labels_check)
             toggle_popover_action = QAction('切換預覽浮窗', self)
             toggle_popover_action.setShortcuts([QKeySequence('Meta+P'), QKeySequence('Ctrl+P')])
             toggle_popover_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1483,6 +1487,7 @@ if QT_IMPORT_ERROR is None:
             self.view.viewportChanged.connect(self.sync_viewports_from)
             self.navigator.navigateRequested.connect(self.center_views_on)
             self.show_popover_check.stateChanged.connect(self.handle_match_popover_setting_changed)
+            self.show_bt_font_labels_check.stateChanged.connect(self.handle_bt_font_label_setting_changed)
             self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
             self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -1539,6 +1544,10 @@ if QT_IMPORT_ERROR is None:
         def handle_layer_checkbox_changed(self, *_: object) -> None:
             self._save_layer_checkbox_states()
             self.render_current_page()
+
+        def handle_bt_font_label_setting_changed(self, *_: object) -> None:
+            self.settings.setValue('ui/show_bt_font_labels', self.show_bt_font_labels_check.isChecked())
+            self.render_bt_page(refit=False)
 
         def match_popover_enabled(self) -> bool:
             return self.show_popover_check.isChecked() and not self.has_multiple_bt_selection()
@@ -4053,13 +4062,14 @@ if QT_IMPORT_ERROR is None:
                         (x1, y2), ((x1 + x2) / 2, y2), (x2, y2),
                     ):
                         painter.drawRect(QRectF(hx - 3, hy - 3, 6, 6))
-                self.draw_bt_font_label(
-                    painter,
-                    QRectF(x1, y1, x2 - x1, y2 - y1),
-                    self.bt_font_label(item),
-                    image_width,
-                    image_height,
-                )
+                if self.show_bt_font_labels_check.isChecked():
+                    self.draw_bt_font_label(
+                        painter,
+                        QRectF(x1, y1, x2 - x1, y2 - y1),
+                        self.bt_font_label(item),
+                        image_width,
+                        image_height,
+                    )
 
         def draw_bt_font_label(
             self,
