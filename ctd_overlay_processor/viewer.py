@@ -2739,6 +2739,12 @@ if QT_IMPORT_ERROR is None:
             if crop.isNull():
                 self.status_label.setText('無法建立測量角度裁切圖。')
                 return
+            mask_crop = None
+            if self.processor is not None:
+                mask_path = self.processor.mask_dir / f'{Path(page_name).stem}.png'
+                mask_image = QImage(str(mask_path))
+                if not mask_image.isNull():
+                    mask_crop = mask_image.copy(crop_rect.toRect())
             entries: list[dict[str, object]] = []
             for index, item, center, _xyxy in targets:
                 local_center = QPointF(center[0] - crop_rect.left(), center[1] - crop_rect.top())
@@ -2763,14 +2769,24 @@ if QT_IMPORT_ERROR is None:
             dialog = BtMeasurementDialog(
                 crop,
                 entries=entries,
+                mask=mask_crop,
                 display_scale=display_scale,
                 parent=self,
             )
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
+            single_char_measurement = dialog.canvas.interaction_mode == 'detect'
             results = dialog.result_updates()
             if not results:
                 return
+            if single_char_measurement:
+                apply_status = '已套用單字測量的字體大小與角度，尚未保存。'
+            else:
+                apply_status = (
+                    f'已套用 {len(results)} 條測量角度，尚未保存。'
+                    if len(results) > 1
+                    else '已套用測量角度，尚未保存。'
+                )
             changed = self.apply_bt_updates_to_indices(
                 list(results.keys()),
                 lambda index, item: self.measurement_updates_for_item(
@@ -2779,7 +2795,7 @@ if QT_IMPORT_ERROR is None:
                     image.width(),
                     image.height(),
                 ) if index in results else {},
-                status=f'已套用 {len(results)} 條測量角度，尚未保存。' if len(results) > 1 else '已套用測量角度，尚未保存。',
+                status=apply_status,
             )
             active_result = results.get(self.selected_bt_index if self.selected_bt_index is not None else selected_indices[0])
             if changed and active_result is not None:

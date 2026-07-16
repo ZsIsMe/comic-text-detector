@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import math
 
+import cv2
+import numpy as np
+
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QKeyEvent, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QKeyEvent, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -36,6 +39,91 @@ def line_from_measurement(center: QPointF, length: float, rotation: float) -> tu
     return QPointF(center.x() - dx, center.y() - dy), QPointF(center.x() + dx, center.y() + dy)
 
 
+def qimage_to_grayscale_array(image: QImage | None) -> np.ndarray | None:
+    if image is None or image.isNull():
+        return None
+    gray = image.convertToFormat(QImage.Format.Format_Grayscale8)
+    ptr = gray.constBits()
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape(gray.height(), gray.bytesPerLine())
+    return arr[:, :gray.width()].copy()
+
+
+def normalized_axis_angle(value: float) -> float:
+    angle = float(value)
+    while angle >= 90.0:
+        angle -= 180.0
+    while angle < -90.0:
+        angle += 180.0
+    return round(angle, 2)
+
+
+def detect_minimum_text_rectangle(
+    mask: np.ndarray,
+    roi: tuple[int, int, int, int],
+    *,
+    selection_polygon: list[list[float]] | None = None,
+    threshold: int = 10,
+) -> dict[str, object] | None:
+    if mask.ndim == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    height, width = mask.shape[:2]
+    x1, y1, x2, y2 = roi
+    x1 = max(0, min(int(x1), width - 1))
+    y1 = max(0, min(int(y1), height - 1))
+    x2 = max(x1 + 1, min(int(x2), width))
+    y2 = max(y1 + 1, min(int(y2), height))
+    binary = (mask[y1:y2, x1:x2] > threshold).astype(np.uint8)
+    if selection_polygon:
+        polygon = np.asarray(selection_polygon, dtype=np.float64).reshape(-1, 2)
+        polygon[:, 0] -= x1
+        polygon[:, 1] -= y1
+        selection_mask = np.zeros_like(binary)
+        cv2.fillConvexPoly(selection_mask, np.round(polygon).astype(np.int32), 1)
+        binary &= selection_mask
+    if int(binary.sum()) < 8:
+        return None
+
+    component_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if component_count > 1:
+        component_areas = stats[1:, cv2.CC_STAT_AREA]
+        largest_area = int(component_areas.max()) if component_areas.size else 0
+        min_area = max(3, int(round(largest_area * 0.004)))
+        keep_labels = [
+            label
+            for label in range(1, component_count)
+            if int(stats[label, cv2.CC_STAT_AREA]) >= min_area
+        ]
+        if keep_labels:
+            binary = np.isin(labels, keep_labels).astype(np.uint8)
+
+    ys, xs = np.where(binary > 0)
+    if len(xs) < 8:
+        return None
+    points = np.column_stack((xs + x1, ys + y1)).astype(np.float32)
+    rect = cv2.minAreaRect(points)
+    box = cv2.boxPoints(rect).astype(np.float64)
+    edges = []
+    for index in range(4):
+        start = box[index]
+        end = box[(index + 1) % 4]
+        vector = end - start
+        edges.append((float(np.linalg.norm(vector)), vector))
+    long_length, long_vector = max(edges, key=lambda item: item[0])
+    short_length = min(length for length, _vector in edges)
+    if long_length < 1.0 or short_length < 1.0:
+        return None
+    axis_angle = normalized_axis_angle(math.degrees(math.atan2(-long_vector[1], long_vector[0])))
+    return {
+        'roi': [x1, y1, x2, y2],
+        'box': [[float(point[0]), float(point[1])] for point in box],
+        'center': [float(rect[0][0]), float(rect[0][1])],
+        'long_side': float(long_length),
+        'short_side': float(short_length),
+        'axis_angle': axis_angle,
+        'pixel_count': int(len(xs)),
+    }
+
+
 class BtMeasurementMultiCanvas(QWidget):
     changed = Signal()
 
@@ -44,6 +132,7 @@ class BtMeasurementMultiCanvas(QWidget):
         image: QImage,
         *,
         entries: list[dict[str, object]],
+        mask: QImage | None = None,
         display_scale: float | None = None,
         parent=None,
     ) -> None:
@@ -51,6 +140,7 @@ class BtMeasurementMultiCanvas(QWidget):
         self.setMouseTracking(True)
         self._image = image.convertToFormat(QImage.Format.Format_RGBA8888)
         self._pixmap = QPixmap.fromImage(self._image)
+        self._mask = qimage_to_grayscale_array(mask)
         self._display_scale = display_scale
         self.entries = entries
         self.active_index = 0
@@ -69,6 +159,16 @@ class BtMeasurementMultiCanvas(QWidget):
         self._panning = False
         self._pan_start_point: QPointF | None = None
         self._pan_start_offset = QPointF(0, 0)
+        self._detection_band_start: QPointF | None = None
+        self._detection_band_end: QPointF | None = None
+        self._detection_half_width = 30.0
+        self._detection_drag_mode: str | None = None
+        self._detection_drag_press: QPointF | None = None
+        self._detection_original_start: QPointF | None = None
+        self._detection_original_end: QPointF | None = None
+        self._detection_original_half_width = 30.0
+        self._detection_result: dict[str, object] | None = None
+        self._detection_error: str | None = None
         self.text_preview_opacity = 1.0
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         for entry in self.entries:
@@ -137,7 +237,7 @@ class BtMeasurementMultiCanvas(QWidget):
         return normalized_rotation(float(entry.get('rotation') or 0.0))
 
     def set_interaction_mode(self, mode: str) -> None:
-        if mode not in {'line', 'text'}:
+        if mode not in {'line', 'text', 'detect'}:
             return
         self.interaction_mode = mode
         self._drag_entry_index = None
@@ -146,6 +246,125 @@ class BtMeasurementMultiCanvas(QWidget):
 
     def toggle_interaction_mode(self) -> None:
         self.set_interaction_mode('text' if self.interaction_mode == 'line' else 'line')
+
+    def detection_result(self) -> dict[str, object] | None:
+        return self._detection_result
+
+    def detection_error(self) -> str | None:
+        return self._detection_error
+
+    def clear_detection(self) -> None:
+        self._detection_band_start = None
+        self._detection_band_end = None
+        self._detection_drag_mode = None
+        self._detection_drag_press = None
+        self._detection_result = None
+        self._detection_error = None
+        self.changed.emit()
+        self.update()
+
+    def _detection_band_geometry(self) -> dict[str, object] | None:
+        start = self._detection_band_start
+        end = self._detection_band_end
+        if not isinstance(start, QPointF) or not isinstance(end, QPointF):
+            return None
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        length = math.hypot(dx, dy)
+        if length < 1.0:
+            return None
+        ux = dx / length
+        uy = dy / length
+        nx = -uy
+        ny = ux
+        half_width = max(4.0, float(self._detection_half_width))
+        midpoint = QPointF((start.x() + end.x()) / 2.0, (start.y() + end.y()) / 2.0)
+        points = [
+            QPointF(start.x() + nx * half_width, start.y() + ny * half_width),
+            QPointF(end.x() + nx * half_width, end.y() + ny * half_width),
+            QPointF(end.x() - nx * half_width, end.y() - ny * half_width),
+            QPointF(start.x() - nx * half_width, start.y() - ny * half_width),
+        ]
+        return {
+            'start': start,
+            'end': end,
+            'midpoint': midpoint,
+            'length': length,
+            'unit': (ux, uy),
+            'normal': (nx, ny),
+            'half_width': half_width,
+            'points': points,
+            'width_handles': [
+                QPointF(midpoint.x() + nx * half_width, midpoint.y() + ny * half_width),
+                QPointF(midpoint.x() - nx * half_width, midpoint.y() - ny * half_width),
+            ],
+        }
+
+    def _hit_test_detection_band(self, widget_point: QPointF) -> str | None:
+        geometry = self._detection_band_geometry()
+        if geometry is None:
+            return None
+        for name in ('start', 'end'):
+            point = geometry[name]
+            if isinstance(point, QPointF):
+                handle = self._to_widget(point)
+                if math.hypot(widget_point.x() - handle.x(), widget_point.y() - handle.y()) <= 14:
+                    return name
+        width_handles = geometry.get('width_handles')
+        if isinstance(width_handles, list):
+            for handle_point in width_handles:
+                if not isinstance(handle_point, QPointF):
+                    continue
+                handle = self._to_widget(handle_point)
+                if math.hypot(widget_point.x() - handle.x(), widget_point.y() - handle.y()) <= 14:
+                    return 'width'
+        image_point = self._to_image(widget_point)
+        start = geometry['start']
+        unit = geometry['unit']
+        normal = geometry['normal']
+        if not isinstance(start, QPointF) or not isinstance(unit, tuple) or not isinstance(normal, tuple):
+            return None
+        rel_x = image_point.x() - start.x()
+        rel_y = image_point.y() - start.y()
+        along = rel_x * unit[0] + rel_y * unit[1]
+        across = rel_x * normal[0] + rel_y * normal[1]
+        if 0.0 <= along <= float(geometry['length']) and abs(across) <= float(geometry['half_width']):
+            return 'move'
+        return None
+
+    def _run_detection(self) -> None:
+        self._detection_result = None
+        self._detection_error = None
+        if self._mask is None:
+            self._detection_error = '目前頁面沒有可用的 CTD mask。'
+            return
+        geometry = self._detection_band_geometry()
+        if geometry is None:
+            self._detection_error = '框選區域太小。'
+            return
+        points = geometry.get('points')
+        if not isinstance(points, list) or len(points) != 4:
+            self._detection_error = '無法建立帶狀選區。'
+            return
+        x_values = [point.x() for point in points if isinstance(point, QPointF)]
+        y_values = [point.y() for point in points if isinstance(point, QPointF)]
+        if len(x_values) != 4 or len(y_values) != 4:
+            self._detection_error = '無法建立帶狀選區。'
+            return
+        result = detect_minimum_text_rectangle(
+            self._mask,
+            (
+                int(math.floor(min(x_values))),
+                int(math.floor(min(y_values))),
+                int(math.ceil(max(x_values))),
+                int(math.ceil(max(y_values))),
+            ),
+            selection_polygon=[[point.x(), point.y()] for point in points],
+        )
+        if result is None:
+            self._detection_error = '框選範圍內沒有找到足夠的文字 mask 像素。'
+            return
+        self._detection_result = result
 
     def set_text_preview_opacity(self, opacity: float) -> None:
         self.text_preview_opacity = max(0.05, min(1.0, float(opacity)))
@@ -354,6 +573,35 @@ class BtMeasurementMultiCanvas(QWidget):
         self.setFocus()
         self._press_widget_point = QPointF(event.position())
         self._drag_started = False
+        if self.interaction_mode == 'detect':
+            image_point = self._to_image(event.position())
+            hit_mode = self._hit_test_detection_band(event.position())
+            self._detection_drag_press = QPointF(image_point)
+            self._detection_original_start = (
+                QPointF(self._detection_band_start)
+                if isinstance(self._detection_band_start, QPointF)
+                else None
+            )
+            self._detection_original_end = (
+                QPointF(self._detection_band_end)
+                if isinstance(self._detection_band_end, QPointF)
+                else None
+            )
+            self._detection_original_half_width = self._detection_half_width
+            if hit_mode is None:
+                self._detection_band_start = QPointF(image_point)
+                self._detection_band_end = QPointF(image_point)
+                self._detection_half_width = max(16.0, self.active_font_size() * 0.75)
+                self._detection_drag_mode = 'new'
+            else:
+                self._detection_drag_mode = hit_mode
+            self._detection_result = None
+            self._detection_error = None
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.changed.emit()
+            self.update()
+            event.accept()
+            return
         if self.interaction_mode == 'text':
             hit_index = self._hit_test_text(event.position())
             self.active_index = hit_index if hit_index is not None else self._nearest_text_entry(event.position())
@@ -381,6 +629,48 @@ class BtMeasurementMultiCanvas(QWidget):
         ):
             delta = event.position() - self._pan_start_point
             self._view_pan = QPointF(self._pan_start_offset.x() + delta.x(), self._pan_start_offset.y() + delta.y())
+            self.update()
+            event.accept()
+            return
+        if (
+            self.interaction_mode == 'detect'
+            and self._detection_drag_mode is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            image_point = self._to_image(event.position())
+            mode = self._detection_drag_mode
+            if mode in {'new', 'end'}:
+                self._detection_band_end = QPointF(image_point)
+            elif mode == 'start':
+                self._detection_band_start = QPointF(image_point)
+            elif mode == 'width':
+                geometry = self._detection_band_geometry()
+                if geometry is not None:
+                    midpoint = geometry.get('midpoint')
+                    normal = geometry.get('normal')
+                    if isinstance(midpoint, QPointF) and isinstance(normal, tuple):
+                        offset_x = image_point.x() - midpoint.x()
+                        offset_y = image_point.y() - midpoint.y()
+                        self._detection_half_width = max(4.0, abs(offset_x * normal[0] + offset_y * normal[1]))
+            elif (
+                mode == 'move'
+                and isinstance(self._detection_drag_press, QPointF)
+                and isinstance(self._detection_original_start, QPointF)
+                and isinstance(self._detection_original_end, QPointF)
+            ):
+                dx = image_point.x() - self._detection_drag_press.x()
+                dy = image_point.y() - self._detection_drag_press.y()
+                self._detection_band_start = QPointF(
+                    self._detection_original_start.x() + dx,
+                    self._detection_original_start.y() + dy,
+                )
+                self._detection_band_end = QPointF(
+                    self._detection_original_end.x() + dx,
+                    self._detection_original_end.y() + dy,
+                )
+            self._detection_result = None
+            self._detection_error = None
+            self.changed.emit()
             self.update()
             event.accept()
             return
@@ -414,7 +704,7 @@ class BtMeasurementMultiCanvas(QWidget):
             self.update()
             event.accept()
             return
-        if self.interaction_mode == 'line':
+        if self.interaction_mode in {'line', 'detect'}:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -425,6 +715,16 @@ class BtMeasurementMultiCanvas(QWidget):
             self._panning = False
             self._pan_start_point = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self.interaction_mode == 'detect' and self._detection_drag_mode is not None:
+            self._detection_drag_mode = None
+            self._detection_drag_press = None
+            self._detection_original_start = None
+            self._detection_original_end = None
+            self._run_detection()
+            self.changed.emit()
+            self.update()
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_mode is not None:
@@ -518,11 +818,58 @@ class BtMeasurementMultiCanvas(QWidget):
         painter.setPen(QPen(QColor(75, 80, 86), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(display_rect)
-        for index, entry in enumerate(self.entries):
-            self._draw_text_preview(painter, entry, active=index == self.active_index)
-        for index, entry in enumerate(self.entries):
-            self._draw_measurement_line(painter, entry, index, active=index == self.active_index)
+        if self.interaction_mode != 'detect':
+            for index, entry in enumerate(self.entries):
+                self._draw_text_preview(painter, entry, active=index == self.active_index)
+            for index, entry in enumerate(self.entries):
+                self._draw_measurement_line(painter, entry, index, active=index == self.active_index)
+        self._draw_detection(painter)
         painter.end()
+
+    def _draw_detection(self, painter: QPainter) -> None:
+        geometry = self._detection_band_geometry()
+        if geometry is not None:
+            band_points = geometry.get('points')
+            widget_points = [
+                self._to_widget(point)
+                for point in band_points
+                if isinstance(point, QPointF)
+            ] if isinstance(band_points, list) else []
+            if len(widget_points) == 4:
+                painter.setBrush(QColor(70, 170, 255, 28))
+                painter.setPen(QPen(QColor(70, 170, 255), 2, Qt.PenStyle.DashLine))
+                painter.drawPolygon(QPolygonF(widget_points))
+            start = geometry.get('start')
+            end = geometry.get('end')
+            if isinstance(start, QPointF) and isinstance(end, QPointF):
+                painter.setPen(QPen(QColor(70, 170, 255, 180), 2))
+                painter.drawLine(self._to_widget(start), self._to_widget(end))
+                painter.setBrush(QColor(180, 225, 255))
+                painter.setPen(QPen(QColor(20, 75, 120), 1))
+                for point in (start, end):
+                    painter.drawEllipse(self._to_widget(point), 7, 7)
+            width_handles = geometry.get('width_handles')
+            if isinstance(width_handles, list):
+                painter.setBrush(QColor(255, 210, 80))
+                painter.setPen(QPen(QColor(95, 65, 5), 1))
+                for point in width_handles:
+                    if not isinstance(point, QPointF):
+                        continue
+                    widget_point = self._to_widget(point)
+                    painter.drawRect(QRectF(widget_point.x() - 6, widget_point.y() - 6, 12, 12))
+        result = self._detection_result
+        box = result.get('box') if isinstance(result, dict) else None
+        if not isinstance(box, list) or len(box) != 4:
+            return
+        points = []
+        for value in box:
+            if not isinstance(value, list) or len(value) != 2:
+                return
+            points.append(self._to_widget(QPointF(float(value[0]), float(value[1]))))
+        painter.setBrush(QColor(80, 255, 140, 24))
+        painter.setPen(QPen(QColor(80, 255, 140), 3))
+        for index in range(4):
+            painter.drawLine(points[index], points[(index + 1) % 4])
 
     def _draw_measurement_line(self, painter: QPainter, entry: dict[str, object], index: int, *, active: bool) -> None:
         state = self.entry_state(entry)
@@ -657,6 +1004,7 @@ class BtMeasurementDialog(QDialog):
         image: QImage,
         *,
         entries: list[dict[str, object]],
+        mask: QImage | None = None,
         display_scale: float | None,
         parent=None,
     ) -> None:
@@ -667,23 +1015,47 @@ class BtMeasurementDialog(QDialog):
         self.canvas = BtMeasurementMultiCanvas(
             image,
             entries=entries,
+            mask=mask,
             display_scale=display_scale,
             parent=self,
         )
+        self.single_entry_mode = len(entries) == 1
 
         self.info_label = QLabel()
         self.info_label.setWordWrap(True)
+        self.detection_result_label = QLabel('單字測量：沿單字方向拖出帶狀選區。')
+        self.detection_result_label.setWordWrap(True)
+        self.detection_result_label.setMinimumHeight(42)
+        self.detection_result_label.setStyleSheet(
+            'QLabel {'
+            ' background: #16271d;'
+            ' color: #8dffac;'
+            ' border: 1px solid #3b8f55;'
+            ' border-radius: 5px;'
+            ' padding: 7px 10px;'
+            ' font-weight: 600;'
+            '}'
+        )
         self.line_mode_button = QPushButton('測量線')
         self.line_mode_button.setCheckable(True)
         self.line_mode_button.setChecked(True)
         self.text_mode_button = QPushButton('移動文字')
         self.text_mode_button.setCheckable(True)
+        self.detect_mode_button = QPushButton('單字測量')
+        self.detect_mode_button.setCheckable(True)
+        self.detect_mode_button.setToolTip('沿單字方向拖出帶狀選區，識別最小旋轉外接矩形、字體大小與角度')
+        self.clear_detection_button = QPushButton('清除單字測量')
+        self.detect_mode_button.setVisible(self.single_entry_mode)
+        self.clear_detection_button.setVisible(self.single_entry_mode)
+        self.detection_result_label.setVisible(self.single_entry_mode)
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)
         self.mode_group.addButton(self.line_mode_button)
         self.mode_group.addButton(self.text_mode_button)
+        self.mode_group.addButton(self.detect_mode_button)
         self.line_mode_button.clicked.connect(lambda _checked=False: self.set_interaction_mode('line'))
         self.text_mode_button.clicked.connect(lambda _checked=False: self.set_interaction_mode('text'))
+        self.detect_mode_button.clicked.connect(lambda _checked=False: self.set_interaction_mode('detect'))
         self.undo_button = QPushButton('撤銷')
         self.redo_button = QPushButton('重做')
 
@@ -703,11 +1075,11 @@ class BtMeasurementDialog(QDialog):
         self.opacity_value_label = QLabel()
         self.canvas.set_text_preview_opacity(self.opacity_slider.value() / 100.0)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('確認')
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText('確認')
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+        self.buttons.accepted.connect(self.handle_accept)
+        self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -715,6 +1087,8 @@ class BtMeasurementDialog(QDialog):
         mode_row = QHBoxLayout()
         mode_row.addWidget(self.line_mode_button)
         mode_row.addWidget(self.text_mode_button)
+        mode_row.addWidget(self.detect_mode_button)
+        mode_row.addWidget(self.clear_detection_button)
         mode_row.addWidget(self.undo_button)
         mode_row.addWidget(self.redo_button)
         mode_row.addStretch(1)
@@ -734,11 +1108,13 @@ class BtMeasurementDialog(QDialog):
         opacity_row.addWidget(self.opacity_slider)
         opacity_row.addWidget(self.opacity_value_label)
         layout.addLayout(opacity_row)
+        layout.addWidget(self.detection_result_label)
         layout.addWidget(self.canvas, 1)
         layout.addWidget(self.info_label)
-        layout.addWidget(buttons)
+        layout.addWidget(self.buttons)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
+        self.clear_detection_button.clicked.connect(self.canvas.clear_detection)
         self.apply_rotation_all_button.clicked.connect(self.apply_uniform_rotation_to_all)
         self.apply_font_size_all_button.clicked.connect(self.apply_uniform_font_size_to_all)
         self.opacity_slider.valueChanged.connect(self.handle_opacity_changed)
@@ -794,6 +1170,8 @@ class BtMeasurementDialog(QDialog):
         self.update_info()
 
     def set_interaction_mode(self, mode: str) -> None:
+        if mode == 'detect' and not self.single_entry_mode:
+            return
         self.canvas.set_interaction_mode(mode)
         self.sync_mode_buttons()
         self.update_info()
@@ -801,6 +1179,41 @@ class BtMeasurementDialog(QDialog):
     def sync_mode_buttons(self) -> None:
         self.line_mode_button.setChecked(self.canvas.interaction_mode == 'line')
         self.text_mode_button.setChecked(self.canvas.interaction_mode == 'text')
+        self.detect_mode_button.setChecked(self.canvas.interaction_mode == 'detect')
+
+    def detected_single_char_measurement(self) -> dict[str, object] | None:
+        if not self.single_entry_mode:
+            return None
+        detection = self.canvas.detection_result()
+        active_entry = self.canvas.active_entry()
+        if detection is None or active_entry is None:
+            return None
+        item_index = active_entry.get('item_index')
+        if not isinstance(item_index, int):
+            return None
+        axis_angle = float(detection.get('axis_angle') or 0)
+        long_side = float(detection.get('long_side') or 0)
+        if long_side <= 0:
+            return None
+        orientation = str(active_entry.get('orientation') or 'vertical')
+        rotation = normalized_axis_angle(
+            axis_angle if orientation == 'horizontal' else axis_angle - 90.0,
+        )
+        return {
+            'item_index': item_index,
+            'font-size': max(1, int(math.floor(long_side + 0.5))),
+            'rotation': rotation,
+            'axis_angle': axis_angle,
+            'long_side': long_side,
+            'short_side': float(detection.get('short_side') or 0),
+            'orientation': orientation,
+        }
+
+    def handle_accept(self) -> None:
+        if self.canvas.interaction_mode == 'detect' and self.detected_single_char_measurement() is None:
+            self.detection_result_label.setText('單字測量：請先框選單字並完成識別，再點擊確認。')
+            return
+        self.accept()
 
     def undo(self) -> None:
         if self.canvas.undo():
@@ -823,7 +1236,12 @@ class BtMeasurementDialog(QDialog):
         self.canvas.set_text_preview_opacity(value / 100.0)
 
     def update_info(self) -> None:
-        mode_text = '測量線' if self.canvas.interaction_mode == 'line' else '移動文字'
+        mode_names = {
+            'line': '測量線',
+            'text': '移動文字',
+            'detect': '單字測量',
+        }
+        mode_text = mode_names.get(self.canvas.interaction_mode, self.canvas.interaction_mode)
         active_entry = self.canvas.active_entry()
         item_index = active_entry.get('item_index', '-') if active_entry is not None else '-'
         self.undo_button.setEnabled(self.canvas.can_undo())
@@ -834,12 +1252,53 @@ class BtMeasurementDialog(QDialog):
         self.uniform_font_size_spin.setValue(max(1, int(round(self.canvas.active_font_size()))))
         self.uniform_rotation_spin.blockSignals(False)
         self.uniform_font_size_spin.blockSignals(False)
-        self.info_label.setText(
+        info = (
             f'模式：{mode_text}    '
             f'目前：{self.canvas.active_index + 1}/{len(self.canvas.entries)} item={item_index}    '
             f'字體大小：{int(round(self.canvas.active_font_size()))} px    '
             f'旋轉：{self.canvas.active_rotation():g} deg'
         )
+        detection = self.canvas.detection_result()
+        if detection is not None:
+            axis_angle = float(detection.get('axis_angle') or 0)
+            long_side = float(detection.get('long_side') or 0)
+            short_side = float(detection.get('short_side') or 0)
+            orientation = str(active_entry.get('orientation') or 'vertical') if active_entry is not None else 'vertical'
+            detected_rotation = normalized_axis_angle(
+                axis_angle if orientation == 'horizontal' else axis_angle - 90.0,
+            )
+            detected_font_size = max(1, int(math.floor(long_side + 0.5)))
+            orientation_text = '橫排' if orientation == 'horizontal' else '直排'
+            info += (
+                f'\n單字測量（待確認）：字體大小 {detected_font_size} px    短邊 {short_side:.1f} px    '
+                f'長邊 {long_side:.1f} px    長軸角度 {axis_angle:g} deg    '
+                f'按{orientation_text}換算旋轉 {detected_rotation:g} deg'
+            )
+            self.detection_result_label.setText(
+                f'單字測量　字體大小：{detected_font_size} px　短邊：{short_side:.1f} px　'
+                f'長邊：{long_side:.1f} px　長軸角度：{axis_angle:g}°　'
+                f'{orientation_text}旋轉：{detected_rotation:g}°　點擊確認後套用'
+            )
+        elif self.canvas.detection_error():
+            info += f'\n識別結果：{self.canvas.detection_error()}'
+            self.detection_result_label.setText(f'單字測量失敗：{self.canvas.detection_error()}')
+        elif self.canvas.interaction_mode == 'detect':
+            info += '\n沿文字方向拖出中心線；圓點調整長度與方向，黃色方塊調整寬度，拖動帶內區域可整體移動。'
+            self.detection_result_label.setText('單字測量：沿單字方向拖出中心線，再用黃色方塊調整選區寬度。')
+        else:
+            self.detection_result_label.setText('單字測量：點擊「單字測量」後框選一個單字。')
+        self.info_label.setText(info)
 
     def result_updates(self) -> dict[int, dict[str, object]]:
+        if self.canvas.interaction_mode == 'detect':
+            measurement = self.detected_single_char_measurement()
+            if measurement is None:
+                return {}
+            item_index = int(measurement['item_index'])
+            return {
+                item_index: {
+                    'font-size': int(measurement['font-size']),
+                    'rotation': float(measurement['rotation']),
+                },
+            }
         return self.canvas.result_updates()
