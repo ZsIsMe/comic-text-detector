@@ -115,12 +115,15 @@ def load_detection_api():
             MEASURE_JSON,
             INPAINT_MASK_EXPANSION,
             INPAINT_RADIUS,
+            ONLY_TEXT_COLOR,
+            ONLY_TEXT_OPACITY,
             _align_pages,
             _build_measure_maps,
             _detect_pages,
             _ensure_dirs,
             _load_json,
             _write_inpainted_images,
+            _write_only_text_images,
             _write_json,
         )
     except Exception as exc:
@@ -142,12 +145,15 @@ def load_detection_api():
         'MEASURE_JSON': MEASURE_JSON,
         'INPAINT_MASK_EXPANSION': INPAINT_MASK_EXPANSION,
         'INPAINT_RADIUS': INPAINT_RADIUS,
+        'ONLY_TEXT_COLOR': ONLY_TEXT_COLOR,
+        'ONLY_TEXT_OPACITY': ONLY_TEXT_OPACITY,
         '_align_pages': _align_pages,
         '_build_measure_maps': _build_measure_maps,
         '_detect_pages': _detect_pages,
         '_ensure_dirs': _ensure_dirs,
         '_load_json': _load_json,
         '_write_inpainted_images': _write_inpainted_images,
+        '_write_only_text_images': _write_only_text_images,
         '_write_json': _write_json,
     }
 
@@ -174,6 +180,7 @@ def run_detection(
     align_pages = api['_align_pages']
     build_measure_maps = api['_build_measure_maps']
     write_inpainted_images = api['_write_inpainted_images']
+    write_only_text_images = api['_write_only_text_images']
 
     if model_path is None:
         model_path = str(PROJECT_ROOT / 'data' / 'comictextdetector.pt')
@@ -237,6 +244,13 @@ def run_detection(
     write_json(measure_path, measure_map)
     write_json(measure_debug_path, measure_debug_map)
     page_names = list(measure_map.get('pages', {}).keys())
+    write_only_text_images(
+        image_dir,
+        paths,
+        page_names,
+        api['ONLY_TEXT_COLOR'],
+        api['ONLY_TEXT_OPACITY'],
+    )
     write_inpainted_images(
         image_dir,
         paths,
@@ -252,6 +266,7 @@ def run_detection(
     print(f'  - {paths["mask"]}/<檔名>.png', flush=True)
     print(f'  - {aligned_box_map_path}', flush=True)
     print(f'  - {paths["align_masks"]}/<檔名>.npz', flush=True)
+    print(f'  - {paths["only_text"]}/<檔名>.png', flush=True)
     print(f'  - {paths["inpainted"]}/<檔名>.png', flush=True)
     print(f'  - {measure_path}', flush=True)
     print(f'  - {measure_debug_path}', flush=True)

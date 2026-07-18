@@ -500,8 +500,8 @@ if QT_IMPORT_ERROR is None:
     transform: translate(-50%, -50%) rotate(0deg);
     transform-origin: center center;
     font-weight: 500;
-    white-space: pre-wrap;
-    width: max-content;
+    white-space: pre;
+    width: auto;
     text-align: left;
     line-height: 125%;
     letter-spacing: 0;
@@ -949,6 +949,7 @@ if QT_IMPORT_ERROR is None:
             self.copy_box_action: QAction | None = None
             self.delete_box_action: QAction | None = None
             self.measure_angle_action: QAction | None = None
+            self.add_empty_box_action: QAction | None = None
             self.move_box_actions: list[QAction] = []
             self.measure_dirty = False
             self.current_page_row = -1
@@ -968,6 +969,7 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_original_xyxys: dict[int, tuple[int, int, int, int]] = {}
             self._bt_drag_indices: list[int] = []
             self._bt_drag_temporary = False
+            self._bt_cursor_image_pos: tuple[float, float] | None = None
             self.show_bt_inpainted = True
 
             self.bt_view = ImageView()
@@ -1006,9 +1008,13 @@ if QT_IMPORT_ERROR is None:
             self.save_button = QPushButton('保存 _bt.json')
             self.even_font_button = QPushButton('字體取偶數')
             self.regularize_font_button = QPushButton('規整字體大小')
-            self.copy_bt_button = QPushButton('複製當前文字框')
-            self.measure_preview_button = QPushButton('測量角度')
-            self.measure_preview_button.setToolTip('打開測量角度 (Command+M)')
+            self.copy_bt_button = QPushButton('複製當前文字框（⌘/Ctrl+D）')
+            self.copy_bt_button.setToolTip('複製當前文字框（Command/Ctrl+D）')
+            self.measure_preview_button = QPushButton('測量角度（⌘/Ctrl+M）')
+            self.measure_preview_button.setToolTip('打開測量角度（Command/Ctrl+M）')
+            self.add_empty_bt_button = QPushButton('新增空文案（⌘/Ctrl+N）')
+            self.add_empty_bt_button.setToolTip('在鼠標位置新增預設空文案（Command/Ctrl+N）')
+            self.add_empty_bt_button.setEnabled(False)
             self.char_info_label = QLabel('游標單字框：未選中')
             self.char_info_label.setWordWrap(True)
             self.box_editor_title = QLabel('未選擇文字框')
@@ -1249,6 +1255,7 @@ if QT_IMPORT_ERROR is None:
             self.copy_box_action = QAction('複製文字框', self)
             self.copy_box_action.setShortcuts([QKeySequence('Meta+D'), QKeySequence('Ctrl+D')])
             self.copy_box_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.copy_box_action.setToolTip('複製當前文字框（Command/Ctrl+D）')
             self.copy_box_action.triggered.connect(self.copy_selected_box)
             self.copy_box_action.setEnabled(False)
             self.addAction(self.copy_box_action)
@@ -1256,9 +1263,18 @@ if QT_IMPORT_ERROR is None:
             self.measure_angle_action = QAction('測量角度', self)
             self.measure_angle_action.setShortcuts([QKeySequence('Meta+M'), QKeySequence('Ctrl+M')])
             self.measure_angle_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.measure_angle_action.setToolTip('打開測量角度（Command/Ctrl+M）')
             self.measure_angle_action.triggered.connect(self.open_bt_measurement_dialog)
             self.measure_angle_action.setEnabled(False)
             self.addAction(self.measure_angle_action)
+
+            self.add_empty_box_action = QAction('新增空文案', self)
+            self.add_empty_box_action.setShortcuts([QKeySequence('Meta+N'), QKeySequence('Ctrl+N')])
+            self.add_empty_box_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.add_empty_box_action.setToolTip('在鼠標位置新增預設空文案（Command/Ctrl+N）')
+            self.add_empty_box_action.triggered.connect(self.add_empty_bt_box)
+            self.add_empty_box_action.setEnabled(False)
+            self.addAction(self.add_empty_box_action)
 
             self.delete_box_action = QAction('刪除文字框', self)
             self.delete_box_action.setShortcuts([QKeySequence(Qt.Key.Key_Delete), QKeySequence(Qt.Key.Key_Backspace)])
@@ -1388,6 +1404,7 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.rotation_spin)
             layout.addWidget(self.copy_bt_button)
             layout.addWidget(self.measure_preview_button)
+            layout.addWidget(self.add_empty_bt_button)
             layout.addWidget(QLabel('文字顏色'))
             layout.addWidget(self.color_combo)
             layout.addWidget(QLabel('描邊粗細'))
@@ -1478,7 +1495,7 @@ if QT_IMPORT_ERROR is None:
             self.view.imageMousePressed.connect(self.handle_image_mouse_press)
             self.bt_view.imageMousePressed.connect(self.handle_bt_mouse_press)
             self.bt_view.imageMouseMoved.connect(self.update_bt_view_cursor)
-            self.bt_view.imageMouseLeft.connect(lambda: self.bt_view.set_background_pan_enabled(False))
+            self.bt_view.imageMouseLeft.connect(self.clear_bt_view_cursor)
             self.bt_view.imageMouseDragged.connect(self.handle_bt_mouse_drag)
             self.bt_view.imageMouseReleased.connect(self.handle_bt_mouse_release)
             self.bt_view.fontSizeWheelRequested.connect(self.nudge_selected_font_size)
@@ -1494,6 +1511,7 @@ if QT_IMPORT_ERROR is None:
             self.rotation_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.copy_bt_button.clicked.connect(self.copy_selected_box)
             self.measure_preview_button.clicked.connect(self.open_bt_measurement_dialog)
+            self.add_empty_bt_button.clicked.connect(self.add_empty_bt_box)
             self.color_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
             self.stroke_weight_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.text_has_stroke_check.stateChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -1626,6 +1644,7 @@ if QT_IMPORT_ERROR is None:
             image_dir = str(Path(image_dir).expanduser().resolve())
             self.current_image_dir = image_dir
             self.clear_hover_char_box(render=False)
+            self._bt_cursor_image_pos = None
             self.page = None
             self.selected_box_index = None
             self.selected_bt_index = None
@@ -2278,7 +2297,7 @@ if QT_IMPORT_ERROR is None:
                 widget.setEnabled(enabled)
             if not enabled:
                 self.box_editor_title.setText('未選擇 _bt 條目')
-                self.copy_bt_button.setText('複製當前文字框')
+                self.copy_bt_button.setText('複製當前文字框（⌘/Ctrl+D）')
                 previous_updating = self._updating_editor
                 self._updating_editor = True
                 self.bt_text_edit.clear()
@@ -2315,7 +2334,7 @@ if QT_IMPORT_ERROR is None:
             if len(selected_items) <= 1:
                 self.bt_text_edit.setEnabled(True)
                 self.measure_preview_button.setEnabled(True)
-                self.copy_bt_button.setText('複製當前文字框')
+                self.copy_bt_button.setText('複製當前文字框（⌘/Ctrl+D）')
                 return
             self._updating_editor = True
             self.bt_text_edit.setPlainText('多選時不批量修改文字')
@@ -2326,7 +2345,7 @@ if QT_IMPORT_ERROR is None:
             self.box_editor_title.setText(f'已選擇 {len(selected_items)} 條；active={active_index + 1}{suffix}')
             self.bt_text_edit.setEnabled(False)
             self.measure_preview_button.setEnabled(True)
-            self.copy_bt_button.setText('複製選中文字框')
+            self.copy_bt_button.setText('複製選中文字框（⌘/Ctrl+D）')
             self.bt_match_popover.hide()
             self._popover_bt_item = None
 
@@ -3163,6 +3182,65 @@ if QT_IMPORT_ERROR is None:
             else:
                 self.status_label.setText('已複製 _bt 條目，尚未保存。')
 
+        def add_empty_bt_box(self) -> None:
+            if self.bt_data is None:
+                self.status_label.setText('請先打開 _bt.json，再新增空文案。')
+                return
+            page_name = self.current_page_name()
+            cursor = self._bt_cursor_image_pos
+            if page_name is None or cursor is None:
+                self.status_label.setText('請先將鼠標移到左側圖片上，再新增空文案。')
+                return
+            items = self.bt_items_for_page(page_name)
+            image_size = qimage_size(self.page.image_path) if self.page is not None else None
+            if image_size is None:
+                self.status_label.setText('目前頁面沒有可用的圖片尺寸。')
+                return
+
+            before_items = copy.deepcopy(items)
+            before_selected = self.selected_bt_index
+            before_selected_indices = set(self.selected_bt_indices)
+            center_x = int(round(cursor[0]))
+            center_y = int(round(cursor[1]))
+            half_size = 15
+            xyxy = self.clamp_xyxy(
+                (
+                    center_x - half_size,
+                    center_y - half_size,
+                    center_x + half_size,
+                    center_y + half_size,
+                )
+            )
+            new_item: dict[str, Any] = {
+                'index': self.next_bt_index_for_page(items),
+                'text': '',
+                'font-size': 30,
+                'orientation': 'vertical',
+                'rotation': 0,
+                'color': '#000000',
+                'stroke-color': '#FFFFFF',
+                'stroke-weight': 4,
+                'need_inpaint': False,
+                'match_status': 'manual',
+                'xyxy_pixel': list(xyxy),
+            }
+            self.set_bt_xyxy(new_item, xyxy)
+            items.append(new_item)
+            new_index = len(items) - 1
+            self.selected_bt_index = new_index
+            self.selected_bt_indices = {new_index}
+            self.push_bt_items_undo_snapshot(
+                '新增空文案',
+                before_items,
+                before_selected,
+                before_selected_indices,
+            )
+            self.mark_bt_dirty()
+            self.populate_box_editor_for_selection()
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
+            self.status_label.setText('已在鼠標位置新增空文案，尚未保存。')
+
         def delete_selected_box(self) -> None:
             if self.bt_data is None:
                 return
@@ -3221,6 +3299,15 @@ if QT_IMPORT_ERROR is None:
                 self.copy_box_action.setEnabled(has_selected_bt)
             if self.measure_angle_action is not None:
                 self.measure_angle_action.setEnabled(has_selected_bt)
+            can_add_empty_box = (
+                self.bt_data is not None
+                and self.current_page_name() is not None
+                and self._bt_cursor_image_pos is not None
+            )
+            if self.add_empty_box_action is not None:
+                self.add_empty_box_action.setEnabled(can_add_empty_box)
+            if hasattr(self, 'add_empty_bt_button'):
+                self.add_empty_bt_button.setEnabled(can_add_empty_box)
             if self.delete_box_action is not None:
                 self.delete_box_action.setEnabled(has_selected_bt)
             for action in self.move_box_actions:
@@ -4207,8 +4294,15 @@ if QT_IMPORT_ERROR is None:
             self.show_bt_match_popover(item)
 
         def update_bt_view_cursor(self, x: float, y: float) -> None:
+            self._bt_cursor_image_pos = (float(x), float(y))
             index, _ = self.hit_test_bt_item(x, y)
             self.bt_view.set_background_pan_enabled(index is None)
+            self.update_action_state()
+
+        def clear_bt_view_cursor(self) -> None:
+            self._bt_cursor_image_pos = None
+            self.bt_view.set_background_pan_enabled(False)
+            self.update_action_state()
 
         def handle_bt_mouse_drag(self, x: float, y: float) -> None:
             item = self.selected_bt_item()
