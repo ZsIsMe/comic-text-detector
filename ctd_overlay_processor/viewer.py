@@ -25,7 +25,7 @@ QWebEngineView = None
 BtMeasurementDialog = None
 try:
     from PySide6.QtCore import QEvent, QPointF, QProcess, QRectF, QSize, QSettings, Qt, QTimer, Signal
-    from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap
+    from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QTextCursor
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -475,7 +475,45 @@ if QT_IMPORT_ERROR is None:
             painter.setPen(QPen(QColor(0, 0, 0), 1))
             painter.drawText(QRectF(x, y, label_w, label_h), Qt.AlignmentFlag.AlignCenter, text)
             painter.end()
-            self.preview_label.setPixmap(pixmap)
+
+
+    class BtTextEditPopover(QFrame):
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self.setObjectName('btTextEditPopover')
+            self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+            self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            self.setStyleSheet(
+                'QFrame#btTextEditPopover {'
+                '  background: rgba(20, 22, 24, 245);'
+                '  border: 1px solid rgba(255, 235, 150, 230);'
+                '  border-radius: 5px;'
+                '}'
+                'QPlainTextEdit {'
+                '  background: #101214;'
+                '  color: #f4f5f6;'
+                '  border: 1px solid #555b63;'
+                '  border-radius: 3px;'
+                '  padding: 5px;'
+                '}'
+            )
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(6, 6, 6, 6)
+            layout.setSpacing(4)
+            self.hint_label = QLabel('文字（輸入即時保存到目前編輯狀態）')
+            self.hint_label.setStyleSheet('color: #d9dcdf; border: none;')
+            self.text_edit = QPlainTextEdit()
+            self.text_edit.setPlaceholderText('輸入文字')
+            self.text_edit.setFixedSize(280, 108)
+            layout.addWidget(self.hint_label)
+            layout.addWidget(self.text_edit)
+            self.hide()
+
+        def set_text(self, text: str) -> None:
+            self.text_edit.blockSignals(True)
+            self.text_edit.setPlainText(text)
+            self.text_edit.blockSignals(False)
+            self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
 
 
     class HtmlTextOverlay:
@@ -975,6 +1013,7 @@ if QT_IMPORT_ERROR is None:
             self.bt_view = ImageView()
             self.view = ImageView()
             self.bt_match_popover = BtMatchPopover(self)
+            self.bt_text_popover = BtTextEditPopover(self)
             self.bt_html_overlay = HtmlTextOverlay(self.bt_view) if QT_WEBENGINE_AVAILABLE else None
             self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
             self.right_layer_dock: QDockWidget | None = None
@@ -1506,6 +1545,7 @@ if QT_IMPORT_ERROR is None:
             self.show_popover_check.stateChanged.connect(self.handle_match_popover_setting_changed)
             self.show_bt_font_labels_check.stateChanged.connect(self.handle_bt_font_label_setting_changed)
             self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.bt_text_popover.text_edit.textChanged.connect(self.apply_bt_text_popover_changes)
             self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
             self.rotation_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -1569,6 +1609,77 @@ if QT_IMPORT_ERROR is None:
 
         def match_popover_enabled(self) -> bool:
             return self.show_popover_check.isChecked() and not self.has_multiple_bt_selection()
+
+        def show_bt_text_popover(self, item: dict[str, Any]) -> None:
+            if self.has_multiple_bt_selection() or self.selected_bt_item() is None:
+                self.bt_text_popover.hide()
+                return
+            self.bt_text_popover.set_text(str(item.get('text') or ''))
+            self.position_bt_text_popover(item)
+            self.bt_text_popover.show()
+            self.bt_text_popover.raise_()
+            self.bt_text_popover.activateWindow()
+            self.bt_text_popover.text_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+
+        def position_bt_text_popover(self, item: dict[str, Any]) -> None:
+            xyxy = self.bt_xyxy_from_item(item)
+            if xyxy is None:
+                self.bt_text_popover.hide()
+                return
+            x1, y1, x2, y2 = xyxy
+            view_rect = self.bt_view.viewport().rect()
+            p1 = self.bt_view.mapFromScene(QPointF(x1, y1))
+            p2 = self.bt_view.mapFromScene(QPointF(x2, y2))
+            selected_rect = QRectF(p1, p2).normalized().adjusted(-8, -8, 8, 8)
+            popover_size = self.bt_text_popover.sizeHint()
+            gap = 12
+            margin = 12
+            min_x = margin
+            max_x = max(margin, view_rect.width() - popover_size.width() - margin)
+            min_y = margin
+            max_y = max(margin, view_rect.height() - popover_size.height() - margin)
+
+            right_x = int(round(selected_rect.right() + gap))
+            left_x = int(round(selected_rect.left() - popover_size.width() - gap))
+            if right_x + popover_size.width() <= view_rect.width() - margin:
+                x = right_x
+            elif left_x >= margin:
+                x = left_x
+            else:
+                x = int(round(selected_rect.center().x() - popover_size.width() / 2))
+
+            y = int(round(selected_rect.center().y() - popover_size.height() / 2))
+            y = max(min_y, min(y, max_y))
+            x = max(min_x, min(x, max_x))
+            global_pos = self.bt_view.viewport().mapToGlobal(QPointF(x, y).toPoint())
+            self.bt_text_popover.move(global_pos)
+
+        def apply_bt_text_popover_changes(self) -> None:
+            if self._updating_editor or self.has_multiple_bt_selection():
+                return
+            item = self.selected_bt_item()
+            if item is None:
+                return
+            text = self.bt_text_popover.text_edit.toPlainText()
+            changed = self.apply_selected_box_updates(
+                {'text': text},
+                status='已修改當前 _bt 文字，尚未保存。',
+                refresh_editor=False,
+            )
+            if not changed:
+                return
+            self._updating_editor = True
+            self.bt_text_edit.setPlainText(text)
+            self._updating_editor = False
+            self.position_bt_text_popover(item)
+
+        def sync_bt_text_popover_from_item(self) -> None:
+            if not self.bt_text_popover.isVisible() or self.has_multiple_bt_selection():
+                return
+            item = self.selected_bt_item()
+            if item is not None:
+                self.bt_text_popover.set_text(str(item.get('text') or ''))
+                self.position_bt_text_popover(item)
 
         def handle_match_popover_setting_changed(self, *_: object) -> None:
             enabled = self.show_popover_check.isChecked()
@@ -1740,6 +1851,9 @@ if QT_IMPORT_ERROR is None:
             self.update_bt_html_overlay()
             if self._popover_bt_item is not None and self.bt_match_popover.isVisible():
                 self.position_bt_match_popover(self._popover_bt_item)
+            item = self.selected_bt_item()
+            if item is not None and self.bt_text_popover.isVisible():
+                self.position_bt_text_popover(item)
 
         def center_views_on(self, x: float, y: float) -> None:
             self._syncing_views = True
@@ -2298,6 +2412,7 @@ if QT_IMPORT_ERROR is None:
             if not enabled:
                 self.box_editor_title.setText('未選擇 _bt 條目')
                 self.copy_bt_button.setText('複製當前文字框（⌘/Ctrl+D）')
+                self.bt_text_popover.hide()
                 previous_updating = self._updating_editor
                 self._updating_editor = True
                 self.bt_text_edit.clear()
@@ -2335,6 +2450,7 @@ if QT_IMPORT_ERROR is None:
                 self.bt_text_edit.setEnabled(True)
                 self.measure_preview_button.setEnabled(True)
                 self.copy_bt_button.setText('複製當前文字框（⌘/Ctrl+D）')
+                self.show_bt_text_popover(active_item)
                 return
             self._updating_editor = True
             self.bt_text_edit.setPlainText('多選時不批量修改文字')
@@ -2348,6 +2464,7 @@ if QT_IMPORT_ERROR is None:
             self.copy_bt_button.setText('複製選中文字框（⌘/Ctrl+D）')
             self.bt_match_popover.hide()
             self._popover_bt_item = None
+            self.bt_text_popover.hide()
 
         def set_bt_selection(
             self,
@@ -3020,6 +3137,8 @@ if QT_IMPORT_ERROR is None:
                     status='已修改當前 _bt 條目，尚未保存。',
                     refresh_editor=refresh_editor,
                 )
+            if QApplication.focusWidget() is self.bt_text_edit:
+                self.sync_bt_text_popover_from_item()
 
         def apply_font_size_from_table(self, row: int, column: int) -> None:
             selected_indices = self.selected_bt_indices_list()
