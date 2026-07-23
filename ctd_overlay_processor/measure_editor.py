@@ -278,16 +278,19 @@ class MeasureEditorWindow(QMainWindow):
         self.addAction(self.decrease_font_action)
 
         self.increase_font_10_action.setShortcuts([
-            QKeySequence('Meta+Shift++'),
-            QKeySequence('Meta+Shift+='),
-            QKeySequence('Ctrl+Shift++'),
-            QKeySequence('Ctrl+Shift+='),
+            QKeySequence('Meta+Alt++'),
+            QKeySequence('Meta+Alt+='),
+            QKeySequence('Ctrl+Alt++'),
+            QKeySequence('Ctrl+Alt+='),
         ])
         self.increase_font_10_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.increase_font_10_action.triggered.connect(lambda: self.nudge_selected_font_size(10))
         self.addAction(self.increase_font_10_action)
 
-        self.decrease_font_10_action.setShortcuts([QKeySequence('Meta+Shift+-'), QKeySequence('Ctrl+Shift+-')])
+        self.decrease_font_10_action.setShortcuts([
+            QKeySequence('Meta+Alt+-'),
+            QKeySequence('Ctrl+Alt+-'),
+        ])
         self.decrease_font_10_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.decrease_font_10_action.triggered.connect(lambda: self.nudge_selected_font_size(-10))
         self.addAction(self.decrease_font_10_action)

@@ -482,6 +482,8 @@ if QT_IMPORT_ERROR is None:
             super().__init__(parent)
             self.setObjectName('btTextEditPopover')
             self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             self.setStyleSheet(
                 'QFrame#btTextEditPopover {'
@@ -1260,10 +1262,10 @@ if QT_IMPORT_ERROR is None:
 
             self.increase_font_10_action = QAction('字體+10', self)
             self.increase_font_10_action.setShortcuts([
-                QKeySequence('Meta+Shift++'),
-                QKeySequence('Meta+Shift+='),
-                QKeySequence('Ctrl+Shift++'),
-                QKeySequence('Ctrl+Shift+='),
+                QKeySequence('Meta+Alt++'),
+                QKeySequence('Meta+Alt+='),
+                QKeySequence('Ctrl+Alt++'),
+                QKeySequence('Ctrl+Alt+='),
             ])
             self.increase_font_10_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             self.increase_font_10_action.triggered.connect(lambda: self.nudge_selected_font_size(10))
@@ -1271,7 +1273,10 @@ if QT_IMPORT_ERROR is None:
             self.addAction(self.increase_font_10_action)
 
             self.decrease_font_10_action = QAction('字體-10', self)
-            self.decrease_font_10_action.setShortcuts([QKeySequence('Meta+Shift+-'), QKeySequence('Ctrl+Shift+-')])
+            self.decrease_font_10_action.setShortcuts([
+                QKeySequence('Meta+Alt+-'),
+                QKeySequence('Ctrl+Alt+-'),
+            ])
             self.decrease_font_10_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             self.decrease_font_10_action.triggered.connect(lambda: self.nudge_selected_font_size(-10))
             self.decrease_font_10_action.setEnabled(False)
@@ -1618,8 +1623,6 @@ if QT_IMPORT_ERROR is None:
             self.position_bt_text_popover(item)
             self.bt_text_popover.show()
             self.bt_text_popover.raise_()
-            self.bt_text_popover.activateWindow()
-            self.bt_text_popover.text_edit.setFocus(Qt.FocusReason.OtherFocusReason)
 
         def position_bt_text_popover(self, item: dict[str, Any]) -> None:
             xyxy = self.bt_xyxy_from_item(item)
@@ -1627,31 +1630,16 @@ if QT_IMPORT_ERROR is None:
                 self.bt_text_popover.hide()
                 return
             x1, y1, x2, y2 = xyxy
-            view_rect = self.bt_view.viewport().rect()
             p1 = self.bt_view.mapFromScene(QPointF(x1, y1))
             p2 = self.bt_view.mapFromScene(QPointF(x2, y2))
             selected_rect = QRectF(p1, p2).normalized().adjusted(-8, -8, 8, 8)
             popover_size = self.bt_text_popover.sizeHint()
             gap = 12
-            margin = 12
-            min_x = margin
-            max_x = max(margin, view_rect.width() - popover_size.width() - margin)
-            min_y = margin
-            max_y = max(margin, view_rect.height() - popover_size.height() - margin)
-
-            right_x = int(round(selected_rect.right() + gap))
-            left_x = int(round(selected_rect.left() - popover_size.width() - gap))
-            if right_x + popover_size.width() <= view_rect.width() - margin:
-                x = right_x
-            elif left_x >= margin:
-                x = left_x
-            else:
-                x = int(round(selected_rect.center().x() - popover_size.width() / 2))
-
-            y = int(round(selected_rect.center().y() - popover_size.height() / 2))
-            y = max(min_y, min(y, max_y))
-            x = max(min_x, min(x, max_x))
-            global_pos = self.bt_view.viewport().mapToGlobal(QPointF(x, y).toPoint())
+            left_local = QPointF(
+                selected_rect.left() - gap - popover_size.width(),
+                selected_rect.center().y() - popover_size.height() / 2,
+            )
+            global_pos = self.bt_view.viewport().mapToGlobal(left_local.toPoint())
             self.bt_text_popover.move(global_pos)
 
         def apply_bt_text_popover_changes(self) -> None:
