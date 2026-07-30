@@ -50,9 +50,10 @@ ALIGNED_BOX_COLOR = (255, 255, 0)  # 青色：氣泡對齊後的文字區塊
 ALIGN_MASK_COLOR = (179, 255, 255)  # 淡黃色：候選氣泡區域
 
 COMPONENT_MASK_THRESHOLD = 10
-COMPONENT_KERNEL_HEIGHT = 25
-COMPONENT_KERNEL_WIDTH = 1
-COMPONENT_MIN_BOX_HEIGHT = 50
+COMPONENT_KERNEL_RATIO = 0.4
+COMPONENT_KERNEL_MIN = 3
+COMPONENT_KERNEL_MAX = 15
+COMPONENT_MIN_LONG_SIDE = 50
 COMPONENT_MIN_BOX_AREA = 120
 COMPONENT_SPLIT_VALLEY_RATIO = 0.12
 COMPONENT_SPLIT_MIN_GAP = 3
@@ -384,9 +385,10 @@ def _xyxy_to_item(box: list[int], method: str, accepted: bool, index: int) -> di
 def _matched_component_mask(
     image_shape: tuple[int, int],
     poly: np.ndarray,
-    component_boxes: list[dict],
+    component_boxes: dict[str, list[dict]] | list[dict],
 ) -> tuple[np.ndarray | None, int]:
-    if not component_boxes:
+    candidates = _component_candidates_for_polygon(poly, component_boxes)
+    if not candidates:
         return None, 0
 
     line_box = _polygon_to_xywh(poly.astype(np.int32))
@@ -395,7 +397,7 @@ def _matched_component_mask(
     matched_mask = np.zeros(image_shape[:2], dtype=np.uint8)
     matched_count = 0
 
-    for component in component_boxes:
+    for component in candidates:
         component_rect = _box_to_rect(component)
         component_area = max(1, component['w'] * component['h'])
         intersection_area = _rect_intersection_area(line_rect, component_rect)
@@ -424,6 +426,24 @@ def _matched_component_mask(
     if matched_count == 0:
         return None, 0
     return matched_mask, matched_count
+
+
+def _polygon_orientation(poly: np.ndarray) -> str:
+    points = np.asarray(poly, dtype=np.float64).reshape(4, 2)
+    edges = [points[(index + 1) % 4] - points[index] for index in range(4)]
+    lengths = [float(np.linalg.norm(edge)) for edge in edges]
+    long_index = int(np.argmax(lengths))
+    long_edge = edges[long_index]
+    return 'horizontal' if abs(long_edge[0]) >= abs(long_edge[1]) else 'vertical'
+
+
+def _component_candidates_for_polygon(
+    poly: np.ndarray,
+    component_boxes: dict[str, list[dict]] | list[dict],
+) -> list[dict]:
+    if isinstance(component_boxes, dict):
+        return component_boxes.get(_polygon_orientation(poly), [])
+    return component_boxes
 
 
 def _polygon_axes(poly: np.ndarray) -> tuple[np.ndarray, np.ndarray, bool] | None:
@@ -541,7 +561,7 @@ def _shrink_line_polygons(
     percentile_low: float = 0,
     percentile_high: float = 100,
     padding: float = SHRINK_LINE_PADDING,
-    component_boxes: list[dict] | None = None,
+    component_boxes: dict[str, list[dict]] | list[dict] | None = None,
     method: str = 'minmax',
     fallback_items: list[dict] | None = None,
 ) -> list[dict]:
@@ -558,24 +578,56 @@ def _shrink_line_polygons(
             if 'source_line_index' in item
         }
     for idx, poly in enumerate(line_polys):
-        item = _shrink_line_polygon(
-            mask,
-            poly,
-            percentile_low=percentile_low,
-            percentile_high=percentile_high,
-            padding=padding,
-            component_boxes=component_boxes,
-            method=method,
-        )
-        if item is None and idx in fallback_by_index:
+        items = []
+        if component_boxes is None:
+            item = _shrink_line_polygon(
+                mask,
+                poly,
+                percentile_low=percentile_low,
+                percentile_high=percentile_high,
+                padding=padding,
+                method=method,
+            )
+            if item is not None:
+                items.append(item)
+        else:
+            # A detector polygon may cover a whole paragraph. Process every
+            # orientation-aware row/column component independently so adjacent
+            # horizontal rows or vertical columns cannot be fused back together.
+            for component in _component_candidates_for_polygon(poly, component_boxes):
+                item = _shrink_line_polygon(
+                    mask,
+                    poly,
+                    percentile_low=percentile_low,
+                    percentile_high=percentile_high,
+                    padding=padding,
+                    component_boxes=[component],
+                    method=method,
+                )
+                if item is not None:
+                    items.append(item)
+
+        if not items and idx in fallback_by_index:
             item = dict(fallback_by_index[idx])
             item['method'] = f'{method}_fallback'
             item['matched_component_count'] = 0
-        if item is not None:
+            items.append(item)
+
+        for item in items:
             item['source_line_index'] = idx
             shrunk_items.append(item)
-    shrunk_items.sort(key=lambda item: (item['x'], item['y']))
-    return shrunk_items
+
+    unique_items = []
+    seen_polygons = set()
+    for item in shrunk_items:
+        polygon_key = tuple(value for point in item.get('polygon', []) for value in point)
+        if polygon_key and polygon_key in seen_polygons:
+            continue
+        if polygon_key:
+            seen_polygons.add(polygon_key)
+        unique_items.append(item)
+    unique_items.sort(key=lambda item: (item['x'], item['y']))
+    return unique_items
 
 
 def _draw_shrink_line_polygons(
@@ -1369,13 +1421,25 @@ def _compute_box_from_mask(
     }
 
 
-def _split_component_box_by_x_projection(box: dict, binary_mask: np.ndarray) -> list[dict]:
+def _component_box_is_large_enough(box: dict, orientation: str) -> bool:
+    long_side = box['w'] if orientation == 'horizontal' else box['h']
+    return long_side >= COMPONENT_MIN_LONG_SIDE and box['area'] >= COMPONENT_MIN_BOX_AREA
+
+
+def _split_component_box_by_projection(
+    box: dict,
+    binary_mask: np.ndarray,
+    orientation: str,
+) -> list[dict]:
     x, y, w, h = box['x'], box['y'], box['w'], box['h']
     crop = binary_mask[y:y + h, x:x + w]
     if crop.size == 0:
         return [box]
 
-    projection = crop.sum(axis=0).astype(np.int32)
+    # Horizontal text is separated into rows on the Y axis; vertical text is
+    # separated into columns on the X axis.
+    projection_axis = 1 if orientation == 'horizontal' else 0
+    projection = crop.sum(axis=projection_axis).astype(np.int32)
     peak = int(projection.max()) if projection.size > 0 else 0
     if peak <= 0:
         return [box]
@@ -1394,9 +1458,6 @@ def _split_component_box_by_x_projection(box: dict, binary_mask: np.ndarray) -> 
     if start is not None:
         segments.append((start, len(active)))
 
-    if len(segments) <= 1:
-        return [box]
-
     merged_segments = []
     for seg_start, seg_end in segments:
         if not merged_segments:
@@ -1410,25 +1471,52 @@ def _split_component_box_by_x_projection(box: dict, binary_mask: np.ndarray) -> 
         else:
             merged_segments.append([seg_start, seg_end])
 
-    if len(merged_segments) <= 1:
-        return [box]
-
     split_boxes = []
     for seg_start, seg_end in merged_segments:
-        sub_mask = crop[:, seg_start:seg_end]
-        sub_box = _compute_box_from_mask(sub_mask, offset_x=x + seg_start, offset_y=y)
+        if orientation == 'horizontal':
+            sub_mask = crop[seg_start:seg_end, :]
+            sub_box = _compute_box_from_mask(sub_mask, offset_x=x, offset_y=y + seg_start)
+        else:
+            sub_mask = crop[:, seg_start:seg_end]
+            sub_box = _compute_box_from_mask(sub_mask, offset_x=x + seg_start, offset_y=y)
         if sub_box is None:
             continue
-        if sub_box['h'] < COMPONENT_MIN_BOX_HEIGHT or sub_box['area'] < COMPONENT_MIN_BOX_AREA:
+        if not _component_box_is_large_enough(sub_box, orientation):
             continue
         split_boxes.append(sub_box)
 
-    return split_boxes if len(split_boxes) >= 2 else [box]
+    if split_boxes:
+        return split_boxes
+
+    tight_box = _compute_box_from_mask(crop, offset_x=x, offset_y=y)
+    if tight_box is not None and _component_box_is_large_enough(tight_box, orientation):
+        return [tight_box]
+    return []
 
 
-def _find_component_boxes(mask: np.ndarray) -> list[dict]:
-    binary_mask = _mask_to_binary(mask)
-    kernel = np.ones((COMPONENT_KERNEL_HEIGHT, COMPONENT_KERNEL_WIDTH), dtype=np.uint8)
+def _component_kernel_length(polys: list | np.ndarray, orientation: str) -> int:
+    short_sides = []
+    if len(polys) > 0:
+        for poly in np.asarray(polys, dtype=np.float64).reshape(-1, 4, 2):
+            if _polygon_orientation(poly) != orientation:
+                continue
+            edges = [
+                float(np.linalg.norm(poly[(index + 1) % 4] - poly[index]))
+                for index in range(4)
+            ]
+            short_sides.append(min((edges[0] + edges[2]) / 2.0, (edges[1] + edges[3]) / 2.0))
+
+    reference = float(np.median(short_sides)) if short_sides else 25.0
+    return int(np.clip(round(reference * COMPONENT_KERNEL_RATIO), COMPONENT_KERNEL_MIN, COMPONENT_KERNEL_MAX))
+
+
+def _find_oriented_component_boxes(
+    binary_mask: np.ndarray,
+    orientation: str,
+    kernel_length: int,
+) -> list[dict]:
+    kernel_shape = (1, kernel_length) if orientation == 'horizontal' else (kernel_length, 1)
+    kernel = np.ones(kernel_shape, dtype=np.uint8)
     merged_mask = cv2.dilate(binary_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
 
     num_labels, labels = cv2.connectedComponents(merged_mask.astype(np.uint8), connectivity=8)
@@ -1438,12 +1526,25 @@ def _find_component_boxes(mask: np.ndarray) -> list[dict]:
         box = _compute_box_from_mask(component_mask)
         if box is None:
             continue
-        if box['h'] < COMPONENT_MIN_BOX_HEIGHT or box['area'] < COMPONENT_MIN_BOX_AREA:
-            continue
-        boxes.extend(_split_component_box_by_x_projection(box, binary_mask))
+        boxes.extend(_split_component_box_by_projection(box, binary_mask, orientation))
 
     boxes.sort(key=lambda item: (item['x'], item['y']))
     return boxes
+
+
+def _find_component_boxes(
+    mask: np.ndarray,
+    polys: list | np.ndarray = (),
+) -> dict[str, list[dict]]:
+    binary_mask = _mask_to_binary(mask)
+    return {
+        orientation: _find_oriented_component_boxes(
+            binary_mask,
+            orientation,
+            _component_kernel_length(polys, orientation),
+        )
+        for orientation in ('horizontal', 'vertical')
+    }
 
 
 def _largest_rect_in_histogram(heights: np.ndarray) -> tuple[int, tuple[int, int, int]]:
@@ -1884,7 +1985,7 @@ def detect_folder(
             with open(osp.join(save_dir, f'{imname}.json'), 'w', encoding='utf8') as f:
                 f.write(json.dumps(blk_dict_list, ensure_ascii=False, cls=NumpyEncoder))
 
-        component_boxes = _find_component_boxes(mask_refined)
+        component_boxes = _find_component_boxes(mask_refined, polys)
         percentile_items = _shrink_line_polygons(
             mask_refined,
             polys,

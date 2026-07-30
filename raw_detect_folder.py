@@ -621,7 +621,7 @@ def _detect_pages(
             for index, box in enumerate(block_boxes)
         ]
 
-        component_boxes = _find_component_boxes(mask_refined)
+        component_boxes = _find_component_boxes(mask_refined, polys)
         percentile_items = _shrink_line_polygons(
             mask_refined,
             polys,
