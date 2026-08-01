@@ -986,7 +986,12 @@ if QT_IMPORT_ERROR is None:
             self.decrease_font_10_action: QAction | None = None
             self.rotate_counterclockwise_action: QAction | None = None
             self.rotate_clockwise_action: QAction | None = None
+            self.rotate_counterclockwise_5_action: QAction | None = None
+            self.rotate_clockwise_5_action: QAction | None = None
             self.copy_box_action: QAction | None = None
+            self.copy_to_memory_action: QAction | None = None
+            self.paste_from_memory_action: QAction | None = None
+            self.clear_bt_selection_action: QAction | None = None
             self.delete_box_action: QAction | None = None
             self.measure_angle_action: QAction | None = None
             self.add_empty_box_action: QAction | None = None
@@ -1011,6 +1016,9 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_temporary = False
             self._bt_cursor_image_pos: tuple[float, float] | None = None
             self.show_bt_inpainted = True
+            self.bt_clipboard_items = self.load_bt_clipboard_items()
+            self.active_bt_clipboard_index: int | None = None
+            self.memory_bt_clipboard_item: dict[str, Any] | None = None
 
             self.bt_view = ImageView()
             self.view = ImageView()
@@ -1024,6 +1032,7 @@ if QT_IMPORT_ERROR is None:
 
             self.page_list = QListWidget()
             self.bt_item_list = QListWidget()
+            self.bt_clipboard_list = QListWidget()
             self.font_size_table = QTableWidget()
             self.status_label = QLabel('尚未選擇資料夾')
             self.status_label.setWordWrap(True)
@@ -1051,6 +1060,9 @@ if QT_IMPORT_ERROR is None:
             self.regularize_font_button = QPushButton('規整字體大小')
             self.copy_bt_button = QPushButton('複製當前文字框（⌘/Ctrl+D）')
             self.copy_bt_button.setToolTip('複製當前文字框（Command/Ctrl+D）')
+            self.copy_to_clipboard_button = QPushButton('加入持久剪貼簿列表')
+            self.copy_to_clipboard_button.setToolTip('將目前選取文字框加入跨專案保留的剪貼簿列表')
+            self.delete_clipboard_button = QPushButton('刪除選取剪貼簿項目')
             self.measure_preview_button = QPushButton('測量角度（⌘/Ctrl+M）')
             self.measure_preview_button.setToolTip('打開測量角度（Command/Ctrl+M）')
             self.add_empty_bt_button = QPushButton('新增空文案（⌘/Ctrl+N）')
@@ -1112,6 +1124,53 @@ if QT_IMPORT_ERROR is None:
                 event.accept()
                 return
             super().keyPressEvent(event)
+
+        def show_shortcuts_dialog(self) -> None:
+            shortcuts_text = '''_bt.json 編輯器快捷鍵
+
+一般
+  Command/Ctrl + S              保存 _bt.json
+  Command/Ctrl + Z              撤銷上一個修改
+  Page Up / Page Down           上一頁 / 下一頁
+  Q                             顯示 / 隱藏左側 inpainted 圖像
+  Command/Ctrl + P              顯示 / 隱藏預覽浮窗
+  Esc                           取消文字框選取與編輯焦點
+
+文字框
+  Command/Ctrl + D              複製目前文字框，在同頁新增一份
+  F1                            暫存複製目前選取文字框
+  F2                            在左側圖片游標位置貼上暫存文字框
+  Command/Ctrl + N              在游標位置新增文案（優先帶入系統剪貼簿文字）
+  Delete / Backspace            刪除選取文字框
+  Command/Ctrl + M              開啟測量角度
+
+位置與樣式（需選取文字框）
+  方向鍵                         移動 1px
+  Shift + 方向鍵                 移動 10px
+  Command/Ctrl + Shift + 方向鍵  移動 50px
+  Command/Ctrl + + 或 =          字體 +2
+  Command/Ctrl + -               字體 -2
+  Command/Ctrl + Option/Alt + + 或 =  字體 +10
+  Command/Ctrl + Option/Alt + -       字體 -10
+  Command/Ctrl + [ / ]           逆時針 / 順時針旋轉 1°
+  Command/Ctrl + Option/Alt + [ / ]  逆時針 / 順時針旋轉 5°
+
+持久剪貼簿列表
+  「加入持久剪貼簿列表」按鈕      將目前選取框加入跨專案保存的列表
+  單擊列表項目                   暫存複製該項，再以 F2 貼上
+'''
+            dialog = QDialog(self)
+            dialog.setWindowTitle('快捷鍵說明')
+            dialog.setMinimumSize(620, 560)
+            layout = QVBoxLayout(dialog)
+            text_edit = QPlainTextEdit(shortcuts_text)
+            text_edit.setReadOnly(True)
+            text_edit.setFont(QFont('Menlo', 13))
+            layout.addWidget(text_edit)
+            close_button = QPushButton('關閉')
+            close_button.clicked.connect(dialog.accept)
+            layout.addWidget(close_button)
+            dialog.exec()
 
         def _last_existing_image_dir(self) -> str | None:
             value = self.settings.value('last_image_dir', '', str)
@@ -1196,6 +1255,11 @@ if QT_IMPORT_ERROR is None:
             open_bt_action = QAction('打開 _bt.json', self)
             open_bt_action.triggered.connect(self.open_bt_json)
             toolbar.addAction(open_bt_action)
+
+            shortcuts_action = QAction('快捷鍵說明', self)
+            shortcuts_action.setToolTip('查看 _bt.json 編輯器的全部快捷鍵')
+            shortcuts_action.triggered.connect(self.show_shortcuts_dialog)
+            toolbar.addAction(shortcuts_action)
 
             fit_action = QAction('適合視窗', self)
             fit_action.triggered.connect(self.fit_both_views)
@@ -1296,6 +1360,26 @@ if QT_IMPORT_ERROR is None:
             self.rotate_clockwise_action.setEnabled(False)
             self.addAction(self.rotate_clockwise_action)
 
+            self.rotate_counterclockwise_5_action = QAction('逆時針+5', self)
+            self.rotate_counterclockwise_5_action.setShortcuts([
+                QKeySequence('Meta+Alt+['),
+                QKeySequence('Ctrl+Alt+['),
+            ])
+            self.rotate_counterclockwise_5_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.rotate_counterclockwise_5_action.triggered.connect(lambda: self.nudge_selected_rotation(5.0))
+            self.rotate_counterclockwise_5_action.setEnabled(False)
+            self.addAction(self.rotate_counterclockwise_5_action)
+
+            self.rotate_clockwise_5_action = QAction('順時針-5', self)
+            self.rotate_clockwise_5_action.setShortcuts([
+                QKeySequence('Meta+Alt+]'),
+                QKeySequence('Ctrl+Alt+]'),
+            ])
+            self.rotate_clockwise_5_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.rotate_clockwise_5_action.triggered.connect(lambda: self.nudge_selected_rotation(-5.0))
+            self.rotate_clockwise_5_action.setEnabled(False)
+            self.addAction(self.rotate_clockwise_5_action)
+
             self.copy_box_action = QAction('複製文字框', self)
             self.copy_box_action.setShortcuts([QKeySequence('Meta+D'), QKeySequence('Ctrl+D')])
             self.copy_box_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1303,6 +1387,29 @@ if QT_IMPORT_ERROR is None:
             self.copy_box_action.triggered.connect(self.copy_selected_box)
             self.copy_box_action.setEnabled(False)
             self.addAction(self.copy_box_action)
+
+            self.copy_to_memory_action = QAction('暫存複製文字框', self)
+            self.copy_to_memory_action.setShortcut(QKeySequence('F1'))
+            self.copy_to_memory_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.copy_to_memory_action.setToolTip('暫存複製目前文字框（F1）')
+            self.copy_to_memory_action.triggered.connect(self.copy_selected_box_to_memory)
+            self.copy_to_memory_action.setEnabled(False)
+            self.addAction(self.copy_to_memory_action)
+
+            self.paste_from_memory_action = QAction('在游標位置暫存貼上文字框', self)
+            self.paste_from_memory_action.setShortcut(QKeySequence('F2'))
+            self.paste_from_memory_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.paste_from_memory_action.setToolTip('在游標位置貼上暫存文字框（F2）')
+            self.paste_from_memory_action.triggered.connect(self.paste_box_from_memory)
+            self.paste_from_memory_action.setEnabled(False)
+            self.addAction(self.paste_from_memory_action)
+
+            self.clear_bt_selection_action = QAction('取消選取文字框', self)
+            self.clear_bt_selection_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+            self.clear_bt_selection_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            self.clear_bt_selection_action.setToolTip('取消目前文字框的選取與編輯焦點（Esc）')
+            self.clear_bt_selection_action.triggered.connect(self.clear_current_bt_focus)
+            self.addAction(self.clear_bt_selection_action)
 
             self.measure_angle_action = QAction('測量角度', self)
             self.measure_angle_action.setShortcuts([QKeySequence('Meta+M'), QKeySequence('Ctrl+M')])
@@ -1336,6 +1443,14 @@ if QT_IMPORT_ERROR is None:
                 ('右移10', Qt.KeyboardModifier.ShiftModifier | Qt.Key.Key_Right, 1, 0, 10),
                 ('上移10', Qt.KeyboardModifier.ShiftModifier | Qt.Key.Key_Up, 0, -1, 10),
                 ('下移10', Qt.KeyboardModifier.ShiftModifier | Qt.Key.Key_Down, 0, 1, 10),
+                ('左移50', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Left, -1, 0, 50),
+                ('右移50', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Right, 1, 0, 50),
+                ('上移50', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Up, 0, -1, 50),
+                ('下移50', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Down, 0, 1, 50),
+                ('左移50（Mac）', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.MetaModifier | Qt.Key.Key_Left, -1, 0, 50),
+                ('右移50（Mac）', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.MetaModifier | Qt.Key.Key_Right, 1, 0, 50),
+                ('上移50（Mac）', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.MetaModifier | Qt.Key.Key_Up, 0, -1, 50),
+                ('下移50（Mac）', Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.MetaModifier | Qt.Key.Key_Down, 0, 1, 50),
             )
             for label, key, dx, dy, step in move_shortcuts:
                 action = QAction(label, self)
@@ -1447,6 +1562,12 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(QLabel('旋轉角度'))
             layout.addWidget(self.rotation_spin)
             layout.addWidget(self.copy_bt_button)
+            layout.addWidget(self.copy_to_clipboard_button)
+            layout.addWidget(QLabel('文字框剪貼簿（跨專案保留）'))
+            self.bt_clipboard_list.setMinimumHeight(130)
+            self.bt_clipboard_list.setToolTip('單擊一項即可暫存複製它；可用 F2 貼上。')
+            layout.addWidget(self.bt_clipboard_list)
+            layout.addWidget(self.delete_clipboard_button)
             layout.addWidget(self.measure_preview_button)
             layout.addWidget(self.add_empty_bt_button)
             layout.addWidget(QLabel('文字顏色'))
@@ -1466,6 +1587,7 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.even_font_button)
             layout.addStretch(1)
             self.set_box_editor_enabled(False)
+            self.update_bt_clipboard_list()
 
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -1555,6 +1677,9 @@ if QT_IMPORT_ERROR is None:
             self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
             self.rotation_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.copy_bt_button.clicked.connect(self.copy_selected_box)
+            self.copy_to_clipboard_button.clicked.connect(self.copy_selected_box_to_clipboard)
+            self.delete_clipboard_button.clicked.connect(self.delete_selected_clipboard_item)
+            self.bt_clipboard_list.itemClicked.connect(self.copy_bt_clipboard_list_item)
             self.measure_preview_button.clicked.connect(self.open_bt_measurement_dialog)
             self.add_empty_bt_button.clicked.connect(self.add_empty_bt_box)
             self.color_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -1874,6 +1999,152 @@ if QT_IMPORT_ERROR is None:
                 return
             self.fit_both_views()
             self.update_bt_html_overlay()
+
+        def load_bt_clipboard_items(self) -> list[dict[str, Any]]:
+            """Load the app-wide text-box clipboard without trusting stored data."""
+            raw_value = self.settings.value('bt_clipboard/items', '[]', str)
+            try:
+                decoded = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+            if not isinstance(decoded, list):
+                return []
+            return [copy.deepcopy(item) for item in decoded if isinstance(item, dict)][:50]
+
+        def save_bt_clipboard_items(self) -> None:
+            self.settings.setValue(
+                'bt_clipboard/items',
+                json.dumps(self.bt_clipboard_items[:50], ensure_ascii=False, separators=(',', ':')),
+            )
+
+        def bt_clipboard_item_label(self, item: dict[str, Any]) -> str:
+            text = ' '.join(str(item.get('text') or '').split())
+            if len(text) > 32:
+                text = f'{text[:32]}...'
+            if not text:
+                text = '(空文字)'
+            font_size = item.get('font-size', item.get('font_size', '?'))
+            orientation = '直' if str(item.get('orientation') or 'vertical') == 'vertical' else '橫'
+            return f'[{orientation} {font_size}px] {text}'
+
+        def update_bt_clipboard_list(self) -> None:
+            if not hasattr(self, 'bt_clipboard_list'):
+                return
+            self.bt_clipboard_list.blockSignals(True)
+            self.bt_clipboard_list.clear()
+            if not self.bt_clipboard_items:
+                self.bt_clipboard_list.addItem('剪貼簿目前是空的')
+                self.bt_clipboard_list.item(0).setFlags(Qt.ItemFlag.NoItemFlags)
+            else:
+                for index, item in enumerate(self.bt_clipboard_items):
+                    active_prefix = '● ' if index == self.active_bt_clipboard_index else '○ '
+                    self.bt_clipboard_list.addItem(f'{active_prefix}{self.bt_clipboard_item_label(item)}')
+                    list_item = self.bt_clipboard_list.item(index)
+                    list_item.setData(Qt.ItemDataRole.UserRole, index)
+                    list_item.setToolTip('單擊即可複製為目前剪貼簿內容。')
+                if self.active_bt_clipboard_index is not None and 0 <= self.active_bt_clipboard_index < len(self.bt_clipboard_items):
+                    self.bt_clipboard_list.setCurrentRow(self.active_bt_clipboard_index)
+                else:
+                    self.bt_clipboard_list.setCurrentRow(-1)
+            self.bt_clipboard_list.blockSignals(False)
+            self.update_action_state()
+
+        def active_bt_clipboard_item(self) -> dict[str, Any] | None:
+            if self.active_bt_clipboard_index is None or not 0 <= self.active_bt_clipboard_index < len(self.bt_clipboard_items):
+                return None
+            return self.bt_clipboard_items[self.active_bt_clipboard_index]
+
+        def activate_bt_clipboard_item(self, index: int, *, announce: bool = True) -> None:
+            if not 0 <= index < len(self.bt_clipboard_items):
+                return
+            self.active_bt_clipboard_index = index
+            self.memory_bt_clipboard_item = copy.deepcopy(self.bt_clipboard_items[index])
+            self.update_bt_clipboard_list()
+            if announce:
+                self.status_label.setText('已暫存複製剪貼簿項目；可用 F2 在游標位置貼上。')
+
+        def copy_bt_clipboard_list_item(self, list_item) -> None:
+            index = list_item.data(Qt.ItemDataRole.UserRole) if list_item is not None else None
+            if isinstance(index, int):
+                self.activate_bt_clipboard_item(index)
+
+        def copy_selected_box_to_clipboard(self) -> None:
+            item = self.selected_bt_item()
+            if item is None:
+                self.status_label.setText('請先選擇一條 _bt 文字，再加入持久剪貼簿列表。')
+                return
+            self.bt_clipboard_items.insert(0, copy.deepcopy(item))
+            self.bt_clipboard_items = self.bt_clipboard_items[:50]
+            self.save_bt_clipboard_items()
+            self.update_bt_clipboard_list()
+            self.status_label.setText('已將目前文字框加入持久剪貼簿列表。')
+
+        def copy_selected_box_to_memory(self) -> None:
+            item = self.selected_bt_item()
+            if item is None:
+                return
+            self.memory_bt_clipboard_item = copy.deepcopy(item)
+            self.active_bt_clipboard_index = None
+            self.update_bt_clipboard_list()
+            self.status_label.setText('已暫存複製目前文字框；可用 F2 在游標位置貼上。')
+
+        def paste_box_from_memory(self) -> None:
+            if self.bt_data is None:
+                return
+            page_name = self.current_page_name()
+            source_item = self.memory_bt_clipboard_item
+            if page_name is None or source_item is None:
+                return
+            cursor = self._bt_cursor_image_pos
+            if cursor is None:
+                return
+            items = self.bt_items_for_page(page_name)
+            before_items = copy.deepcopy(items)
+            before_selected = self.selected_bt_index
+            before_selected_indices = set(self.selected_bt_indices)
+            new_item = copy.deepcopy(source_item)
+            new_item['index'] = self.next_bt_index_for_page(items)
+            new_item['match_status'] = 'manual'
+            xyxy = self.bt_xyxy_from_item(new_item)
+            if xyxy is not None:
+                x1, y1, x2, y2 = xyxy
+                width, height = x2 - x1, y2 - y1
+                center_x, center_y = (int(round(cursor[0])), int(round(cursor[1])))
+                xyxy = (center_x - width // 2, center_y - height // 2, center_x - width // 2 + width, center_y - height // 2 + height)
+                self.set_bt_xyxy(new_item, self.clamp_xyxy(xyxy))
+            else:
+                center_x, center_y = (int(round(cursor[0])), int(round(cursor[1])))
+                self.set_bt_xyxy(new_item, self.clamp_xyxy((center_x - 25, center_y - 25, center_x + 25, center_y + 25)))
+            items.append(new_item)
+            new_index = len(items) - 1
+            self.selected_bt_index = new_index
+            self.selected_bt_indices = {new_index}
+            self.push_bt_items_undo_snapshot(
+                '從文字框剪貼簿建立 _bt 條目',
+                before_items,
+                before_selected,
+                before_selected_indices,
+            )
+            self.mark_bt_dirty()
+            self.populate_box_editor_for_selection()
+            self.update_bt_item_list()
+            self.render_bt_page(refit=False)
+            self.status_label.setText('已在游標位置貼上暫存文字框，尚未保存。')
+
+        def delete_selected_clipboard_item(self) -> None:
+            list_item = self.bt_clipboard_list.currentItem() if hasattr(self, 'bt_clipboard_list') else None
+            index = list_item.data(Qt.ItemDataRole.UserRole) if list_item is not None else None
+            if not isinstance(index, int) or not 0 <= index < len(self.bt_clipboard_items):
+                self.status_label.setText('請先選擇一個剪貼簿文字框。')
+                return
+            del self.bt_clipboard_items[index]
+            if self.active_bt_clipboard_index == index:
+                self.active_bt_clipboard_index = None
+            elif self.active_bt_clipboard_index is not None and self.active_bt_clipboard_index > index:
+                self.active_bt_clipboard_index -= 1
+            self.save_bt_clipboard_items()
+            self.update_bt_clipboard_list()
+            self.status_label.setText('已從全域剪貼簿刪除文字框。')
 
         def current_page_name(self) -> str | None:
             if self.page is not None:
@@ -2493,6 +2764,14 @@ if QT_IMPORT_ERROR is None:
 
         def select_bt_item(self, index: int | None, *, center: bool = False) -> None:
             self.set_bt_selection({index} if index is not None else set(), active_index=index, center=center)
+
+        def clear_current_bt_focus(self) -> None:
+            """Clear the current _bt selection without changing its contents."""
+            if not self.selected_bt_indices_list():
+                return
+            self.select_bt_item(None)
+            self.bt_view.setFocus()
+            self.status_label.setText('已取消目前文字框的選取。')
 
         def center_views_on_bt_item(self, item: dict[str, Any]) -> None:
             xyxy = self.bt_xyxy_from_item(item)
@@ -3318,9 +3597,11 @@ if QT_IMPORT_ERROR is None:
                     center_y + half_size,
                 )
             )
+            clipboard_text = QApplication.clipboard().text()
+            initial_text = clipboard_text if clipboard_text.strip() else ''
             new_item: dict[str, Any] = {
                 'index': self.next_bt_index_for_page(items),
-                'text': '',
+                'text': initial_text,
                 'font-size': 30,
                 'orientation': 'vertical',
                 'rotation': 0,
@@ -3346,7 +3627,10 @@ if QT_IMPORT_ERROR is None:
             self.populate_box_editor_for_selection()
             self.update_bt_item_list()
             self.render_bt_page(refit=False)
-            self.status_label.setText('已在鼠標位置新增空文案，尚未保存。')
+            if initial_text:
+                self.status_label.setText('已在鼠標位置新增文案並帶入系統剪貼簿文字，尚未保存。')
+            else:
+                self.status_label.setText('已在鼠標位置新增空文案，尚未保存。')
 
         def delete_selected_box(self) -> None:
             if self.bt_data is None:
@@ -3402,8 +3686,29 @@ if QT_IMPORT_ERROR is None:
                 self.rotate_counterclockwise_action.setEnabled(has_selected_bt)
             if self.rotate_clockwise_action is not None:
                 self.rotate_clockwise_action.setEnabled(has_selected_bt)
+            if self.rotate_counterclockwise_5_action is not None:
+                self.rotate_counterclockwise_5_action.setEnabled(has_selected_bt)
+            if self.rotate_clockwise_5_action is not None:
+                self.rotate_clockwise_5_action.setEnabled(has_selected_bt)
             if self.copy_box_action is not None:
                 self.copy_box_action.setEnabled(has_selected_bt)
+            if hasattr(self, 'copy_to_clipboard_button'):
+                self.copy_to_clipboard_button.setEnabled(has_selected_bt)
+            if self.copy_to_memory_action is not None:
+                self.copy_to_memory_action.setEnabled(has_selected_bt)
+            has_memory_clipboard_item = self.memory_bt_clipboard_item is not None
+            can_paste_from_memory = (
+                self.bt_data is not None
+                and self.current_page_name() is not None
+                and self._bt_cursor_image_pos is not None
+                and has_memory_clipboard_item
+            )
+            if self.paste_from_memory_action is not None:
+                self.paste_from_memory_action.setEnabled(can_paste_from_memory)
+            if hasattr(self, 'delete_clipboard_button'):
+                list_item = self.bt_clipboard_list.currentItem()
+                list_index = list_item.data(Qt.ItemDataRole.UserRole) if list_item is not None else None
+                self.delete_clipboard_button.setEnabled(isinstance(list_index, int))
             if self.measure_angle_action is not None:
                 self.measure_angle_action.setEnabled(has_selected_bt)
             can_add_empty_box = (
