@@ -28,8 +28,8 @@ try:
     from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QTextCursor
     from PySide6.QtWidgets import (
         QApplication,
+        QButtonGroup,
         QCheckBox,
-        QComboBox,
         QDialog,
         QDialogButtonBox,
         QDockWidget,
@@ -1058,14 +1058,14 @@ if QT_IMPORT_ERROR is None:
             self.save_button = QPushButton('保存 _bt.json')
             self.even_font_button = QPushButton('字體取偶數')
             self.regularize_font_button = QPushButton('規整字體大小')
-            self.copy_bt_button = QPushButton('複製當前文字框（⌘/Ctrl+D）')
+            self.copy_bt_button = QPushButton('複製文字框')
             self.copy_bt_button.setToolTip('複製當前文字框（Command/Ctrl+D）')
-            self.copy_to_clipboard_button = QPushButton('加入持久剪貼簿列表')
+            self.copy_to_clipboard_button = QPushButton('加入持久化列表')
             self.copy_to_clipboard_button.setToolTip('將目前選取文字框加入跨專案保留的剪貼簿列表')
-            self.delete_clipboard_button = QPushButton('刪除選取剪貼簿項目')
+            self.delete_clipboard_button = QPushButton('從持久化列表刪除')
             self.measure_preview_button = QPushButton('測量角度（⌘/Ctrl+M）')
             self.measure_preview_button.setToolTip('打開測量角度（Command/Ctrl+M）')
-            self.add_empty_bt_button = QPushButton('新增空文案（⌘/Ctrl+N）')
+            self.add_empty_bt_button = QPushButton('新建文本框')
             self.add_empty_bt_button.setToolTip('在鼠標位置新增預設空文案（Command/Ctrl+N）')
             self.add_empty_bt_button.setEnabled(False)
             self.char_info_label = QLabel('游標單字框：未選中')
@@ -1080,9 +1080,24 @@ if QT_IMPORT_ERROR is None:
             self.bt_text_edit.setPlaceholderText('選中左側 _bt 條目後編輯文字')
             self.bt_text_edit.setMinimumHeight(90)
             self.font_size_spin = QSpinBox()
-            self.orientation_combo = QComboBox()
+            self.orientation_button_group = QButtonGroup(self)
+            self.orientation_vertical_button = QPushButton('直排')
+            self.orientation_horizontal_button = QPushButton('橫排')
+            self.orientation_button_group.addButton(self.orientation_vertical_button)
+            self.orientation_button_group.addButton(self.orientation_horizontal_button)
             self.rotation_spin = QDoubleSpinBox()
-            self.color_combo = QComboBox()
+            self.color_button_group = QButtonGroup(self)
+            self.color_black_button = QPushButton('黑')
+            self.color_white_button = QPushButton('白')
+            self.color_button_group.addButton(self.color_black_button)
+            self.color_button_group.addButton(self.color_white_button)
+            for button in (
+                self.orientation_vertical_button,
+                self.orientation_horizontal_button,
+                self.color_black_button,
+                self.color_white_button,
+            ):
+                button.setCheckable(True)
             self.stroke_weight_spin = QSpinBox()
             self.text_has_stroke_check = QCheckBox('原字描邊')
             self.need_inpaint_check = QCheckBox('需要修復/描邊')
@@ -1515,7 +1530,7 @@ if QT_IMPORT_ERROR is None:
             self.font_size_table.horizontalHeader().setStretchLastSection(True)
             self.font_size_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
             self.font_size_table.setColumnWidth(0, 86)
-            self.font_size_table.setMinimumHeight(230)
+            self.font_size_table.setMinimumHeight(340)
             self.font_size_table.setStyleSheet(
                 'QTableWidget {'
                 '  background: #101214;'
@@ -1539,53 +1554,97 @@ if QT_IMPORT_ERROR is None:
             self.even_font_button.hide()
             self.regularize_font_button.clicked.connect(self.open_regularize_font_size_dialog)
 
-            layout.addWidget(QLabel('當前 _bt 條目'))
-            layout.addWidget(self.box_editor_title)
             self.font_size_spin.setRange(1, 999)
             self.font_size_spin.setSuffix(' px')
-            self.orientation_combo.addItem('直排', 'vertical')
-            self.orientation_combo.addItem('橫排', 'horizontal')
+            self.orientation_vertical_button.setChecked(True)
             self.rotation_spin.setRange(-180.0, 180.0)
             self.rotation_spin.setDecimals(2)
             self.rotation_spin.setSingleStep(1.0)
             self.rotation_spin.setSuffix(' deg')
-            self.color_combo.addItem('黑', 'black')
-            self.color_combo.addItem('白', 'white')
+            self.color_black_button.setChecked(True)
             self.stroke_weight_spin.setRange(0, 99)
             self.stroke_weight_spin.setSuffix(' px')
+
+            choice_style = (
+                'QPushButton { padding: 4px 8px; min-height: 24px; }'
+                'QPushButton:checked { background: #4a5057; border: 1px solid #7c8791; }'
+            )
+            for button in (
+                self.orientation_vertical_button,
+                self.orientation_horizontal_button,
+                self.color_black_button,
+                self.color_white_button,
+            ):
+                button.setStyleSheet(choice_style)
+
+            typography_row = QWidget()
+            typography_layout = QHBoxLayout(typography_row)
+            typography_layout.setContentsMargins(0, 0, 0, 0)
+            typography_layout.setSpacing(6)
+            typography_layout.addWidget(QLabel('字級'))
+            typography_layout.addWidget(self.font_size_spin, 1)
+            typography_layout.addWidget(QLabel('方向'))
+            typography_layout.addWidget(self.orientation_horizontal_button)
+            typography_layout.addWidget(self.orientation_vertical_button)
+
+            rotation_row = QWidget()
+            rotation_layout = QHBoxLayout(rotation_row)
+            rotation_layout.setContentsMargins(0, 0, 0, 0)
+            rotation_layout.setSpacing(6)
+            rotation_layout.addWidget(QLabel('角度'))
+            rotation_layout.addWidget(self.rotation_spin, 1)
+
+            appearance_row = QWidget()
+            appearance_layout = QHBoxLayout(appearance_row)
+            appearance_layout.setContentsMargins(0, 0, 0, 0)
+            appearance_layout.setSpacing(6)
+            appearance_layout.addWidget(QLabel('顏色'))
+            appearance_layout.addWidget(self.color_black_button)
+            appearance_layout.addWidget(self.color_white_button)
+            appearance_layout.addWidget(QLabel('描邊'))
+            appearance_layout.addWidget(self.stroke_weight_spin, 1)
+
+            appearance_actions_row = QWidget()
+            appearance_actions_layout = QHBoxLayout(appearance_actions_row)
+            appearance_actions_layout.setContentsMargins(0, 0, 0, 0)
+            appearance_actions_layout.setSpacing(8)
+            appearance_actions_layout.addWidget(self.text_has_stroke_check)
+            appearance_actions_layout.addWidget(self.need_inpaint_check)
+            appearance_actions_layout.addStretch(1)
+            appearance_actions_layout.addWidget(self.save_button)
+
+            box_actions_row = QWidget()
+            box_actions_layout = QHBoxLayout(box_actions_row)
+            box_actions_layout.setContentsMargins(0, 0, 0, 0)
+            box_actions_layout.setSpacing(8)
+            box_actions_layout.addWidget(self.copy_bt_button, 1)
+            box_actions_layout.addWidget(self.add_empty_bt_button, 1)
+
+            clipboard_actions_row = QWidget()
+            clipboard_actions_layout = QHBoxLayout(clipboard_actions_row)
+            clipboard_actions_layout.setContentsMargins(0, 0, 0, 0)
+            clipboard_actions_layout.setSpacing(8)
+            clipboard_actions_layout.addWidget(self.copy_to_clipboard_button, 1)
+            clipboard_actions_layout.addWidget(self.delete_clipboard_button, 1)
+
             layout.addWidget(QLabel('文字'))
             layout.addWidget(self.bt_text_edit)
-            layout.addWidget(QLabel('字體大小'))
-            layout.addWidget(self.font_size_spin)
-            layout.addWidget(QLabel('方向'))
-            layout.addWidget(self.orientation_combo)
-            layout.addWidget(QLabel('旋轉角度'))
-            layout.addWidget(self.rotation_spin)
-            layout.addWidget(self.copy_bt_button)
-            layout.addWidget(self.copy_to_clipboard_button)
+            layout.addWidget(typography_row)
+            layout.addWidget(rotation_row)
+            layout.addWidget(box_actions_row)
+            layout.addWidget(self.measure_preview_button)
+            self.save_button.clicked.connect(self.save_pending_changes)
+            layout.addWidget(appearance_row)
+            layout.addWidget(appearance_actions_row)
+            layout.addWidget(title)
             layout.addWidget(QLabel('文字框剪貼簿（跨專案保留）'))
             self.bt_clipboard_list.setMinimumHeight(130)
             self.bt_clipboard_list.setToolTip('單擊一項即可暫存複製它；可用 F2 貼上。')
             layout.addWidget(self.bt_clipboard_list)
-            layout.addWidget(self.delete_clipboard_button)
-            layout.addWidget(self.measure_preview_button)
-            layout.addWidget(self.add_empty_bt_button)
-            layout.addWidget(QLabel('文字顏色'))
-            layout.addWidget(self.color_combo)
-            layout.addWidget(QLabel('描邊粗細'))
-            layout.addWidget(self.stroke_weight_spin)
-            layout.addWidget(self.text_has_stroke_check)
-            layout.addWidget(self.need_inpaint_check)
-            self.save_button.clicked.connect(self.save_pending_changes)
-            layout.addWidget(self.save_button)
-            hint = QLabel('左側編輯 _bt.json；右側 ctd/measure.json 只讀顯示。')
-            hint.setWordWrap(True)
-            layout.addWidget(hint)
-            layout.addWidget(title)
+            layout.addWidget(clipboard_actions_row)
             layout.addWidget(self.regularize_font_button)
-            layout.addWidget(self.font_size_table, 2)
+            layout.addWidget(self.font_size_table, 1)
             layout.addWidget(self.even_font_button)
-            layout.addStretch(1)
             self.set_box_editor_enabled(False)
             self.update_bt_clipboard_list()
 
@@ -1674,7 +1733,8 @@ if QT_IMPORT_ERROR is None:
             self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
             self.bt_text_popover.text_edit.textChanged.connect(self.apply_bt_text_popover_changes)
             self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
-            self.orientation_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.orientation_vertical_button.clicked.connect(self.apply_editor_changes_to_selected_box)
+            self.orientation_horizontal_button.clicked.connect(self.apply_editor_changes_to_selected_box)
             self.rotation_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.copy_bt_button.clicked.connect(self.copy_selected_box)
             self.copy_to_clipboard_button.clicked.connect(self.copy_selected_box_to_clipboard)
@@ -1682,7 +1742,8 @@ if QT_IMPORT_ERROR is None:
             self.bt_clipboard_list.itemClicked.connect(self.copy_bt_clipboard_list_item)
             self.measure_preview_button.clicked.connect(self.open_bt_measurement_dialog)
             self.add_empty_bt_button.clicked.connect(self.add_empty_bt_box)
-            self.color_combo.currentIndexChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.color_black_button.clicked.connect(self.apply_editor_changes_to_selected_box)
+            self.color_white_button.clicked.connect(self.apply_editor_changes_to_selected_box)
             self.stroke_weight_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
             self.text_has_stroke_check.stateChanged.connect(self.apply_editor_changes_to_selected_box)
             self.need_inpaint_check.stateChanged.connect(self.apply_editor_changes_to_selected_box)
@@ -2658,11 +2719,13 @@ if QT_IMPORT_ERROR is None:
             for widget in (
                 self.bt_text_edit,
                 self.font_size_spin,
-                self.orientation_combo,
+                self.orientation_vertical_button,
+                self.orientation_horizontal_button,
                 self.rotation_spin,
                 self.copy_bt_button,
                 self.measure_preview_button,
-                self.color_combo,
+                self.color_black_button,
+                self.color_white_button,
                 self.stroke_weight_spin,
                 self.text_has_stroke_check,
                 self.need_inpaint_check,
@@ -2670,7 +2733,7 @@ if QT_IMPORT_ERROR is None:
                 widget.setEnabled(enabled)
             if not enabled:
                 self.box_editor_title.setText('未選擇 _bt 條目')
-                self.copy_bt_button.setText('複製當前文字框（⌘/Ctrl+D）')
+                self.copy_bt_button.setText('複製文字框')
                 self.bt_text_popover.hide()
                 previous_updating = self._updating_editor
                 self._updating_editor = True
@@ -2708,7 +2771,7 @@ if QT_IMPORT_ERROR is None:
             if len(selected_items) <= 1:
                 self.bt_text_edit.setEnabled(True)
                 self.measure_preview_button.setEnabled(True)
-                self.copy_bt_button.setText('複製當前文字框（⌘/Ctrl+D）')
+                self.copy_bt_button.setText('複製文字框')
                 self.show_bt_text_popover(active_item)
                 return
             self._updating_editor = True
@@ -3025,6 +3088,20 @@ if QT_IMPORT_ERROR is None:
             self.selected_box_index = index
             self.render_current_page(refit=False)
 
+        def editor_orientation(self) -> str:
+            return 'horizontal' if self.orientation_horizontal_button.isChecked() else 'vertical'
+
+        def set_editor_orientation(self, orientation: object) -> None:
+            self.orientation_horizontal_button.setChecked(orientation == 'horizontal')
+            self.orientation_vertical_button.setChecked(orientation != 'horizontal')
+
+        def editor_text_color(self) -> str:
+            return 'white' if self.color_white_button.isChecked() else 'black'
+
+        def set_editor_text_color(self, color: object) -> None:
+            self.color_white_button.setChecked(color == 'white')
+            self.color_black_button.setChecked(color != 'white')
+
         def populate_box_editor(self, box: BoxOverlay) -> None:
             self._updating_editor = True
             self.set_box_editor_enabled(True)
@@ -3033,8 +3110,7 @@ if QT_IMPORT_ERROR is None:
                 f'區塊 {box.source_block_index}  框：{x1},{y1},{x2},{y2}'
             )
             self.font_size_spin.setValue(max(1, int(round(float(box.font_size or 1)))))
-            color_index = self.color_combo.findData(box.text_color or 'black')
-            self.color_combo.setCurrentIndex(max(0, color_index))
+            self.set_editor_text_color(box.text_color or 'black')
             self.text_has_stroke_check.setChecked(box.text_has_stroke is True)
             self.need_inpaint_check.setChecked(box.need_inpaint is True)
             self._updating_editor = False
@@ -3049,11 +3125,9 @@ if QT_IMPORT_ERROR is None:
             )
             self.bt_text_edit.setPlainText(str(item.get('text') or ''))
             self.font_size_spin.setValue(positive_int(item.get('font-size'), 40))
-            orientation_index = self.orientation_combo.findData(item.get('orientation') or 'vertical')
-            self.orientation_combo.setCurrentIndex(max(0, orientation_index))
+            self.set_editor_orientation(item.get('orientation') or 'vertical')
             self.rotation_spin.setValue(self.normalized_rotation(item.get('rotation')))
-            color_index = self.color_combo.findData(self.bt_text_color(item))
-            self.color_combo.setCurrentIndex(max(0, color_index))
+            self.set_editor_text_color(self.bt_text_color(item))
             stroke_weight = int(round(float(item.get('stroke-weight') or 0)))
             self.stroke_weight_spin.setValue(max(0, min(99, stroke_weight)))
             self.text_has_stroke_check.setChecked(stroke_weight > 0)
@@ -3063,7 +3137,7 @@ if QT_IMPORT_ERROR is None:
         def selected_box_updates_from_editor(self) -> dict[str, object] | None:
             if self._updating_editor or self.selected_bt_item() is None:
                 return None
-            color = self.color_combo.currentData() or 'black'
+            color = self.editor_text_color()
             stroke_weight = int(self.stroke_weight_spin.value())
             if self.text_has_stroke_check.isChecked() and stroke_weight <= 0:
                 stroke_weight = max(1, int(np.ceil(float(self.font_size_spin.value()) / 8.0)))
@@ -3071,11 +3145,11 @@ if QT_IMPORT_ERROR is None:
                 sender = self.sender()
                 if sender is self.font_size_spin:
                     return {'font-size': int(self.font_size_spin.value())}
-                if sender is self.orientation_combo:
-                    return {'orientation': self.orientation_combo.currentData() or 'vertical'}
+                if sender in (self.orientation_vertical_button, self.orientation_horizontal_button):
+                    return {'orientation': self.editor_orientation()}
                 if sender is self.rotation_spin:
                     return {'rotation': self.normalized_rotation(self.rotation_spin.value())}
-                if sender is self.color_combo:
+                if sender in (self.color_black_button, self.color_white_button):
                     return {
                         'color': '#FFFFFF' if color == 'white' else '#000000',
                         'stroke-color': '#000000' if color == 'white' else '#FFFFFF',
@@ -3090,7 +3164,7 @@ if QT_IMPORT_ERROR is None:
             return {
                 'text': self.bt_text_edit.toPlainText(),
                 'font-size': int(self.font_size_spin.value()),
-                'orientation': self.orientation_combo.currentData() or 'vertical',
+                'orientation': self.editor_orientation(),
                 'rotation': self.normalized_rotation(self.rotation_spin.value()),
                 'color': '#FFFFFF' if color == 'white' else '#000000',
                 'stroke-color': '#000000' if color == 'white' else '#FFFFFF',
