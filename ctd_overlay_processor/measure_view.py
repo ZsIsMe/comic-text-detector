@@ -32,12 +32,29 @@ def char_info_text(item: dict[str, Any]) -> str:
     source_index = item.get('source_block_index', '-')
     line_index = item.get('line_index', '-')
     bbox_text = ', '.join(str(int(round(float(value)))) for value in bbox) if isinstance(bbox, list) else '-'
+    calculated_text = compact_int_px(item.get('calculated_font_size')) or '-'
+    ocr_text = str(item.get('ocr_text') or '-')
+    probability = item.get('ocr_probability')
+    probability_text = f'{float(probability):.1%}' if isinstance(probability, (int, float)) else '-'
     return (
         '游標單字框：\n'
-        f'寬：{width_text}px  高：{height_text}px\n'
+        f'寬：{width_text}px  高：{height_text}px  計算字級：{calculated_text}px\n'
+        f'OCR：{ocr_text}  信心：{probability_text}\n'
         f'區塊：{source_index}  行：{line_index}\n'
         f'bbox：{bbox_text}'
     )
+
+
+def char_box_label(item: dict[str, Any]) -> str | None:
+    width_text = compact_int_px(item.get('width'))
+    height_text = compact_int_px(item.get('height'))
+    if width_text is None or height_text is None:
+        return None
+    label = f'W{width_text}H{height_text}'
+    font_size_text = compact_int_px(item.get('calculated_font_size'))
+    if font_size_text is not None:
+        label += f' F{font_size_text}'
+    return label
 
 
 class MeasureImageView(QGraphicsView):
@@ -213,11 +230,9 @@ def draw_char_boxes(
         painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
         if item is hover_char_box:
             continue
-        width_text = compact_int_px(item.get('width'))
-        height_text = compact_int_px(item.get('height'))
-        if width_text is None or height_text is None:
+        label = char_box_label(item)
+        if label is None:
             continue
-        label = f'W{width_text}H{height_text}'
         text_w = metrics.horizontalAdvance(label)
         text_h = metrics.ascent() + metrics.descent()
         label_x = int(round((x1 + x2) / 2 - text_w / 2))
@@ -247,11 +262,9 @@ def _draw_hover_char_box(
     painter.setPen(QPen(QColor(255, 40, 120), 3))
     painter.setBrush(Qt.BrushStyle.NoBrush)
     painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
-    width_text = compact_int_px(hover_char_box.get('width'))
-    height_text = compact_int_px(hover_char_box.get('height'))
-    if width_text is None or height_text is None:
+    label = char_box_label(hover_char_box)
+    if label is None:
         return
-    label = f'W{width_text}H{height_text}'
     transform = view.transform()
     view_scale = max(0.05, min(abs(transform.m11()), abs(transform.m22())))
     hover_font = QFont('Helvetica Neue')

@@ -1,46 +1,42 @@
 #!/usr/bin/env python3
-"""Run PaddleOCR-VL manga OCR for boxes in measure.json."""
+"""Run mit48px CTC OCR independently for character boxes in measure.json."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import os.path as osp
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+import cv2
 
-
-DEFAULT_MODEL_DIR = Path(__file__).resolve().parent / 'models' / 'PaddleOCR-VL-For-Manga'
-DEFAULT_PROMPT = 'OCR:'
+from ctd_overlay_processor.mit48px_ocr import (
+    DEFAULT_ALPHABET_PATH,
+    DEFAULT_IMPLEMENTATION_PATH,
+    DEFAULT_MODEL_PATH,
+    Mit48pxCtcOcr,
+    prepare_character_crop,
+)
 
 
 def _load_json(path: str | Path) -> dict:
-    with open(path, 'r', encoding='utf8') as f:
-        return json.load(f)
+    with open(path, 'r', encoding='utf8') as file:
+        return json.load(file)
 
 
 def _write_json(path: str | Path, data: dict) -> None:
-    with open(path, 'w', encoding='utf8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(path, 'w', encoding='utf8') as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
 
 
-def _resolve_input_paths(
-    path1: str,
-    path2: str | None,
-    measure_json: str | None,
-) -> tuple[str, str]:
+def _resolve_input_paths(path1: str, path2: str | None, measure_json: str | None) -> tuple[str, str]:
     if measure_json is not None:
         return measure_json, path1
-
     if path2 is None:
-        image_dir = path1
-        return osp.join(image_dir, 'ctd', 'measure.json'), image_dir
-
-    # Backward-compatible form: measure_ocr.py ctd/measure.json image_dir
+        return osp.join(path1, 'ctd', 'measure.json'), path1
     return path1, path2
 
 
@@ -49,140 +45,126 @@ def _image_path_for_page(image_dir: str | Path, page_name: str) -> Path:
     path = image_dir / page_name
     if path.is_file():
         return path
-
     stem = Path(page_name).stem
-    for ext in ('.png', '.jpg', '.jpeg', '.bmp', '.webp'):
-        candidate = image_dir / f'{stem}{ext}'
+    for extension in ('.png', '.jpg', '.jpeg', '.bmp', '.webp'):
+        candidate = image_dir / f'{stem}{extension}'
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(f'找不到原圖：{page_name}')
 
 
-def _crop_box(image: Image.Image, xyxy: list[Any], pad: int) -> Image.Image:
-    width, height = image.size
-    x1, y1, x2, y2 = [int(round(float(v))) for v in xyxy]
-    x1 = max(0, x1 - pad)
-    y1 = max(0, y1 - pad)
-    x2 = min(width, x2 + pad)
-    y2 = min(height, y2 + pad)
-    if x2 <= x1 or y2 <= y1:
-        raise ValueError(f'無效 xyxy_pixel：{xyxy}')
-    return image.crop((x1, y1, x2, y2)).convert('RGB')
-
-
-def _clean_ocr_text(text: str) -> str:
-    text = text.strip()
-    for prefix in ('Assistant:', 'assistant:', 'OCR:', 'Text:', '文本：', '文字：'):
-        if text.startswith(prefix):
-            text = text[len(prefix):].strip()
-    return text
-
-
-def _require_transformers() -> tuple[Any, Any, Any]:
+def _source_index(item: dict[str, Any], fallback: int) -> int:
     try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoProcessor
-    except ImportError as exc:
-        raise SystemExit(
-            '缺少 OCR 推理依賴。請先安裝：\n'
-            '  .venv/bin/pip install transformers safetensors accelerate einops\n'
-            f'原始錯誤：{exc}'
-        ) from exc
-    return torch, AutoModelForCausalLM, AutoProcessor
+        return int(item.get('source_block_index', fallback))
+    except (TypeError, ValueError):
+        return fallback
 
 
-def _chunks(items: list[Any], chunk_size: int) -> list[list[Any]]:
-    return [items[index:index + chunk_size] for index in range(0, len(items), chunk_size)]
+def _debug_items_by_source(measure_debug: dict, page_name: str) -> dict[int, dict]:
+    result = {}
+    for fallback, item in enumerate((measure_debug.get('font_size') or {}).get(page_name, []) or []):
+        if isinstance(item, dict):
+            result[_source_index(item, fallback)] = item
+    return result
 
 
-class MangaOCR:
-    def __init__(
-        self,
-        model_dir: str | Path,
-        device: str,
-        dtype: str,
-        max_new_tokens: int,
-        prompt: str,
-    ) -> None:
-        torch, AutoModelForCausalLM, AutoProcessor = _require_transformers()
-        self.torch = torch
-        self.device = device
-        self.max_new_tokens = max_new_tokens
-        self.prompt = prompt
-        self.processor = AutoProcessor.from_pretrained(
-            model_dir,
-            trust_remote_code=True,
-            local_files_only=True,
-            use_fast=True,
-        )
+def _ordered_char_boxes(char_boxes: list[dict], orientation: str) -> list[dict]:
+    def key(box: dict) -> tuple[float, float]:
+        bbox = box.get('bbox') or [0, 0, 0, 0]
+        x1, y1, x2, y2 = [float(value) for value in bbox]
+        if orientation == 'horizontal':
+            return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        return (y1 + y2) / 2.0, (x1 + x2) / 2.0
 
-        torch_dtype = self._resolve_dtype(dtype)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_dir,
-            trust_remote_code=True,
-            local_files_only=True,
-            dtype=torch_dtype,
-        )
-        self.model.to(device)
-        self.model.eval()
-        if self.model.generation_config.pad_token_id is None:
-            self.model.generation_config.pad_token_id = self.processor.tokenizer.eos_token_id
+    return sorted((dict(box) for box in char_boxes if isinstance(box, dict)), key=key)
 
-    def _resolve_dtype(self, dtype: str) -> Any:
-        if dtype == 'auto':
-            if self.device == 'cuda':
-                return self.torch.float16
-            return self.torch.float32
-        if dtype == 'float16':
-            return self.torch.float16
-        if dtype == 'bfloat16':
-            return self.torch.bfloat16
-        if dtype == 'float32':
-            return self.torch.float32
-        raise ValueError(f'未知 dtype：{dtype}')
 
-    def _prompt_text(self) -> str:
-        messages = [
-            {
-                'role': 'user',
-                'content': [
-                    {'type': 'image'},
-                    {'type': 'text', 'text': self.prompt},
-                ],
-            }
-        ]
-        return self.processor.apply_chat_template(messages, add_generation_prompt=True)
+def _character_tasks_for_page(
+    items: list[dict],
+    measure_debug: dict,
+    page_name: str,
+    source_block_filter: int | None,
+) -> tuple[list[dict], list[dict]]:
+    debug_by_source = _debug_items_by_source(measure_debug, page_name)
+    output_items = []
+    tasks = []
+    for item_index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        source_index = _source_index(item, item_index)
+        if source_block_filter is not None and source_index != source_block_filter:
+            continue
+        output_item = dict(item)
+        output_item['measure_item_index'] = item_index
+        output_item['ocr_characters'] = []
+        output_index = len(output_items)
+        output_items.append(output_item)
 
-    def recognize(self, image: Image.Image) -> str:
-        return self.recognize_batch([image])[0]
+        grouped: dict[int, list[dict]] = {}
+        for char_box in debug_by_source.get(source_index, {}).get('char_boxes', []) or []:
+            if not isinstance(char_box, dict):
+                continue
+            try:
+                line_index = int(char_box.get('line_index', 0))
+            except (TypeError, ValueError):
+                line_index = 0
+            grouped.setdefault(line_index, []).append(char_box)
 
-    def recognize_batch(self, images: list[Image.Image]) -> list[str]:
-        prompt_text = self._prompt_text()
-        prompts = [prompt_text] * len(images)
-        inputs = self.processor(images=images, text=prompts, return_tensors='pt', padding=True)
-        inputs = {
-            key: value.to(self.device) if hasattr(value, 'to') else value
-            for key, value in inputs.items()
+        orientation = str(item.get('orientation') or 'vertical')
+        for line_index, boxes in sorted(grouped.items()):
+            for character_index, box in enumerate(_ordered_char_boxes(boxes, orientation)):
+                bbox = box.get('bbox')
+                if not isinstance(bbox, list) or len(bbox) != 4:
+                    continue
+                tasks.append({
+                    'output_index': output_index,
+                    'source_block_index': source_index,
+                    'line_index': line_index,
+                    'character_index': character_index,
+                    'orientation': orientation,
+                    'box': box,
+                })
+    return output_items, tasks
+
+
+def _clean_single_character(text: object) -> str | None:
+    normalized = unicodedata.normalize('NFC', str(text or '')).strip()
+    characters = [character for character in normalized if not character.isspace()]
+    return characters[0] if len(characters) == 1 else None
+
+
+def _choose_variant(variants: list[dict], minimum_probability: float) -> dict:
+    candidates = []
+    for variant in variants:
+        character = _clean_single_character(variant.get('text'))
+        if character is None:
+            continue
+        candidates.append((float(variant.get('probability') or 0), character, variant))
+    if not candidates:
+        return {'status': 'not_single_character', 'ocr_text': '', 'ocr_probability': 0.0}
+    probability, character, variant = max(candidates, key=lambda candidate: candidate[0])
+    if probability < minimum_probability:
+        return {
+            'status': 'low_confidence',
+            'ocr_text': character,
+            'ocr_probability': round(probability, 6),
+            'selected_pad': variant.get('pad'),
         }
-        input_len = inputs['input_ids'].shape[-1]
-        with self.torch.inference_mode():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=False,
-                use_cache=True,
-            )
-        generated = outputs[:, input_len:]
-        texts = self.processor.batch_decode(
-            generated,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )
-        return [_clean_ocr_text(text) for text in texts]
+    agreeing = sum(
+        1 for _, candidate_character, _ in candidates
+        if candidate_character == character
+    )
+    return {
+        'status': 'accepted',
+        'ocr_text': character,
+        'ocr_probability': round(probability, 6),
+        'selected_pad': variant.get('pad'),
+        'agreeing_variant_count': agreeing,
+    }
 
 
 def _iter_pages(measure: dict, page_filter: str | None) -> list[tuple[str, list[dict]]]:
-    pages = measure.get('pages', {})
+    pages = measure.get('pages') or {}
     if page_filter is not None:
         return [(page_filter, pages.get(page_filter, []))]
     return list(pages.items())
@@ -192,13 +174,15 @@ def run(
     measure_path: str,
     image_dir: str,
     output_path: str | None,
-    model_dir: str,
+    model_path: str,
+    alphabet_path: str,
+    implementation_path: str,
     device: str,
-    dtype: str,
-    pad: int,
-    max_new_tokens: int,
-    prompt: str,
+    pads: list[int],
+    minimum_probability: float,
     page: str | None,
+    measure_debug_path: str | None,
+    source_block_index: int | None,
     limit_pages: int | None,
     limit_items: int | None,
     batch_size: int,
@@ -206,6 +190,8 @@ def run(
     dry_run: bool,
 ) -> str:
     measure = _load_json(measure_path)
+    measure_debug_path = measure_debug_path or osp.join(osp.dirname(measure_path), 'measure.debug.json')
+    measure_debug = _load_json(measure_debug_path) if osp.isfile(measure_debug_path) else {}
     output_path = output_path or osp.join(osp.dirname(measure_path), 'measure_ocr.json')
     pages = _iter_pages(measure, page)
     if limit_pages is not None:
@@ -214,112 +200,142 @@ def run(
     save_crops_path = Path(save_crops) if save_crops else None
     if save_crops_path is not None:
         save_crops_path.mkdir(parents=True, exist_ok=True)
-
-    ocr = None if dry_run else MangaOCR(model_dir, device, dtype, max_new_tokens, prompt)
-    output = {'pages': {}}
+    ocr = None if dry_run else Mit48pxCtcOcr(
+        device,
+        model_path=model_path,
+        alphabet_path=alphabet_path,
+        implementation_path=implementation_path,
+    )
+    output = {
+        'ocr_engine': 'mit48px_ctc_character',
+        'model_path': str(model_path),
+        'alphabet_path': str(alphabet_path),
+        'device': ocr.device if ocr is not None else device,
+        'pads': pads,
+        'minimum_probability': minimum_probability,
+        'pages': {},
+    }
 
     start_time = time.perf_counter()
     total_pages = len(pages)
     for page_index, (page_name, items) in enumerate(pages, start=1):
         page_start = time.perf_counter()
-        image_path = _image_path_for_page(image_dir, page_name)
-        image = Image.open(image_path).convert('RGB')
-        output_items = []
+        image_bgr = cv2.imread(str(_image_path_for_page(image_dir, page_name)), cv2.IMREAD_COLOR)
+        if image_bgr is None:
+            raise RuntimeError(f'無法讀取原圖：{page_name}')
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        output_items, tasks = _character_tasks_for_page(
+            items, measure_debug, page_name, source_block_index,
+        )
         if limit_items is not None:
-            items = items[:limit_items]
-        print(f'[{page_index}/{total_pages}] OCR {page_name}: {len(items)} boxes')
+            output_items = output_items[:limit_items]
+            allowed = set(range(len(output_items)))
+            tasks = [task for task in tasks if task['output_index'] in allowed]
+        print(
+            f'[{page_index}/{total_pages}] OCR {page_name}: '
+            f'{len(output_items)} boxes, {len(tasks)} characters',
+            flush=True,
+        )
 
-        indexed_items = list(enumerate(items))
-        for batch in _chunks(indexed_items, max(1, batch_size)):
-            batch_indices = [index for index, _ in batch]
-            batch_items = [item for _, item in batch]
-            batch_crops = [_crop_box(image, item['xyxy_pixel'], pad) for item in batch_items]
+        crops = []
+        crop_owners = []
+        for task_index, task in enumerate(tasks):
+            bbox = task['box']['bbox']
+            for pad in pads:
+                crop = prepare_character_crop(image_rgb, bbox, pad)
+                crops.append(crop)
+                crop_owners.append((task_index, pad))
+                if save_crops_path is not None:
+                    name = (
+                        f'{Path(page_name).stem}-b{task["source_block_index"]:03d}'
+                        f'-l{task["line_index"]:02d}-c{task["character_index"]:02d}-p{pad}.png'
+                    )
+                    cv2.imwrite(str(save_crops_path / name), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
 
-            if save_crops_path is not None:
-                for index, crop in zip(batch_indices, batch_crops):
-                    crop_name = f'{Path(page_name).stem}-{index:03d}.png'
-                    crop.save(save_crops_path / crop_name)
+        variants_by_task: list[list[dict]] = [[] for _ in tasks]
+        if dry_run:
+            recognized = [{'text': '', 'probability': 0.0, 'character_probabilities': []} for _ in crops]
+        else:
+            recognized = ocr.recognize_batch(crops, batch_size=batch_size) if ocr is not None else []
+        for (task_index, pad), result in zip(crop_owners, recognized):
+            variants_by_task[task_index].append({**result, 'pad': pad})
 
-            if dry_run:
-                batch_texts = [''] * len(batch_items)
-                batch_errors = [None] * len(batch_items)
-            else:
-                try:
-                    batch_texts = ocr.recognize_batch(batch_crops) if ocr is not None else [''] * len(batch_items)
-                    batch_errors = [None] * len(batch_items)
-                except Exception as exc:  # Keep page OCR running if one batch fails.
-                    batch_texts = [''] * len(batch_items)
-                    batch_errors = [str(exc)] * len(batch_items)
-
-            for item, text, error in zip(batch_items, batch_texts, batch_errors):
-                out_item = dict(item)
-                out_item['ocr_text'] = text
-                if error:
-                    out_item['ocr_error'] = error
-                output_items.append(out_item)
+        for task, variants in zip(tasks, variants_by_task):
+            selection = _choose_variant(variants, minimum_probability)
+            output_items[task['output_index']]['ocr_characters'].append({
+                'line_index': task['line_index'],
+                'character_index': task['character_index'],
+                'orientation': task['orientation'],
+                **task['box'],
+                'ocr_variants': variants,
+                **selection,
+            })
+        for output_item in output_items:
+            characters = output_item['ocr_characters']
+            characters.sort(key=lambda item: (int(item['line_index']), int(item['character_index'])))
+            lines: dict[int, list[str]] = {}
+            for character in characters:
+                lines.setdefault(int(character['line_index']), []).append(
+                    str(character.get('ocr_text') or '□'),
+                )
+            output_item['ocr_text'] = '\n'.join(''.join(line) for _, line in sorted(lines.items()))
         output['pages'][page_name] = output_items
-        page_elapsed = time.perf_counter() - page_start
-        print(f'[{page_index}/{total_pages}] 完成 {page_name} ({page_elapsed:.1f}s)')
+        print(
+            f'[{page_index}/{total_pages}] 完成 {page_name} '
+            f'({time.perf_counter() - page_start:.1f}s)',
+            flush=True,
+        )
 
     _write_json(output_path, output)
-    print(f'總耗時：{time.perf_counter() - start_time:.1f}s')
+    print(f'總耗時：{time.perf_counter() - start_time:.1f}s', flush=True)
     return output_path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description='Add OCR text to measure.json boxes with PaddleOCR-VL-For-Manga.',
-    )
-    parser.add_argument(
-        'path1',
-        help='Image folder, or path to ctd/measure.json when using the old two-argument form',
-    )
-    parser.add_argument(
-        'path2',
-        nargs='?',
-        default=None,
-        help='Optional image folder for old form: measure_ocr.py ctd/measure.json image_dir',
-    )
-    parser.add_argument('--measure-json', default=None, help='Default: <image_dir>/ctd/measure.json')
-    parser.add_argument('--output', default=None, help='Default: measure_ocr.json next to measure.json')
-    parser.add_argument('--model', default=str(DEFAULT_MODEL_DIR), help='PaddleOCR-VL model directory')
-    parser.add_argument('--device', default='mps', help='cpu, cuda, mps, ...')
-    parser.add_argument(
-        '--dtype',
-        default='auto',
-        choices=['auto', 'float16', 'bfloat16', 'float32'],
-        help='Model dtype',
-    )
-    parser.add_argument('--pad', type=int, default=2, help='Crop padding in pixels')
-    parser.add_argument('--max-new-tokens', type=int, default=512)
-    parser.add_argument('--prompt', default=DEFAULT_PROMPT)
-    parser.add_argument('--page', default=None, help='Only process one page, e.g. 241.png')
+    parser = argparse.ArgumentParser(description='Run mit48px CTC OCR independently for each character box.')
+    parser.add_argument('path1', help='Image folder, or measure.json in the old two-argument form')
+    parser.add_argument('path2', nargs='?', default=None, help='Image folder for old two-argument form')
+    parser.add_argument('--measure-json', default=None)
+    parser.add_argument('--output', default=None)
+    parser.add_argument('--model', default=str(DEFAULT_MODEL_PATH))
+    parser.add_argument('--alphabet', default=str(DEFAULT_ALPHABET_PATH))
+    parser.add_argument('--implementation', default=str(DEFAULT_IMPLEMENTATION_PATH))
+    parser.add_argument('--device', default='cpu', choices=['cpu', 'mps', 'cuda'])
+    parser.add_argument('--pads', default='4,8', help='Comma-separated character crop padding values')
+    parser.add_argument('--minimum-probability', type=float, default=0.3)
+    parser.add_argument('--page', default=None)
+    parser.add_argument('--measure-debug', default=None)
+    parser.add_argument('--source-block-index', type=int, default=None)
     parser.add_argument('--limit-pages', type=int, default=None)
     parser.add_argument('--limit-items', type=int, default=None)
-    parser.add_argument('--batch-size', type=int, default=1, help='Number of crops per generate call')
-    parser.add_argument('--save-crops', default=None, help='Optional folder for crop QA images')
-    parser.add_argument('--dry-run', action='store_true', help='Only crop/write JSON; do not load OCR model')
+    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--save-crops', default=None)
+    parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     measure_path, image_dir = _resolve_input_paths(args.path1, args.path2, args.measure_json)
-
+    pads = sorted({max(0, int(value.strip())) for value in args.pads.split(',') if value.strip()})
+    if not pads:
+        pads = [4]
     output = run(
         measure_path=measure_path,
         image_dir=image_dir,
         output_path=args.output,
-        model_dir=args.model,
+        model_path=args.model,
+        alphabet_path=args.alphabet,
+        implementation_path=args.implementation,
         device=args.device,
-        dtype=args.dtype,
-        pad=args.pad,
-        max_new_tokens=args.max_new_tokens,
-        prompt=args.prompt,
+        pads=pads,
+        minimum_probability=max(0.0, min(1.0, args.minimum_probability)),
         page=args.page,
+        measure_debug_path=args.measure_debug,
+        source_block_index=args.source_block_index,
         limit_pages=args.limit_pages,
         limit_items=args.limit_items,
-        batch_size=args.batch_size,
+        batch_size=max(1, args.batch_size),
         save_crops=args.save_crops,
         dry_run=args.dry_run,
     )
-    print(f'輸出：{output}')
+    print(f'輸出：{output}', flush=True)
 
 
 if __name__ == '__main__':

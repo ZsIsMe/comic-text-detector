@@ -141,7 +141,7 @@ class MeasureEditorWindow(QMainWindow):
         self.copy_button = QPushButton('複製當前文字框')
         self.delete_button = QPushButton('刪除當前文字框')
         self.uniform_font_button = QPushButton('統一調整字體大小')
-        self.ocr_button = QPushButton('OCR 圖片文本')
+        self.ocr_button = QPushButton('逐字 OCR 校準字級')
         self.status_label = QLabel('尚未修改')
         self.status_label.setWordWrap(True)
         self.save_action = QAction('保存 measure.json', self)
@@ -982,12 +982,72 @@ class MeasureEditorWindow(QMainWindow):
                 return
             self.save_measure()
 
-        dialog = MeasureOcrDialog(self.processor, self.current_page_name(), self)
+        selected = self.selected_item()
+        source_block_index = None
+        if selected is not None:
+            try:
+                source_block_index = int(selected.get('source_block_index', self.selected_index))
+            except (TypeError, ValueError):
+                source_block_index = self.selected_index
+        dialog = MeasureOcrDialog(
+            self.processor,
+            self.current_page_name(),
+            source_block_index,
+            self,
+        )
         dialog.completed.connect(self.handle_ocr_completed)
+        dialog.applyRequested.connect(self.apply_ocr_font_size_updates)
         dialog.exec()
 
     def handle_ocr_completed(self, output_path: str) -> None:
+        self.processor.measure_ocr_path = Path(output_path)
+        self.processor.measure_ocr = json.loads(Path(output_path).read_text(encoding='utf-8'))
+        self.refresh_after_measure_change(refit=False)
         self.status_label.setText(f'OCR 已完成：{output_path}')
+
+    def apply_ocr_font_size_updates(self, updates: object) -> None:
+        if not isinstance(updates, dict):
+            return
+        pages = self.measure.setdefault('pages', {})
+        before_pages: dict[str, list[dict[str, Any]]] = {}
+        changed = 0
+        for page_name, page_updates in updates.items():
+            items = pages.get(page_name)
+            if not isinstance(items, list) or not isinstance(page_updates, dict):
+                continue
+            original_items = copy.deepcopy(items)
+            page_changed = 0
+            for raw_index, raw_size in page_updates.items():
+                try:
+                    item_index = int(raw_index)
+                    font_size = max(1, min(999, int(raw_size)))
+                except (TypeError, ValueError):
+                    continue
+                if not (0 <= item_index < len(items)) or not isinstance(items[item_index], dict):
+                    continue
+                item = items[item_index]
+                current_size = positive_int(item.get('font_size'), 1)
+                if current_size == font_size:
+                    continue
+                item.setdefault('font_size_detected', item.get('font_size'))
+                item['font_size'] = font_size
+                item['font_size_method'] = 'character_ocr_qfont_fit'
+                page_changed += 1
+            if page_changed:
+                before_pages[str(page_name)] = original_items
+                changed += page_changed
+
+        if changed == 0:
+            self.status_label.setText('OCR 字級建議與目前值相同，沒有修改。')
+            return
+        self.push_undo_pages_snapshot(
+            '套用 OCR 字級校準',
+            before_pages,
+            self.current_page_name(),
+            self.selected_index,
+        )
+        self.mark_dirty(f'已套用 {changed} 個 OCR 字級建議，尚未保存。')
+        self.refresh_after_measure_change(refit=False)
 
     def render_page(self, *_, refit: bool = True) -> None:
         if self.page is None:

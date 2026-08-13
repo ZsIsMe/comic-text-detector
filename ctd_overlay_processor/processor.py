@@ -262,17 +262,67 @@ def load_align_masks(path: Path, expected_count: int | None = None) -> AlignMask
     return AlignMasks(smoothed_masks=smoothed, outer_body_masks=outer, accepted=accepted)
 
 
-def load_char_boxes(measure_debug: dict[str, Any], page_name: str) -> list[dict[str, Any]]:
+def _ocr_characters_by_box(measure_ocr: dict[str, Any], page_name: str) -> dict[tuple[int, int, int], dict[str, Any]]:
+    result = {}
+    for fallback_index, block in enumerate((measure_ocr.get('pages') or {}).get(page_name, []) or []):
+        if not isinstance(block, dict):
+            continue
+        source_index = source_index_from_item(block, fallback_index)
+        fit_by_position = {
+            (int(fit.get('line_index', 0)), int(fit.get('character_index', 0))): fit
+            for fit in (block.get('font_fit') or {}).get('character_results', []) or []
+            if isinstance(fit, dict)
+        }
+        for character in block.get('ocr_characters', []) or []:
+            if not isinstance(character, dict):
+                continue
+            line_index = int(character.get('line_index', 0))
+            character_index = int(character.get('character_index', 0))
+            item = dict(character)
+            fit = fit_by_position.get((line_index, character_index))
+            if isinstance(fit, dict) and fit.get('accepted') is True and fit.get('pixel_size') is not None:
+                item['calculated_font_size'] = fit.get('pixel_size')
+                item['font_fit_error'] = fit.get('error')
+            result[(source_index, line_index, character_index)] = item
+    return result
+
+
+def load_char_boxes(
+    measure_debug: dict[str, Any],
+    page_name: str,
+    measure_ocr: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    ocr_by_box = _ocr_characters_by_box(measure_ocr or {}, page_name)
     font_debug_pages = measure_debug.get('font_size', {})
     for block_debug in font_debug_pages.get(page_name, []):
-        source_index = block_debug.get('source_block_index')
+        source_index = source_index_from_item(block_debug, 0)
+        boxes_by_line: dict[int, list[dict[str, Any]]] = {}
         for char_box in block_debug.get('char_boxes', []) or []:
-            if not isinstance(char_box, dict):
-                continue
-            item = dict(char_box)
-            item['source_block_index'] = source_index
-            result.append(item)
+            if isinstance(char_box, dict):
+                boxes_by_line.setdefault(int(char_box.get('line_index', 0)), []).append(char_box)
+        orientation = str((block_debug.get('font_size_debug') or {}).get('orientation') or 'vertical')
+        for line_index, boxes in boxes_by_line.items():
+            def sort_key(char_box: dict[str, Any]) -> tuple[float, float]:
+                bbox = char_box.get('bbox') or [0, 0, 0, 0]
+                x1, y1, x2, y2 = [float(value) for value in bbox]
+                return ((x1 + x2) / 2, (y1 + y2) / 2) if orientation == 'horizontal' else ((y1 + y2) / 2, (x1 + x2) / 2)
+
+            for character_index, char_box in enumerate(sorted(boxes, key=sort_key)):
+                if not isinstance(char_box, dict):
+                    continue
+                item = dict(char_box)
+                item['source_block_index'] = source_index
+                item['character_index'] = character_index
+                ocr_item = ocr_by_box.get((source_index, line_index, character_index))
+                if isinstance(ocr_item, dict):
+                    for key in (
+                        'ocr_text', 'ocr_probability', 'status', 'selected_pad',
+                        'calculated_font_size', 'font_fit_error',
+                    ):
+                        if ocr_item.get(key) is not None:
+                            item[key] = ocr_item[key]
+                result.append(item)
     return result
 
 
@@ -305,6 +355,7 @@ class CtdOverlayProcessor:
         self.ctd_measure_path = self.ctd_dir / CTD_MEASURE_JSON
         self.measure_path = self.ctd_measure_path
         self.measure_debug_path = self.ctd_dir / 'measure.debug.json'
+        self.measure_ocr_path = self.ctd_dir / 'measure_ocr.json'
 
         self.block_map = load_json(self.block_map_path, required=False)
         self.line_trans_map = load_json(self.line_trans_map_path, required=False)
@@ -312,6 +363,7 @@ class CtdOverlayProcessor:
         self.measure = load_json(self.measure_path, required=False)
         normalize_measure_map(self.measure)
         self.measure_debug = load_json(self.measure_debug_path, required=False)
+        self.measure_ocr = load_json(self.measure_ocr_path, required=False)
         self.source_images = find_source_images(self.image_dir)
 
     def page_names(self) -> list[str]:
@@ -471,7 +523,7 @@ class CtdOverlayProcessor:
             boxes=boxes,
             lines=lines,
             align_masks=align_masks,
-            char_boxes=load_char_boxes(self.measure_debug, page_name),
+            char_boxes=load_char_boxes(self.measure_debug, page_name, self.measure_ocr),
         )
 
     def summary(self) -> dict[str, Any]:

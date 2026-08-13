@@ -3,74 +3,105 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QTimer, Signal
+from PySide6.QtCore import QProcess, QTimer, Qt, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
 )
 
 try:
+    from .font_size_calibration import DEFAULT_FONT_PATH, calibrate_ocr_output, load_application_font
     from .processor import CtdOverlayProcessor
 except ImportError:
+    from font_size_calibration import DEFAULT_FONT_PATH, calibrate_ocr_output, load_application_font
     from processor import CtdOverlayProcessor
 
 
 class MeasureOcrDialog(QDialog):
     completed = Signal(str)
+    applyRequested = Signal(object)
 
     def __init__(
         self,
         processor: CtdOverlayProcessor,
         current_page_name: str | None,
+        current_source_block_index: int | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle('OCR 圖片文本')
+        self.setWindowTitle('逐字 OCR 校準字級')
         self.resize(760, 540)
         self.processor = processor
         self.current_page_name = current_page_name
+        self.current_source_block_index = current_source_block_index
         self.process: QProcess | None = None
         self.output_chunks: list[str] = []
         self.command: list[str] = []
         self._stopping = False
+        self.calibrated_output: dict = {}
+        self.proposed_updates: dict[str, dict[int, int]] = {}
 
         self.scope_combo = QComboBox()
+        if current_page_name and current_source_block_index is not None:
+            self.scope_combo.addItem(
+                f'當前文字框：{current_page_name} / block {current_source_block_index}',
+                'item',
+            )
         if current_page_name:
             self.scope_combo.addItem(f'當前頁：{current_page_name}', 'current')
         self.scope_combo.addItem('全部頁面', 'all')
         self.device_combo = QComboBox()
-        self.device_combo.addItem('MPS（Apple GPU）', 'mps')
-        self.device_combo.addItem('CPU（相容）', 'cpu')
+        self.device_combo.addItem('CPU（目前可用）', 'cpu')
+        self.device_combo.addItem('MPS（不可用時自動改 CPU）', 'mps')
         self.device_combo.addItem('CUDA', 'cuda')
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.status_label = QLabel('尚未開始 OCR。')
+        self.status_label = QLabel('尚未開始逐字 OCR。每個單字框獨立識別，失敗不影響同行其他字。')
         self.status_label.setWordWrap(True)
+        self.font_label = QLabel(f'校準字體：{DEFAULT_FONT_PATH.name}')
+        self.font_label.setToolTip(str(DEFAULT_FONT_PATH))
         self.command_label = QLabel('')
         self.command_label.setWordWrap(True)
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
-        self.start_button = QPushButton('開始 OCR')
+        self.result_table = QTableWidget()
+        self.result_table.setColumnCount(7)
+        self.result_table.setHorizontalHeaderLabels(
+            ['頁面', 'Block', 'OCR', '原字級', '建議', '有效字', '狀態'],
+        )
+        self.result_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.result_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.result_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.result_table.horizontalHeader().setStretchLastSection(True)
+        self.result_table.hide()
+        self.start_button = QPushButton('開始逐字 OCR')
         self.stop_button = QPushButton('停止 OCR')
+        self.apply_button = QPushButton('套用可靠字級')
         self.close_button = QPushButton('關閉')
         self.stop_button.setEnabled(False)
+        self.apply_button.setEnabled(False)
 
         self._build_ui()
         self.start_button.clicked.connect(self.start_ocr)
         self.stop_button.clicked.connect(self.stop_ocr)
+        self.apply_button.clicked.connect(self.apply_results)
         self.close_button.clicked.connect(self.close)
 
     def _build_ui(self) -> None:
@@ -90,13 +121,16 @@ class MeasureOcrDialog(QDialog):
 
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.font_label)
         layout.addWidget(self.command_label)
         layout.addWidget(self.log_edit, 1)
+        layout.addWidget(self.result_table, 1)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
         button_row.addWidget(self.start_button)
         button_row.addWidget(self.stop_button)
+        button_row.addWidget(self.apply_button)
         button_row.addWidget(self.close_button)
         layout.addLayout(button_row)
 
@@ -113,17 +147,26 @@ class MeasureOcrDialog(QDialog):
             return
 
         args = ['-u', str(script), str(self.processor.image_dir)]
-        if self.scope_combo.currentData() == 'current' and self.current_page_name:
+        scope = self.scope_combo.currentData()
+        if scope in {'item', 'current'} and self.current_page_name:
             args.extend(['--page', self.current_page_name])
-        args.extend(['--device', self.device_combo.currentData() or 'mps'])
+        if scope == 'item' and self.current_source_block_index is not None:
+            args.extend(['--source-block-index', str(self.current_source_block_index)])
+        args.extend(['--device', self.device_combo.currentData() or 'cpu'])
         python = self._ocr_python(project_root)
         self.command = [str(python), *args]
         self.output_chunks = []
         self._stopping = False
         self.progress_bar.setRange(0, 0)
-        self.status_label.setText('正在啟動 OCR 模型...')
+        self.status_label.setText('正在啟動 mit48px CTC 逐字 OCR 模型...')
         self.command_label.setText('命令：' + ' '.join(self.command))
         self.log_edit.clear()
+        self.result_table.clearContents()
+        self.result_table.setRowCount(0)
+        self.result_table.hide()
+        self.apply_button.setEnabled(False)
+        self.calibrated_output = {}
+        self.proposed_updates = {}
 
         process = QProcess(self)
         process.setProgram(str(python))
@@ -219,10 +262,77 @@ class MeasureOcrDialog(QDialog):
             return
 
         output_path = self.processor.ctd_dir / 'measure_ocr.json'
+        try:
+            output = json.loads(output_path.read_text(encoding='utf-8'))
+            _, font_family = load_application_font()
+            ready_count = calibrate_ocr_output(output, font_family)
+            output_path.write_text(
+                json.dumps(output, ensure_ascii=False, indent=2) + '\n',
+                encoding='utf-8',
+            )
+            self.calibrated_output = output
+            self._show_calibration_results(output)
+        except Exception as exc:
+            self.status_label.setText(f'OCR 完成，但字級校準失敗：{exc}')
+            QMessageBox.warning(self, '字級校準失敗', str(exc))
+            self.completed.emit(str(output_path))
+            return
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
-        self.status_label.setText(f'OCR 完成：{output_path}')
+        self.status_label.setText(f'OCR 完成，可套用 {ready_count} 個可靠字級：{output_path}')
         self.completed.emit(str(output_path))
+
+    def _show_calibration_results(self, output: dict) -> None:
+        status_text = {
+            'ready': '可套用',
+            'no_reliable_characters': '沒有可靠字元',
+            'too_few_reliable_characters': '可靠字元不足',
+            'suggestion_too_far_from_detected': '與檢測字級差距過大',
+        }
+        rows = []
+        updates: dict[str, dict[int, int]] = {}
+        for page_name, items in (output.get('pages') or {}).items():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                fit = item.get('font_fit') or {}
+                status = str(fit.get('status') or 'unknown')
+                suggested = fit.get('suggested_font_size')
+                item_index = item.get('measure_item_index')
+                if status == 'ready' and isinstance(suggested, int) and isinstance(item_index, int):
+                    updates.setdefault(str(page_name), {})[item_index] = suggested
+                rows.append((page_name, item, fit, status_text.get(status, status)))
+
+        self.proposed_updates = updates
+        self.result_table.setRowCount(len(rows))
+        for row, (page_name, item, fit, display_status) in enumerate(rows):
+            values = [
+                page_name,
+                str(item.get('source_block_index', '-')),
+                str(item.get('ocr_text') or '').replace('\n', ' / '),
+                str(int(round(float(fit.get('original_font_size') or item.get('font_size') or 0)))),
+                str(fit.get('suggested_font_size') or '-'),
+                str(fit.get('accepted_character_count') or 0),
+                display_status,
+            ]
+            for column, value in enumerate(values):
+                table_item = QTableWidgetItem(value)
+                if column in {1, 3, 4, 5}:
+                    table_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.result_table.setItem(row, column, table_item)
+        self.log_edit.hide()
+        self.command_label.hide()
+        self.result_table.show()
+        self.apply_button.setEnabled(any(updates.values()))
+
+    def apply_results(self) -> None:
+        if not any(self.proposed_updates.values()):
+            return
+        self.applyRequested.emit(self.proposed_updates)
+        self.apply_button.setEnabled(False)
+        self.status_label.setText('可靠字級已套用到編輯器，請在主視窗預覽並保存。')
 
     def _reset_after_finish(self, message: str) -> None:
         process = self.process

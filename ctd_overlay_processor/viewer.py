@@ -78,6 +78,7 @@ try:
         xyxy_from_item,
     )
     from .labelplus_pipeline import build_bt_from_labelplus_txt
+    from .measure_view import char_box_label
 except ImportError:
     from processor import (
         BoxOverlay,
@@ -88,6 +89,7 @@ except ImportError:
         xyxy_from_item,
     )
     from labelplus_pipeline import build_bt_from_labelplus_txt
+    from measure_view import char_box_label
 
 
 if QT_IMPORT_ERROR is None:
@@ -5077,12 +5079,9 @@ if QT_IMPORT_ERROR is None:
                 painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
                 if item is self.hover_char_box:
                     continue
-                width_text = compact_int_px(item.get('width'))
-                height_text = compact_int_px(item.get('height'))
-                if width_text is None or height_text is None:
+                label = char_box_label(item)
+                if label is None:
                     continue
-
-                label = f'W{width_text}H{height_text}'
                 text_w = metrics.horizontalAdvance(label)
                 text_h = metrics.ascent() + metrics.descent()
                 label_x = int(round((x1 + x2) / 2 - text_w / 2))
@@ -5102,10 +5101,8 @@ if QT_IMPORT_ERROR is None:
                     painter.setPen(QPen(QColor(255, 40, 120), 3))
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
-                    width_text = compact_int_px(self.hover_char_box.get('width'))
-                    height_text = compact_int_px(self.hover_char_box.get('height'))
-                    if width_text is not None and height_text is not None:
-                        label = f'W{width_text}H{height_text}'
+                    label = char_box_label(self.hover_char_box)
+                    if label is not None:
                         view_scale = 1.0
                         if hasattr(self, 'view'):
                             transform = self.view.transform()
