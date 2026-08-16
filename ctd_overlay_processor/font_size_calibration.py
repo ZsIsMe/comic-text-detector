@@ -1,31 +1,10 @@
-"""Fit detected character ink boxes to a concrete Qt font."""
+"""Filter OCR character boxes and estimate block font size from geometry."""
 
 from __future__ import annotations
 
 import math
-import statistics
 import unicodedata
-from pathlib import Path
 from typing import Any
-
-from PySide6.QtGui import QFont, QFontDatabase, QFontMetricsF
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FONT_PATH = PROJECT_ROOT / 'assets' / 'fonts' / 'NotoSansCJKjp-Medium.otf'
-
-
-def load_application_font(font_path: str | Path = DEFAULT_FONT_PATH) -> tuple[int, str]:
-    path = Path(font_path)
-    if not path.is_file():
-        raise FileNotFoundError(f'找不到字體：{path}')
-    font_id = QFontDatabase.addApplicationFont(str(path))
-    if font_id < 0:
-        raise RuntimeError(f'Qt 無法載入字體：{path}')
-    families = QFontDatabase.applicationFontFamilies(font_id)
-    if not families:
-        raise RuntimeError(f'字體沒有可用 family：{path}')
-    return font_id, families[0]
 
 
 def ocr_characters(text: object) -> list[str]:
@@ -33,16 +12,28 @@ def ocr_characters(text: object) -> list[str]:
     return [char for char in normalized if not char.isspace()]
 
 
-def character_is_fit_candidate(char: str) -> bool:
-    if not char:
-        return False
-    codepoint = ord(char[0])
-    return (
-        0x3040 <= codepoint <= 0x30FF
-        or 0x3400 <= codepoint <= 0x4DBF
-        or 0x4E00 <= codepoint <= 0x9FFF
-        or 0xF900 <= codepoint <= 0xFAFF
-    )
+def _percentile(values: list[float], percentile: float) -> float:
+    sorted_values = sorted(float(value) for value in values if float(value) > 0)
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    position = (len(sorted_values) - 1) * percentile / 100.0
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return sorted_values[lower]
+    weight = position - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
+def _dominant_values(values: list[float]) -> list[float]:
+    valid = [float(value) for value in values if float(value) > 0]
+    if not valid:
+        return []
+    threshold = max(1.0, _percentile(valid, 75) * 0.55)
+    selected = [value for value in valid if value >= threshold]
+    return selected or valid
 
 
 def _box_size(box: dict[str, Any]) -> tuple[float, float]:
@@ -56,80 +47,92 @@ def _box_size(box: dict[str, Any]) -> tuple[float, float]:
     return 0.0, 0.0
 
 
-def _relative_error(predicted: float, target: float) -> float:
-    if predicted <= 0 or target <= 0:
-        return math.inf
-    return abs(predicted - target) / target
+def _reliable_square_limit(width: float, height: float) -> float:
+    return max(5.0, max(width, height) * 0.16)
 
 
-def fit_character_pixel_size(
-    char: str,
-    box: dict[str, Any],
-    font_family: str,
+def estimate_font_size_from_boxes(
+    boxes: list[dict[str, Any]],
     orientation: str,
-    initial_size: float,
-) -> dict[str, Any] | None:
-    target_w, target_h = _box_size(box)
-    if target_w <= 0 or target_h <= 0 or not character_is_fit_candidate(char):
-        return None
+) -> tuple[float | None, dict[str, Any]]:
+    sizes = [_box_size(box) for box in boxes]
+    widths = [width for width, _ in sizes if width > 0]
+    heights = [height for _, height in sizes if height > 0]
+    if not widths or not heights:
+        return None, {'method': 'filtered_char_box_geometry', 'accepted': False, 'reason': 'no_valid_boxes'}
 
-    minimum = max(4, int(math.floor(initial_size * 0.55)))
-    maximum = min(999, max(minimum, int(math.ceil(initial_size * 1.70))))
-    font = QFont(font_family)
-    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-    best = None
-    for pixel_size in range(minimum, maximum + 1):
-        font.setPixelSize(pixel_size)
-        metrics = QFontMetricsF(font)
-        if not metrics.inFontUcs4(ord(char)):
-            return None
-        rect = metrics.tightBoundingRect(char)
-        predicted_w = float(rect.width())
-        predicted_h = float(rect.height())
-        width_error = _relative_error(predicted_w, target_w)
-        height_error = _relative_error(predicted_h, target_h)
-        if orientation == 'horizontal':
-            error = height_error * 0.75 + width_error * 0.25
-        else:
-            error = width_error * 0.75 + height_error * 0.25
-        candidate = (error, abs(pixel_size - initial_size), pixel_size, predicted_w, predicted_h)
-        if best is None or candidate < best:
-            best = candidate
-    if best is None or not math.isfinite(best[0]):
-        return None
-    return {
-        'character': char,
-        'pixel_size': int(best[2]),
-        'error': round(float(best[0]), 4),
-        'target_width': round(target_w, 2),
-        'target_height': round(target_h, 2),
-        'rendered_width': round(float(best[3]), 2),
-        'rendered_height': round(float(best[4]), 2),
-        'bbox': box.get('bbox'),
+    primary_values = _dominant_values(heights if orientation == 'horizontal' else widths)
+    secondary_values = _dominant_values(widths if orientation == 'horizontal' else heights)
+    if not primary_values or not secondary_values:
+        return None, {'method': 'filtered_char_box_geometry', 'accepted': False, 'reason': 'no_dominant_values'}
+
+    primary_percentile = 100 if orientation == 'horizontal' else 60
+    secondary_percentile = 75 if orientation == 'horizontal' else 100
+    primary_size = _percentile(primary_values, primary_percentile)
+    secondary_limit = max(primary_size * 1.6, primary_size + 8.0)
+    secondary_filtered = []
+    for box in boxes:
+        width, height = _box_size(box)
+        primary = height if orientation == 'horizontal' else width
+        secondary = width if orientation == 'horizontal' else height
+        if primary <= 0 or secondary <= 0 or secondary > secondary_limit:
+            continue
+        if len(boxes) <= 4 and secondary > primary_size + 5.0 and abs(height - width) > _reliable_square_limit(width, height):
+            continue
+        secondary_filtered.append(secondary)
+    if not secondary_filtered:
+        secondary_filtered = secondary_values
+    secondary_size = _percentile(secondary_filtered, secondary_percentile)
+    font_size = max(primary_size, secondary_size)
+
+    reliable_min_size = max(1.0, primary_size * 0.55)
+    required_square_count = 1 if len(boxes) <= 4 else 4
+    reliable_square_sizes = []
+    for box in boxes:
+        width, height = _box_size(box)
+        candidate = max(width, height)
+        if (
+            width > 0
+            and height > 0
+            and candidate >= reliable_min_size
+            and abs(height - width) <= _reliable_square_limit(width, height)
+        ):
+            reliable_square_sizes.append(candidate)
+    method = 'filtered_char_box_geometry'
+    reliable_square_size = None
+    if len(reliable_square_sizes) >= required_square_count:
+        reliable_square_size = max(reliable_square_sizes)
+        font_size = reliable_square_size
+        method = 'filtered_char_box_reliable_square'
+
+    return float(font_size), {
+        'method': method,
+        'accepted': True,
+        'orientation': orientation,
+        'char_count': len(boxes),
+        'widths': widths,
+        'heights': heights,
+        'primary_dimension': 'H' if orientation == 'horizontal' else 'W',
+        'secondary_dimension': 'W' if orientation == 'horizontal' else 'H',
+        'primary_percentile': primary_percentile,
+        'secondary_percentile': secondary_percentile,
+        'primary_size': primary_size,
+        'secondary_size': secondary_size,
+        'secondary_filtered': secondary_filtered,
+        'reliable_square_required_count': required_square_count,
+        'reliable_square_sizes': reliable_square_sizes,
+        'reliable_square_size': reliable_square_size,
+        'font_size': float(font_size),
     }
 
 
-def _median_absolute_deviation(values: list[float]) -> tuple[float, float]:
-    median = float(statistics.median(values))
-    mad = float(statistics.median(abs(value - median) for value in values))
-    return median, mad
-
-
-def fit_ocr_item(
-    item: dict[str, Any],
-    font_family: str,
-    *,
-    maximum_fit_error: float = 0.45,
-    minimum_reliable_characters: int = 3,
-    maximum_size_change_ratio: float = 0.35,
-    minimum_ocr_probability: float = 0.60,
-) -> dict[str, Any]:
-    initial_size = max(1.0, float(item.get('font_size') or 1))
+def fit_ocr_item(item: dict[str, Any], *, minimum_reliable_characters: int = 3) -> dict[str, Any]:
+    valid_boxes = []
     character_results = []
-    accepted_fits = []
     for character_item in item.get('ocr_characters', []) or []:
         if not isinstance(character_item, dict):
             continue
+        text = ocr_characters(character_item.get('ocr_text'))
         result = {
             'line_index': character_item.get('line_index'),
             'character_index': character_item.get('character_index'),
@@ -140,91 +143,36 @@ def fit_ocr_item(
         }
         if character_item.get('status') != 'accepted':
             result['reason'] = str(character_item.get('status') or 'ocr_rejected')
-            character_results.append(result)
-            continue
-        if result['ocr_probability'] < minimum_ocr_probability:
-            result['reason'] = 'ocr_probability_too_low'
-            character_results.append(result)
-            continue
-        chars = ocr_characters(character_item.get('ocr_text'))
-        if len(chars) != 1 or not character_is_fit_candidate(chars[0]):
-            result['reason'] = 'unsupported_or_non_japanese_text'
-            character_results.append(result)
-            continue
-        orientation = str(character_item.get('orientation') or item.get('orientation') or 'vertical')
-        fit = fit_character_pixel_size(chars[0], character_item, font_family, orientation, initial_size)
-        if fit is None:
-            result['reason'] = 'font_fit_unavailable'
-            character_results.append(result)
-            continue
-        result.update(fit)
-        result['accepted'] = fit['error'] <= maximum_fit_error
-        if not result['accepted']:
-            result['reason'] = 'fit_error_too_large'
+        elif len(text) != 1:
+            result['reason'] = 'not_single_character'
         else:
-            accepted_fits.append(result)
+            result['accepted'] = True
+            valid_boxes.append(character_item)
         character_results.append(result)
 
-    sizes = [float(fit['pixel_size']) for fit in accepted_fits]
-    if not sizes:
-        return {
-            'status': 'no_reliable_characters',
-            'font_family': font_family,
-            'original_font_size': initial_size,
-            'suggested_font_size': None,
-            'accepted_character_count': 0,
-            'character_results': character_results,
-        }
+    orientation = str(item.get('orientation') or 'vertical')
+    font_size, geometry = estimate_font_size_from_boxes(valid_boxes, orientation)
+    if font_size is None:
+        status = 'no_reliable_characters'
+    elif len(valid_boxes) < minimum_reliable_characters:
+        status = 'too_few_reliable_characters'
+    else:
+        status = 'ready'
 
-    median, mad = _median_absolute_deviation(sizes)
-    tolerance = max(2.0, mad * 3.0)
-    robust_fits = [fit for fit in accepted_fits if abs(float(fit['pixel_size']) - median) <= tolerance]
-    robust_sizes = [float(fit['pixel_size']) for fit in robust_fits]
-    if len(robust_fits) < minimum_reliable_characters:
-        return {
-            'status': 'too_few_reliable_characters',
-            'font_family': font_family,
-            'original_font_size': initial_size,
-            'suggested_font_size': None,
-            'accepted_character_count': len(robust_fits),
-            'total_fitted_character_count': len(accepted_fits),
-            'minimum_reliable_characters': minimum_reliable_characters,
-            'median_before_outlier_filter': round(median, 2),
-            'mad': round(mad, 2),
-            'character_results': character_results,
-        }
-    suggested = max(1, int(math.floor(float(statistics.median(robust_sizes)) + 0.5)))
-    size_change_ratio = abs(float(suggested) - initial_size) / initial_size
-    if size_change_ratio > maximum_size_change_ratio:
-        return {
-            'status': 'suggestion_too_far_from_detected',
-            'font_family': font_family,
-            'original_font_size': initial_size,
-            'suggested_font_size': None,
-            'rejected_suggested_font_size': suggested,
-            'size_change_ratio': round(size_change_ratio, 4),
-            'maximum_size_change_ratio': maximum_size_change_ratio,
-            'accepted_character_count': len(robust_fits),
-            'total_fitted_character_count': len(accepted_fits),
-            'median_before_outlier_filter': round(median, 2),
-            'mad': round(mad, 2),
-            'character_results': character_results,
-        }
     return {
-        'status': 'ready',
-        'font_family': font_family,
-        'original_font_size': initial_size,
-        'suggested_font_size': suggested,
-        'size_change_ratio': round(size_change_ratio, 4),
-        'accepted_character_count': len(robust_fits),
-        'total_fitted_character_count': len(accepted_fits),
-        'median_before_outlier_filter': round(median, 2),
-        'mad': round(mad, 2),
+        'status': status,
+        'original_font_size': float(item.get('font_size') or 0),
+        'suggested_font_size': round(float(font_size), 1) if font_size is not None else None,
+        'accepted_character_count': len(valid_boxes),
+        'rejected_character_count': max(0, len(character_results) - len(valid_boxes)),
+        'minimum_reliable_characters': minimum_reliable_characters,
+        'geometry': geometry,
         'character_results': character_results,
+        'filtered_char_boxes': [dict(box) for box in valid_boxes],
     }
 
 
-def calibrate_ocr_output(output: dict[str, Any], font_family: str) -> int:
+def calibrate_ocr_output(output: dict[str, Any]) -> int:
     ready = 0
     for items in (output.get('pages') or {}).values():
         if not isinstance(items, list):
@@ -232,9 +180,12 @@ def calibrate_ocr_output(output: dict[str, Any], font_family: str) -> int:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            fit = fit_ocr_item(item, font_family)
+            fit = fit_ocr_item(item)
             item['font_fit'] = fit
             if fit.get('status') == 'ready':
                 ready += 1
-    output['font_calibration'] = {'font_family': font_family}
+    output['font_calibration'] = {
+        'method': 'mit48_filtered_char_box_geometry',
+        'uses_qfontmetrics': False,
+    }
     return ready

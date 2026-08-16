@@ -168,10 +168,22 @@ if QT_IMPORT_ERROR is None:
             self._background_pan_enabled = enabled
             self.setCursor(Qt.CursorShape.OpenHandCursor if enabled else Qt.CursorShape.ArrowCursor)
 
-        def set_pixmap(self, pixmap: QPixmap, fit: bool = True) -> None:
-            if self.pixmap_item.scene() is None:
+        def _ensure_pixmap_item(self) -> QGraphicsPixmapItem:
+            try:
+                item_scene = self.pixmap_item.scene()
+            except RuntimeError:
+                self.pixmap_item = QGraphicsPixmapItem()
+                item_scene = None
+            if item_scene is None:
                 self.scene().addItem(self.pixmap_item)
-            self.pixmap_item.setPixmap(pixmap)
+            return self.pixmap_item
+
+        def current_pixmap(self) -> QPixmap:
+            return self._ensure_pixmap_item().pixmap()
+
+        def set_pixmap(self, pixmap: QPixmap, fit: bool = True) -> None:
+            pixmap_item = self._ensure_pixmap_item()
+            pixmap_item.setPixmap(pixmap)
             self.scene().setSceneRect(QRectF(pixmap.rect()))
             if fit:
                 self._zoom = 1.0
@@ -1965,8 +1977,8 @@ if QT_IMPORT_ERROR is None:
             else:
                 self.page = None
                 self.current_page_row = -1
-                self.view.scene().clear()
-                self.bt_view.scene().clear()
+                self.view.set_pixmap(QPixmap(), fit=False)
+                self.bt_view.set_pixmap(QPixmap(), fit=False)
                 self.update_font_size_list()
                 self.status_label.setText(f'{self.status_label.text()}\n此資料夾沒有可顯示的圖片。')
 
@@ -2044,7 +2056,7 @@ if QT_IMPORT_ERROR is None:
             if not hasattr(self, 'navigator'):
                 return
             source_view = self.bt_view if self.is_right_panel_collapsed() else self.view
-            pixmap = source_view.pixmap_item.pixmap()
+            pixmap = source_view.current_pixmap()
             if pixmap.isNull():
                 self.navigator.set_navigator_state(QPixmap(), (0, 0), QRectF())
                 return

@@ -1,10 +1,7 @@
 import unittest
 
-from PySide6.QtGui import QFont, QFontMetricsF, QGuiApplication
-
 from ctd_overlay_processor.font_size_calibration import (
     calibrate_ocr_output,
-    load_application_font,
     ocr_characters,
 )
 from ctd_overlay_processor.measure_view import char_box_label
@@ -12,11 +9,6 @@ from measure_ocr import _choose_variant
 
 
 class FontSizeCalibrationTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.app = QGuiApplication.instance() or QGuiApplication([])
-        _, cls.family = load_application_font()
-
     def test_ocr_characters_drops_whitespace(self) -> None:
         self.assertEqual(['日', '本', '語'], ocr_characters('日 本\n語'))
 
@@ -38,18 +30,16 @@ class FontSizeCalibrationTests(unittest.TestCase):
                 }],
             },
         }
-        ready = calibrate_ocr_output(output, self.family)
+        ready = calibrate_ocr_output(output)
         self.assertEqual(0, ready)
         self.assertEqual('no_reliable_characters', output['pages']['001.jpg'][0]['font_fit']['status'])
 
     def test_calibration_returns_suggestion_for_three_supported_characters(self) -> None:
-        font = QFont(self.family)
-        font.setPixelSize(30)
-        metrics = QFontMetricsF(font)
-        boxes = []
-        for char in '日本語':
-            rect = metrics.tightBoundingRect(char)
-            boxes.append({'width': rect.width(), 'height': rect.height()})
+        boxes = [
+            {'width': 28, 'height': 29},
+            {'width': 29, 'height': 29},
+            {'width': 28, 'height': 30},
+        ]
         output = {
             'pages': {
                 '001.jpg': [{
@@ -69,7 +59,7 @@ class FontSizeCalibrationTests(unittest.TestCase):
                 }],
             },
         }
-        ready = calibrate_ocr_output(output, self.family)
+        ready = calibrate_ocr_output(output)
         fit = output['pages']['001.jpg'][0]['font_fit']
         self.assertEqual(1, ready)
         self.assertEqual('ready', fit['status'])
@@ -95,11 +85,8 @@ class FontSizeCalibrationTests(unittest.TestCase):
         self.assertEqual('low_confidence', selected['status'])
         self.assertEqual('語', selected['ocr_text'])
 
-    def test_char_box_label_appends_calculated_font_size(self) -> None:
-        self.assertEqual(
-            'W22H32 F28',
-            char_box_label({'width': 22, 'height': 32, 'calculated_font_size': 28}),
-        )
+    def test_char_box_label_keeps_geometry_only(self) -> None:
+        self.assertEqual('W22H32', char_box_label({'width': 22, 'height': 32}))
         self.assertEqual('W22H32', char_box_label({'width': 22, 'height': 32}))
 
 

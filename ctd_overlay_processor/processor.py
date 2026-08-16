@@ -280,9 +280,8 @@ def _ocr_characters_by_box(measure_ocr: dict[str, Any], page_name: str) -> dict[
             character_index = int(character.get('character_index', 0))
             item = dict(character)
             fit = fit_by_position.get((line_index, character_index))
-            if isinstance(fit, dict) and fit.get('accepted') is True and fit.get('pixel_size') is not None:
-                item['calculated_font_size'] = fit.get('pixel_size')
-                item['font_fit_error'] = fit.get('error')
+            if isinstance(fit, dict):
+                item['font_filter_accepted'] = fit.get('accepted') is True
             result[(source_index, line_index, character_index)] = item
     return result
 
@@ -294,6 +293,7 @@ def load_char_boxes(
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     ocr_by_box = _ocr_characters_by_box(measure_ocr or {}, page_name)
+    processed_sources = {key[0] for key in ocr_by_box}
     font_debug_pages = measure_debug.get('font_size', {})
     for block_debug in font_debug_pages.get(page_name, []):
         source_index = source_index_from_item(block_debug, 0)
@@ -316,9 +316,11 @@ def load_char_boxes(
                 item['character_index'] = character_index
                 ocr_item = ocr_by_box.get((source_index, line_index, character_index))
                 if isinstance(ocr_item, dict):
+                    if source_index in processed_sources and ocr_item.get('status') != 'accepted':
+                        continue
                     for key in (
                         'ocr_text', 'ocr_probability', 'status', 'selected_pad',
-                        'calculated_font_size', 'font_fit_error',
+                        'font_filter_accepted',
                     ):
                         if ocr_item.get(key) is not None:
                             item[key] = ocr_item[key]

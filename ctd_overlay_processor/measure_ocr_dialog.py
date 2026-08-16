@@ -26,10 +26,10 @@ from PySide6.QtWidgets import (
 )
 
 try:
-    from .font_size_calibration import DEFAULT_FONT_PATH, calibrate_ocr_output, load_application_font
+    from .font_size_calibration import calibrate_ocr_output
     from .processor import CtdOverlayProcessor
 except ImportError:
-    from font_size_calibration import DEFAULT_FONT_PATH, calibrate_ocr_output, load_application_font
+    from font_size_calibration import calibrate_ocr_output
     from processor import CtdOverlayProcessor
 
 
@@ -75,8 +75,6 @@ class MeasureOcrDialog(QDialog):
         self.progress_bar.setValue(0)
         self.status_label = QLabel('尚未開始逐字 OCR。每個單字框獨立識別，失敗不影響同行其他字。')
         self.status_label.setWordWrap(True)
-        self.font_label = QLabel(f'校準字體：{DEFAULT_FONT_PATH.name}')
-        self.font_label.setToolTip(str(DEFAULT_FONT_PATH))
         self.command_label = QLabel('')
         self.command_label.setWordWrap(True)
         self.log_edit = QPlainTextEdit()
@@ -121,7 +119,6 @@ class MeasureOcrDialog(QDialog):
 
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.font_label)
         layout.addWidget(self.command_label)
         layout.addWidget(self.log_edit, 1)
         layout.addWidget(self.result_table, 1)
@@ -264,8 +261,7 @@ class MeasureOcrDialog(QDialog):
         output_path = self.processor.ctd_dir / 'measure_ocr.json'
         try:
             output = json.loads(output_path.read_text(encoding='utf-8'))
-            _, font_family = load_application_font()
-            ready_count = calibrate_ocr_output(output, font_family)
+            ready_count = calibrate_ocr_output(output)
             output_path.write_text(
                 json.dumps(output, ensure_ascii=False, indent=2) + '\n',
                 encoding='utf-8',

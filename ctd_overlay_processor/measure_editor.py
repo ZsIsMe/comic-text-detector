@@ -1031,7 +1031,7 @@ class MeasureEditorWindow(QMainWindow):
                     continue
                 item.setdefault('font_size_detected', item.get('font_size'))
                 item['font_size'] = font_size
-                item['font_size_method'] = 'character_ocr_qfont_fit'
+                item['font_size_method'] = 'mit48_filtered_char_box_geometry'
                 page_changed += 1
             if page_changed:
                 before_pages[str(page_name)] = original_items
