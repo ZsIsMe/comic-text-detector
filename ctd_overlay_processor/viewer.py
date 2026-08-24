@@ -30,6 +30,7 @@ try:
         QApplication,
         QButtonGroup,
         QCheckBox,
+        QComboBox,
         QDialog,
         QDialogButtonBox,
         QDockWidget,
@@ -986,6 +987,9 @@ if QT_IMPORT_ERROR is None:
             self.detect_process: QProcess | None = None
             self.detect_output_chunks: list[str] = []
             self.detect_command: list[str] = []
+            self.font_calibration_process: QProcess | None = None
+            self.font_calibration_output_chunks: list[str] = []
+            self.font_calibration_command: list[str] = []
             self.hover_char_box: dict | None = None
             self.selected_box_index: int | None = None
             self.undo_stack: list[dict[str, object]] = []
@@ -1067,6 +1071,12 @@ if QT_IMPORT_ERROR is None:
             self.generate_button = QPushButton('生成/更新 CTD')
             self.edit_measure_button = QPushButton('編輯 measure.json')
             self.even_measure_font_check = QCheckBox('字體取偶數')
+            self.auto_calibrate_font_check = QCheckBox('生成後自動校準字級')
+            self.auto_calibrate_font_check.setChecked(True)
+            self.auto_calibrate_device_combo = QComboBox()
+            self.auto_calibrate_device_combo.addItem('字級 OCR：CPU', 'cpu')
+            self.auto_calibrate_device_combo.addItem('字級 OCR：MPS', 'mps')
+            self.auto_calibrate_device_combo.addItem('字級 OCR：CUDA', 'cuda')
             self.import_labelplus_button = QPushButton('導入 LabelPlus txt')
             self.open_bt_button = QPushButton('打開 _bt.json')
             self.save_button = QPushButton('保存 _bt.json')
@@ -1699,6 +1709,11 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(reload_button)
             self.even_measure_font_check.setToolTip('生成 CTD 時，將 measure.json 的 font_size 取為偶數。')
             layout.addWidget(self.even_measure_font_check)
+            self.auto_calibrate_font_check.setToolTip(
+                'CTD 生成完成後，自動執行 mit48 逐字 OCR，使用字型墨跡緩存校準並保存 measure.json。'
+            )
+            layout.addWidget(self.auto_calibrate_font_check)
+            layout.addWidget(self.auto_calibrate_device_combo)
             self.generate_button.clicked.connect(self.generate_ctd)
             layout.addWidget(self.generate_button)
             self.edit_measure_button.clicked.connect(self.open_measure_editor)
@@ -2908,9 +2923,7 @@ if QT_IMPORT_ERROR is None:
                 if cx2 < x1 or cx1 > x2 or cy2 < y1 or cy1 > y2:
                     continue
                 rect = QRectF(cx1 - crop_x1, cy1 - crop_y1, cx2 - cx1, cy2 - cy1)
-                width_text = compact_int_px(char_item.get('width')) or '-'
-                height_text = compact_int_px(char_item.get('height')) or '-'
-                label = f'W{width_text}H{height_text}'
+                label = char_box_label(char_item) or 'W-H-'
                 char_regions.append((rect, label))
 
             highlight_rect: QRectF | None = None
@@ -4167,7 +4180,7 @@ if QT_IMPORT_ERROR is None:
             if not self.current_image_dir:
                 QMessageBox.information(self, '尚未選擇資料夾', '請先選擇包含原圖的圖片資料夾。')
                 return
-            if self.detect_process is not None:
+            if self.detect_process is not None or self.font_calibration_process is not None:
                 QMessageBox.information(self, '正在處理', 'CTD 資料正在生成中，請稍候。')
                 return
 
@@ -4234,7 +4247,6 @@ if QT_IMPORT_ERROR is None:
                 process.deleteLater()
 
         def _detection_finished(self, exit_code: int, exit_status) -> None:
-            self.generate_button.setEnabled(True)
             process = self.detect_process
             self.detect_process = None
             if process is None:
@@ -4264,8 +4276,116 @@ if QT_IMPORT_ERROR is None:
                     details,
                 )
                 self.status_label.setText('生成 CTD 失敗。')
+                self.generate_button.setEnabled(True)
                 return
+            if self.auto_calibrate_font_check.isChecked():
+                self.status_label.setText('CTD 資料生成完成，正在啟動 mit48 字級校準...')
+                self._start_generated_font_calibration()
+                return
+            self.generate_button.setEnabled(True)
             self.status_label.setText('CTD 資料生成完成，正在重新載入...')
+            if self.current_image_dir:
+                self.load_folder(self.current_image_dir)
+
+        def _start_generated_font_calibration(self) -> None:
+            if not self.current_image_dir:
+                self.generate_button.setEnabled(True)
+                return
+            project_root = Path(__file__).resolve().parents[1]
+            script = project_root / 'measure_ocr.py'
+            if not script.is_file():
+                self.generate_button.setEnabled(True)
+                QMessageBox.critical(self, '找不到 OCR 腳本', f'找不到：\n{script}')
+                return
+            device = str(self.auto_calibrate_device_combo.currentData() or 'cpu')
+            args = [
+                '-u',
+                str(script),
+                self.current_image_dir,
+                '--device',
+                device,
+                '--apply-font-sizes',
+            ]
+            if self.even_measure_font_check.isChecked():
+                args.append('--even-font-size')
+            process = QProcess(self)
+            process.setProgram(sys.executable)
+            process.setArguments(args)
+            process.setWorkingDirectory(str(project_root))
+            process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            process.readyReadStandardOutput.connect(self._read_font_calibration_output)
+            process.errorOccurred.connect(self._font_calibration_process_error)
+            process.finished.connect(self._font_calibration_finished)
+            self.font_calibration_process = process
+            self.font_calibration_command = [sys.executable, *args]
+            self.font_calibration_output_chunks = []
+            self.status_label.setText(f'正在以 {device.upper()} 執行 mit48 與字型緩存校準...')
+            process.start()
+
+        def _read_font_calibration_output(self) -> None:
+            if self.font_calibration_process is None:
+                return
+            text = bytes(self.font_calibration_process.readAllStandardOutput()).decode('utf-8', errors='replace')
+            if not text:
+                return
+            self.font_calibration_output_chunks.append(text)
+            lines = text.strip().splitlines()
+            if lines:
+                self.status_label.setText(lines[-1])
+
+        def _font_calibration_process_error(self, error) -> None:
+            process = self.font_calibration_process
+            command_text = ' '.join(self.font_calibration_command)
+            details = (
+                '【命令】\n'
+                f'{command_text}\n\n'
+                '【QProcess 錯誤】\n'
+                f'{error}\n\n'
+                '【完整輸出】\n'
+                f'{"".join(self.font_calibration_output_chunks).strip() or "(沒有輸出)"}'
+            )
+            show_error_details(
+                self,
+                '自動字級校準失敗',
+                'CTD 已生成，但 mit48 字級校準程序中斷。可稍後在 measure 編輯器中重新執行。',
+                details,
+            )
+            self.font_calibration_process = None
+            self.generate_button.setEnabled(True)
+            self.status_label.setText('CTD 已生成，但自動字級校準失敗。')
+            if process is not None:
+                process.deleteLater()
+            if self.current_image_dir:
+                self.load_folder(self.current_image_dir)
+
+        def _font_calibration_finished(self, exit_code: int, exit_status) -> None:
+            process = self.font_calibration_process
+            self.font_calibration_process = None
+            if process is None:
+                return
+            trailing_output = bytes(process.readAllStandardOutput()).decode('utf-8', errors='replace')
+            if trailing_output:
+                self.font_calibration_output_chunks.append(trailing_output)
+            process.deleteLater()
+            if exit_code != 0:
+                details = (
+                    '【命令】\n'
+                    f'{" ".join(self.font_calibration_command)}\n\n'
+                    '【退出碼】\n'
+                    f'{exit_code}\n\n'
+                    '【完整輸出】\n'
+                    f'{"".join(self.font_calibration_output_chunks).strip() or "(沒有輸出)"}'
+                )
+                show_error_details(
+                    self,
+                    '自動字級校準失敗',
+                    'CTD 已生成，但 mit48 字級校準失敗。可稍後在 measure 編輯器中重新執行。',
+                    details,
+                )
+                self.status_label.setText('CTD 已生成，但自動字級校準失敗。')
+            else:
+                self.status_label.setText('CTD 與字型緩存字級校準完成，正在重新載入...')
+            self.generate_button.setEnabled(True)
             if self.current_image_dir:
                 self.load_folder(self.current_image_dir)
 

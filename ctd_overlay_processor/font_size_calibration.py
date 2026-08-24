@@ -1,39 +1,26 @@
-"""Filter OCR character boxes and estimate block font size from geometry."""
+"""Estimate paragraph font size from OCR boxes and cached font ink metrics."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import statistics
 import unicodedata
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FONT_PATH = PROJECT_ROOT / 'assets' / 'fonts' / 'NotoSansCJKjp-Medium.otf'
+DEFAULT_METRICS_PATH = PROJECT_ROOT / 'assets' / 'fonts' / 'NotoSansCJKjp-Medium.ink-metrics.json'
+METRICS_SCHEMA_VERSION = 1
 
 
 def ocr_characters(text: object) -> list[str]:
     normalized = unicodedata.normalize('NFC', str(text or ''))
     return [char for char in normalized if not char.isspace()]
-
-
-def _percentile(values: list[float], percentile: float) -> float:
-    sorted_values = sorted(float(value) for value in values if float(value) > 0)
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    position = (len(sorted_values) - 1) * percentile / 100.0
-    lower = int(math.floor(position))
-    upper = int(math.ceil(position))
-    if lower == upper:
-        return sorted_values[lower]
-    weight = position - lower
-    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
-
-
-def _dominant_values(values: list[float]) -> list[float]:
-    valid = [float(value) for value in values if float(value) > 0]
-    if not valid:
-        return []
-    threshold = max(1.0, _percentile(valid, 75) * 0.55)
-    selected = [value for value in valid if value >= threshold]
-    return selected or valid
 
 
 def _box_size(box: dict[str, Any]) -> tuple[float, float]:
@@ -47,92 +34,142 @@ def _box_size(box: dict[str, Any]) -> tuple[float, float]:
     return 0.0, 0.0
 
 
-def _reliable_square_limit(width: float, height: float) -> float:
-    return max(5.0, max(width, height) * 0.16)
+@lru_cache(maxsize=4)
+def load_font_ink_metrics(metrics_path: str | Path = DEFAULT_METRICS_PATH) -> dict[str, Any]:
+    path = Path(metrics_path)
+    if not path.is_file():
+        raise FileNotFoundError(f'找不到字型墨跡緩存：{path}')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if data.get('schema_version') != METRICS_SCHEMA_VERSION:
+        raise RuntimeError(f'不支援的字型墨跡緩存版本：{data.get("schema_version")}')
+    metrics = data.get('metrics') or {}
+    if metrics.get('units') != 'reference_pixel_ratio':
+        raise RuntimeError(f'不支援的字型墨跡緩存單位：{metrics.get("units")}')
+    if not isinstance(data.get('glyphs'), dict):
+        raise RuntimeError(f'字型墨跡緩存缺少 glyphs：{path}')
+    return data
 
 
-def estimate_font_size_from_boxes(
-    boxes: list[dict[str, Any]],
+@lru_cache(maxsize=4)
+def _sha256_file(path_text: str) -> str:
+    digest = hashlib.sha256()
+    with Path(path_text).open('rb') as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_font_ink_metrics(
+    font_path: str | Path = DEFAULT_FONT_PATH,
+    metrics_path: str | Path = DEFAULT_METRICS_PATH,
+) -> dict[str, Any]:
+    font = Path(font_path)
+    if not font.is_file():
+        raise FileNotFoundError(f'找不到字體：{font}')
+    metrics = load_font_ink_metrics(metrics_path)
+    expected_hash = str((metrics.get('font') or {}).get('sha256') or '')
+    if expected_hash and _sha256_file(str(font)) != expected_hash:
+        raise RuntimeError(f'字型墨跡緩存與字體不匹配，請重新生成：{metrics_path}')
+    return metrics
+
+
+def character_ink_ratio(
+    character: str,
+    metrics_path: str | Path = DEFAULT_METRICS_PATH,
+) -> tuple[float, float] | None:
+    values = (load_font_ink_metrics(metrics_path).get('glyphs') or {}).get(character)
+    if not isinstance(values, list) or len(values) != 2:
+        return None
+    width_ratio = float(values[0])
+    height_ratio = float(values[1])
+    return (width_ratio, height_ratio) if width_ratio > 0 and height_ratio > 0 else None
+
+
+def character_ink_size(
+    character: str,
+    pixel_size: float,
+    metrics_path: str | Path = DEFAULT_METRICS_PATH,
+) -> tuple[float, float] | None:
+    """Scale one cached glyph ink ratio to a requested font size."""
+    ratios = character_ink_ratio(character, metrics_path)
+    if ratios is None or pixel_size <= 0:
+        return None
+    return ratios[0] * float(pixel_size), ratios[1] * float(pixel_size)
+
+
+def _relative_error(predicted: float, target: float) -> float:
+    if predicted <= 0 or target <= 0:
+        return math.inf
+    return abs(predicted - target) / target
+
+
+def _round_positive(value: float) -> int:
+    return max(1, int(math.floor(float(value) + 0.5)))
+
+
+def fit_character_pixel_size(
+    character: str,
+    box: dict[str, Any],
     orientation: str,
-) -> tuple[float | None, dict[str, Any]]:
-    sizes = [_box_size(box) for box in boxes]
-    widths = [width for width, _ in sizes if width > 0]
-    heights = [height for _, height in sizes if height > 0]
-    if not widths or not heights:
-        return None, {'method': 'filtered_char_box_geometry', 'accepted': False, 'reason': 'no_valid_boxes'}
-
-    primary_values = _dominant_values(heights if orientation == 'horizontal' else widths)
-    secondary_values = _dominant_values(widths if orientation == 'horizontal' else heights)
-    if not primary_values or not secondary_values:
-        return None, {'method': 'filtered_char_box_geometry', 'accepted': False, 'reason': 'no_dominant_values'}
-
-    primary_percentile = 100 if orientation == 'horizontal' else 60
-    secondary_percentile = 75 if orientation == 'horizontal' else 100
-    primary_size = _percentile(primary_values, primary_percentile)
-    secondary_limit = max(primary_size * 1.6, primary_size + 8.0)
-    secondary_filtered = []
-    for box in boxes:
-        width, height = _box_size(box)
-        primary = height if orientation == 'horizontal' else width
-        secondary = width if orientation == 'horizontal' else height
-        if primary <= 0 or secondary <= 0 or secondary > secondary_limit:
-            continue
-        if len(boxes) <= 4 and secondary > primary_size + 5.0 and abs(height - width) > _reliable_square_limit(width, height):
-            continue
-        secondary_filtered.append(secondary)
-    if not secondary_filtered:
-        secondary_filtered = secondary_values
-    secondary_size = _percentile(secondary_filtered, secondary_percentile)
-    font_size = max(primary_size, secondary_size)
-
-    reliable_min_size = max(1.0, primary_size * 0.55)
-    required_square_count = 1 if len(boxes) <= 4 else 4
-    reliable_square_sizes = []
-    for box in boxes:
-        width, height = _box_size(box)
-        candidate = max(width, height)
-        if (
-            width > 0
-            and height > 0
-            and candidate >= reliable_min_size
-            and abs(height - width) <= _reliable_square_limit(width, height)
-        ):
-            reliable_square_sizes.append(candidate)
-    method = 'filtered_char_box_geometry'
-    reliable_square_size = None
-    if len(reliable_square_sizes) >= required_square_count:
-        reliable_square_size = max(reliable_square_sizes)
-        font_size = reliable_square_size
-        method = 'filtered_char_box_reliable_square'
-
-    return float(font_size), {
-        'method': method,
-        'accepted': True,
-        'orientation': orientation,
-        'char_count': len(boxes),
-        'widths': widths,
-        'heights': heights,
-        'primary_dimension': 'H' if orientation == 'horizontal' else 'W',
-        'secondary_dimension': 'W' if orientation == 'horizontal' else 'H',
-        'primary_percentile': primary_percentile,
-        'secondary_percentile': secondary_percentile,
-        'primary_size': primary_size,
-        'secondary_size': secondary_size,
-        'secondary_filtered': secondary_filtered,
-        'reliable_square_required_count': required_square_count,
-        'reliable_square_sizes': reliable_square_sizes,
-        'reliable_square_size': reliable_square_size,
-        'font_size': float(font_size),
+    metrics_path: str | Path = DEFAULT_METRICS_PATH,
+) -> dict[str, Any] | None:
+    """Infer one character's font size directly from cached glyph ratios."""
+    target_width, target_height = _box_size(box)
+    ratios = character_ink_ratio(character, metrics_path)
+    if target_width <= 0 or target_height <= 0 or ratios is None:
+        return None
+    width_ratio, height_ratio = ratios
+    width_size = target_width / width_ratio
+    height_size = target_height / height_ratio
+    if orientation == 'horizontal':
+        width_weight, height_weight = 0.25, 0.75
+    else:
+        width_weight, height_weight = 0.75, 0.25
+    estimated_size = width_size * width_weight + height_size * height_weight
+    pixel_size = _round_positive(estimated_size)
+    rendered_width = width_ratio * pixel_size
+    rendered_height = height_ratio * pixel_size
+    width_error = _relative_error(rendered_width, target_width)
+    height_error = _relative_error(rendered_height, target_height)
+    error = width_error * width_weight + height_error * height_weight
+    return {
+        'character': character,
+        'estimated_pixel_size': round(float(estimated_size), 3),
+        'pixel_size': pixel_size,
+        'error': round(float(error), 4),
+        'target_width': round(target_width, 2),
+        'target_height': round(target_height, 2),
+        'rendered_width': round(float(rendered_width), 2),
+        'rendered_height': round(float(rendered_height), 2),
+        'font_width_ratio': width_ratio,
+        'font_height_ratio': height_ratio,
+        'bbox': box.get('bbox'),
     }
 
 
-def fit_ocr_item(item: dict[str, Any], *, minimum_reliable_characters: int = 3) -> dict[str, Any]:
-    valid_boxes = []
+def _median_absolute_deviation(values: list[float]) -> tuple[float, float]:
+    median = float(statistics.median(values))
+    mad = float(statistics.median(abs(value - median) for value in values))
+    return median, mad
+
+
+def fit_ocr_item(
+    item: dict[str, Any],
+    *,
+    font_path: str | Path = DEFAULT_FONT_PATH,
+    metrics_path: str | Path = DEFAULT_METRICS_PATH,
+    maximum_fit_error: float = 0.45,
+    minimum_reliable_characters: int = 3,
+) -> dict[str, Any]:
+    validate_font_ink_metrics(font_path, metrics_path)
+    orientation = str(item.get('orientation') or 'vertical')
     character_results = []
+    accepted_fits = []
+    accepted_boxes = []
     for character_item in item.get('ocr_characters', []) or []:
         if not isinstance(character_item, dict):
             continue
-        text = ocr_characters(character_item.get('ocr_text'))
+        characters = ocr_characters(character_item.get('ocr_text'))
         result = {
             'line_index': character_item.get('line_index'),
             'character_index': character_item.get('character_index'),
@@ -143,36 +180,82 @@ def fit_ocr_item(item: dict[str, Any], *, minimum_reliable_characters: int = 3) 
         }
         if character_item.get('status') != 'accepted':
             result['reason'] = str(character_item.get('status') or 'ocr_rejected')
-        elif len(text) != 1:
+        elif len(characters) != 1:
             result['reason'] = 'not_single_character'
         else:
-            result['accepted'] = True
-            valid_boxes.append(character_item)
+            fit = fit_character_pixel_size(
+                characters[0],
+                character_item,
+                orientation,
+                metrics_path,
+            )
+            if fit is None:
+                result['reason'] = 'font_metric_unavailable'
+            else:
+                result.update(fit)
+                result['accepted'] = float(fit['error']) <= maximum_fit_error
+                if result['accepted']:
+                    accepted_fits.append(result)
+                    accepted_boxes.append(character_item)
+                else:
+                    result['reason'] = 'fit_error_too_large'
         character_results.append(result)
 
-    orientation = str(item.get('orientation') or 'vertical')
-    font_size, geometry = estimate_font_size_from_boxes(valid_boxes, orientation)
-    if font_size is None:
+    sizes = [float(fit['estimated_pixel_size']) for fit in accepted_fits]
+    if not sizes:
         status = 'no_reliable_characters'
-    elif len(valid_boxes) < minimum_reliable_characters:
-        status = 'too_few_reliable_characters'
+        robust_fits: list[dict[str, Any]] = []
+        median = None
+        mad = None
     else:
-        status = 'ready'
+        median, mad = _median_absolute_deviation(sizes)
+        tolerance = max(2.0, mad * 3.0)
+        robust_fits = [
+            fit
+            for fit in accepted_fits
+            if abs(float(fit['estimated_pixel_size']) - median) <= tolerance
+        ]
+        robust_ids = {id(fit) for fit in robust_fits}
+        for fit in accepted_fits:
+            if id(fit) not in robust_ids:
+                fit['accepted'] = False
+                fit['reason'] = 'font_size_outlier'
+        status = 'ready' if len(robust_fits) >= minimum_reliable_characters else 'too_few_reliable_characters'
 
+    robust_sizes = [float(fit['estimated_pixel_size']) for fit in robust_fits]
+    suggested = _round_positive(float(statistics.median(robust_sizes))) if status == 'ready' else None
+    robust_positions = {
+        (fit.get('line_index'), fit.get('character_index'))
+        for fit in robust_fits
+    }
+    filtered_boxes = [
+        dict(box)
+        for box in accepted_boxes
+        if (box.get('line_index'), box.get('character_index')) in robust_positions
+    ]
     return {
         'status': status,
+        'font_path': str(Path(font_path)),
+        'metrics_path': str(Path(metrics_path)),
         'original_font_size': float(item.get('font_size') or 0),
-        'suggested_font_size': round(float(font_size), 1) if font_size is not None else None,
-        'accepted_character_count': len(valid_boxes),
-        'rejected_character_count': max(0, len(character_results) - len(valid_boxes)),
+        'suggested_font_size': suggested,
+        'accepted_character_count': len(robust_fits),
+        'rejected_character_count': max(0, len(character_results) - len(robust_fits)),
+        'total_fitted_character_count': len(accepted_fits),
         'minimum_reliable_characters': minimum_reliable_characters,
-        'geometry': geometry,
+        'median_before_outlier_filter': round(float(median), 2) if median is not None else None,
+        'mad': round(float(mad), 2) if mad is not None else None,
         'character_results': character_results,
-        'filtered_char_boxes': [dict(box) for box in valid_boxes],
+        'filtered_char_boxes': filtered_boxes,
     }
 
 
-def calibrate_ocr_output(output: dict[str, Any]) -> int:
+def calibrate_ocr_output(
+    output: dict[str, Any],
+    font_path: str | Path = DEFAULT_FONT_PATH,
+    metrics_path: str | Path = DEFAULT_METRICS_PATH,
+) -> int:
+    metrics = validate_font_ink_metrics(font_path, metrics_path)
     ready = 0
     for items in (output.get('pages') or {}).values():
         if not isinstance(items, list):
@@ -180,12 +263,16 @@ def calibrate_ocr_output(output: dict[str, Any]) -> int:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            fit = fit_ocr_item(item)
+            fit = fit_ocr_item(item, font_path=font_path, metrics_path=metrics_path)
             item['font_fit'] = fit
             if fit.get('status') == 'ready':
                 ready += 1
     output['font_calibration'] = {
-        'method': 'mit48_filtered_char_box_geometry',
-        'uses_qfontmetrics': False,
+        'method': 'mit48_cached_font_ink_ratio',
+        'font_path': str(Path(font_path)),
+        'metrics_path': str(Path(metrics_path)),
+        'font_sha256': (metrics.get('font') or {}).get('sha256'),
+        'glyph_count': (metrics.get('counts') or {}).get('glyph_count'),
+        'rounding': 'nearest_integer_half_up',
     }
     return ready

@@ -282,6 +282,10 @@ def _ocr_characters_by_box(measure_ocr: dict[str, Any], page_name: str) -> dict[
             fit = fit_by_position.get((line_index, character_index))
             if isinstance(fit, dict):
                 item['font_filter_accepted'] = fit.get('accepted') is True
+                if fit.get('accepted') is True and fit.get('pixel_size') is not None:
+                    item['calculated_font_size'] = fit.get('pixel_size')
+                    item['estimated_font_size'] = fit.get('estimated_pixel_size')
+                    item['font_fit_error'] = fit.get('error')
             result[(source_index, line_index, character_index)] = item
     return result
 
@@ -320,7 +324,8 @@ def load_char_boxes(
                         continue
                     for key in (
                         'ocr_text', 'ocr_probability', 'status', 'selected_pad',
-                        'font_filter_accepted',
+                        'font_filter_accepted', 'calculated_font_size',
+                        'estimated_font_size', 'font_fit_error',
                     ):
                         if ocr_item.get(key) is not None:
                             item[key] = ocr_item[key]

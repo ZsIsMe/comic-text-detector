@@ -32,12 +32,13 @@ def char_info_text(item: dict[str, Any]) -> str:
     source_index = item.get('source_block_index', '-')
     line_index = item.get('line_index', '-')
     bbox_text = ', '.join(str(int(round(float(value)))) for value in bbox) if isinstance(bbox, list) else '-'
+    calculated_text = compact_int_px(item.get('calculated_font_size')) or '-'
     ocr_text = str(item.get('ocr_text') or '-')
     probability = item.get('ocr_probability')
     probability_text = f'{float(probability):.1%}' if isinstance(probability, (int, float)) else '-'
     return (
         '游標單字框：\n'
-        f'寬：{width_text}px  高：{height_text}px\n'
+        f'寬：{width_text}px  高：{height_text}px  計算字級：{calculated_text}px\n'
         f'OCR：{ocr_text}  信心：{probability_text}  狀態：{item.get("status") or "-"}\n'
         f'區塊：{source_index}  行：{line_index}\n'
         f'bbox：{bbox_text}'
@@ -50,6 +51,9 @@ def char_box_label(item: dict[str, Any]) -> str | None:
     if width_text is None or height_text is None:
         return None
     label = f'W{width_text}H{height_text}'
+    font_size_text = compact_int_px(item.get('calculated_font_size'))
+    if font_size_text is not None:
+        label += f'FS{font_size_text}'
     return label
 
 

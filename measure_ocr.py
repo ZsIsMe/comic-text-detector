@@ -13,6 +13,7 @@ from typing import Any
 
 import cv2
 
+from ctd_overlay_processor.font_size_calibration import calibrate_ocr_output
 from ctd_overlay_processor.mit48px_ocr import (
     DEFAULT_ALPHABET_PATH,
     DEFAULT_IMPLEMENTATION_PATH,
@@ -170,6 +171,46 @@ def _iter_pages(measure: dict, page_filter: str | None) -> list[tuple[str, list[
     return list(pages.items())
 
 
+def apply_calibrated_font_sizes(
+    measure: dict,
+    output: dict,
+    *,
+    even_font_size: bool = False,
+) -> int:
+    changed = 0
+    measure_pages = measure.get('pages') or {}
+    for page_name, output_items in (output.get('pages') or {}).items():
+        measure_items = measure_pages.get(page_name)
+        if not isinstance(output_items, list) or not isinstance(measure_items, list):
+            continue
+        for output_item in output_items:
+            if not isinstance(output_item, dict):
+                continue
+            fit = output_item.get('font_fit') or {}
+            suggested = fit.get('suggested_font_size')
+            item_index = output_item.get('measure_item_index')
+            if fit.get('status') != 'ready' or not isinstance(suggested, int) or not isinstance(item_index, int):
+                continue
+            if not (0 <= item_index < len(measure_items)) or not isinstance(measure_items[item_index], dict):
+                continue
+            font_size = max(1, min(999, int(suggested)))
+            if even_font_size and font_size % 2:
+                font_size += 1
+            measure_item = measure_items[item_index]
+            old_size = measure_item.get('font_size')
+            measure_item.setdefault('font_size_detected', old_size)
+            measure_item['font_size'] = font_size
+            measure_item['font_size_method'] = 'mit48_cached_font_ink_ratio'
+            fit['applied_font_size'] = font_size
+            try:
+                unchanged = int(round(float(old_size))) == font_size
+            except (TypeError, ValueError):
+                unchanged = False
+            if not unchanged:
+                changed += 1
+    return changed
+
+
 def run(
     measure_path: str,
     image_dir: str,
@@ -311,6 +352,9 @@ def main() -> None:
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--save-crops', default=None)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--calibrate-font-sizes', action='store_true')
+    parser.add_argument('--apply-font-sizes', action='store_true')
+    parser.add_argument('--even-font-size', action='store_true')
     args = parser.parse_args()
     measure_path, image_dir = _resolve_input_paths(args.path1, args.path2, args.measure_json)
     pads = sorted({max(0, int(value.strip())) for value in args.pads.split(',') if value.strip()})
@@ -335,6 +379,20 @@ def main() -> None:
         save_crops=args.save_crops,
         dry_run=args.dry_run,
     )
+    if args.calibrate_font_sizes or args.apply_font_sizes:
+        calibrated = _load_json(output)
+        ready_count = calibrate_ocr_output(calibrated)
+        changed_count = 0
+        if args.apply_font_sizes:
+            measure = _load_json(measure_path)
+            changed_count = apply_calibrated_font_sizes(
+                measure,
+                calibrated,
+                even_font_size=args.even_font_size,
+            )
+            _write_json(measure_path, measure)
+        _write_json(output, calibrated)
+        print(f'字級校準：{ready_count} 個可靠區塊，更新 measure.json {changed_count} 個區塊。', flush=True)
     print(f'輸出：{output}', flush=True)
 
 
