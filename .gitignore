@@ -2,6 +2,8 @@
 *.zip
 *.7z
 *.rar
+# Local mit48 OCR checkpoint (161 MB); keep it at this project path.
+data/models/mit48pxctc_ocr.ckpt
 *.ckpt
 *.onnx
 *.tar

@@ -7,10 +7,22 @@ from ctd_overlay_processor.font_size_calibration import (
     ocr_characters,
 )
 from ctd_overlay_processor.measure_view import char_box_label
+from ctd_overlay_processor.mit48px_ocr import (
+    DEFAULT_ALPHABET_PATH,
+    DEFAULT_IMPLEMENTATION_PATH,
+    DEFAULT_MODEL_PATH,
+    PROJECT_ROOT,
+)
 from measure_ocr import _choose_variant, apply_calibrated_font_sizes
 
 
 class FontSizeCalibrationTests(unittest.TestCase):
+    def test_mit48_runtime_paths_are_project_local(self) -> None:
+        self.assertEqual(PROJECT_ROOT / 'data' / 'models' / 'mit48pxctc_ocr.ckpt', DEFAULT_MODEL_PATH)
+        for path in (DEFAULT_ALPHABET_PATH, DEFAULT_IMPLEMENTATION_PATH):
+            self.assertTrue(path.is_file(), path)
+            self.assertTrue(path.is_relative_to(PROJECT_ROOT), path)
+
     def test_font_size_uses_normal_half_up_rounding(self) -> None:
         self.assertEqual(30, _round_positive(30.4))
         self.assertEqual(31, _round_positive(30.5))

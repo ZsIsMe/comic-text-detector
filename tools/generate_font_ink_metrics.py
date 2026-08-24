@@ -17,9 +17,7 @@ from PySide6.QtGui import QFont, QGuiApplication, QRawFont
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FONT_PATH = PROJECT_ROOT / 'assets' / 'fonts' / 'NotoSansCJKjp-Medium.otf'
-DEFAULT_ALPHABET_PATH = Path(
-    '/Users/zhongsheng/Documents/comic_translate/BallonsTranslator/data/alphabet-all-v5.txt',
-)
+DEFAULT_ALPHABET_PATH = PROJECT_ROOT / 'data' / 'alphabet-all-v5.txt'
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / 'assets' / 'fonts' / 'NotoSansCJKjp-Medium.ink-metrics.json'
 SCHEMA_VERSION = 1
 

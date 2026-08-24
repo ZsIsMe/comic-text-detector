@@ -1,4 +1,4 @@
-"""Small adapter for BallonsTranslator's mit48px CTC OCR weights."""
+"""Small adapter for the vendored mit48px CTC OCR model."""
 
 from __future__ import annotations
 
@@ -15,12 +15,10 @@ import numpy as np
 import torch
 
 
-DEFAULT_BALLONS_ROOT = Path('/Users/zhongsheng/Documents/comic_translate/BallonsTranslator')
-DEFAULT_MODEL_PATH = DEFAULT_BALLONS_ROOT / 'data' / 'models' / 'mit48pxctc_ocr.ckpt'
-DEFAULT_ALPHABET_PATH = DEFAULT_BALLONS_ROOT / 'data' / 'alphabet-all-v5.txt'
-DEFAULT_IMPLEMENTATION_PATH = (
-    DEFAULT_BALLONS_ROOT / 'ballontranslator' / 'modules' / 'ocr' / 'mit48px_ctc.py'
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_PATH = PROJECT_ROOT / 'data' / 'models' / 'mit48pxctc_ocr.ckpt'
+DEFAULT_ALPHABET_PATH = PROJECT_ROOT / 'data' / 'alphabet-all-v5.txt'
+DEFAULT_IMPLEMENTATION_PATH = Path(__file__).resolve().parent / 'vendor' / 'mit48px_ctc.py'
 
 
 def resolved_device(requested: str) -> str:
@@ -151,4 +149,3 @@ class Mit48pxCtcOcr:
                     'character_probabilities': [round(value, 6) for value in probabilities],
                 })
         return results
-
