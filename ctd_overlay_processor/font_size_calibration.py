@@ -16,6 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FONT_PATH = PROJECT_ROOT / 'assets' / 'fonts' / 'NotoSansCJKjp-Medium.otf'
 DEFAULT_METRICS_PATH = PROJECT_ROOT / 'assets' / 'fonts' / 'NotoSansCJKjp-Medium.ink-metrics.json'
 METRICS_SCHEMA_VERSION = 1
+DEFAULT_FONT_SIZE_BASE = 24.0
+DEFAULT_FONT_SIZE_STEP = 2.0
 
 
 def ocr_characters(text: object) -> list[str]:
@@ -107,6 +109,47 @@ def _round_positive(value: float) -> int:
     return max(1, int(math.floor(float(value) + 0.5)))
 
 
+def _font_size_candidates(
+    lower: float,
+    upper: float,
+    base: float,
+    step: float,
+) -> list[float]:
+    """Return lattice candidates spanning a reliable size range plus both neighbors."""
+    lower, upper = sorted((max(0.1, float(lower)), max(0.1, float(upper))))
+    base = max(0.1, float(base))
+    step = max(0.1, float(step))
+    first_index = math.floor((lower - base) / step)
+    last_index = math.ceil((upper - base) / step)
+    if last_index - first_index > 512:
+        median = (lower + upper) / 2.0
+        center_index = round((median - base) / step)
+        first_index = center_index - 256
+        last_index = center_index + 256
+    candidates = {
+        round(base + index * step, 6)
+        for index in range(first_index, last_index + 1)
+        if base + index * step > 0
+    }
+    if not candidates:
+        candidates.add(max(0.1, base))
+    return sorted(candidates)
+
+
+def _candidate_fit_error(candidate: float, fits: list[dict[str, Any]]) -> float:
+    errors = []
+    for fit in fits:
+        target_width = float(fit.get('target_width') or 0)
+        target_height = float(fit.get('target_height') or 0)
+        width_ratio = float(fit.get('font_width_ratio') or 0)
+        height_ratio = float(fit.get('font_height_ratio') or 0)
+        width_error = _relative_error(width_ratio * candidate, target_width)
+        height_error = _relative_error(height_ratio * candidate, target_height)
+        if math.isfinite(width_error) and math.isfinite(height_error):
+            errors.append((width_error + height_error) / 2.0)
+    return float(statistics.mean(errors)) if errors else math.inf
+
+
 def fit_character_pixel_size(
     character: str,
     box: dict[str, Any],
@@ -121,11 +164,10 @@ def fit_character_pixel_size(
     width_ratio, height_ratio = ratios
     width_size = target_width / width_ratio
     height_size = target_height / height_ratio
-    if orientation == 'horizontal':
-        width_weight, height_weight = 0.25, 0.75
-    else:
-        width_weight, height_weight = 0.75, 0.25
-    estimated_size = width_size * width_weight + height_size * height_weight
+    estimated_size = (width_size + height_size) / 2.0
+    width_weight, height_weight = 0.5, 0.5
+    size_dimension = 'width_height'
+    axis_size_disagreement = abs(width_size - height_size) / max(width_size, height_size)
     pixel_size = _round_positive(estimated_size)
     rendered_width = width_ratio * pixel_size
     rendered_height = height_ratio * pixel_size
@@ -143,6 +185,10 @@ def fit_character_pixel_size(
         'rendered_height': round(float(rendered_height), 2),
         'font_width_ratio': width_ratio,
         'font_height_ratio': height_ratio,
+        'width_estimated_pixel_size': round(float(width_size), 3),
+        'height_estimated_pixel_size': round(float(height_size), 3),
+        'axis_size_disagreement': round(float(axis_size_disagreement), 4),
+        'size_dimension': size_dimension,
         'bbox': box.get('bbox'),
     }
 
@@ -159,7 +205,10 @@ def fit_ocr_item(
     font_path: str | Path = DEFAULT_FONT_PATH,
     metrics_path: str | Path = DEFAULT_METRICS_PATH,
     maximum_fit_error: float = 0.45,
+    maximum_axis_size_disagreement: float = 0.35,
     minimum_reliable_characters: int = 3,
+    default_font_size: float = DEFAULT_FONT_SIZE_BASE,
+    font_size_step: float = DEFAULT_FONT_SIZE_STEP,
 ) -> dict[str, Any]:
     validate_font_ink_metrics(font_path, metrics_path)
     orientation = str(item.get('orientation') or 'vertical')
@@ -193,10 +242,16 @@ def fit_ocr_item(
                 result['reason'] = 'font_metric_unavailable'
             else:
                 result.update(fit)
-                result['accepted'] = float(fit['error']) <= maximum_fit_error
+                axis_disagreement = float(fit['axis_size_disagreement'])
+                result['accepted'] = (
+                    float(fit['error']) <= maximum_fit_error
+                    and axis_disagreement <= maximum_axis_size_disagreement
+                )
                 if result['accepted']:
                     accepted_fits.append(result)
                     accepted_boxes.append(character_item)
+                elif axis_disagreement > maximum_axis_size_disagreement:
+                    result['reason'] = 'width_height_size_disagree'
                 else:
                     result['reason'] = 'fit_error_too_large'
         character_results.append(result)
@@ -223,7 +278,39 @@ def fit_ocr_item(
         status = 'ready' if len(robust_fits) >= minimum_reliable_characters else 'too_few_reliable_characters'
 
     robust_sizes = [float(fit['estimated_pixel_size']) for fit in robust_fits]
-    suggested = _round_positive(float(statistics.median(robust_sizes))) if status == 'ready' else None
+    continuous_median = float(statistics.median(robust_sizes)) if status == 'ready' else None
+    reliable_range = (
+        [round(min(robust_sizes), 3), round(max(robust_sizes), 3)]
+        if robust_sizes
+        else None
+    )
+    if status == 'ready' and reliable_range is not None and continuous_median is not None:
+        candidates = _font_size_candidates(
+            reliable_range[0],
+            reliable_range[1],
+            default_font_size,
+            font_size_step,
+        )
+        candidate_scores = [
+            {
+                'font_size': round(float(candidate), 1),
+                'error': round(_candidate_fit_error(candidate, robust_fits), 6),
+            }
+            for candidate in candidates
+        ]
+        selected_candidate = min(
+            candidate_scores,
+            key=lambda candidate: (
+                float(candidate['error']),
+                abs(float(candidate['font_size']) - continuous_median),
+                float(candidate['font_size']),
+            ),
+        )
+        suggested_float = round(float(selected_candidate['font_size']), 1)
+    else:
+        candidate_scores = []
+        suggested_float = None
+    suggested = suggested_float
     robust_positions = {
         (fit.get('line_index'), fit.get('character_index'))
         for fit in robust_fits
@@ -239,10 +326,17 @@ def fit_ocr_item(
         'metrics_path': str(Path(metrics_path)),
         'original_font_size': float(item.get('font_size') or 0),
         'suggested_font_size': suggested,
+        'suggested_font_size_float': suggested_float,
+        'continuous_font_size_median': round(continuous_median, 3) if continuous_median is not None else None,
+        'reliable_font_size_range': reliable_range,
+        'default_font_size': round(float(default_font_size), 1),
+        'font_size_step': round(float(font_size_step), 1),
+        'candidate_scores': candidate_scores,
         'accepted_character_count': len(robust_fits),
         'rejected_character_count': max(0, len(character_results) - len(robust_fits)),
         'total_fitted_character_count': len(accepted_fits),
         'minimum_reliable_characters': minimum_reliable_characters,
+        'maximum_axis_size_disagreement': maximum_axis_size_disagreement,
         'median_before_outlier_filter': round(float(median), 2) if median is not None else None,
         'mad': round(float(mad), 2) if mad is not None else None,
         'character_results': character_results,
@@ -254,6 +348,8 @@ def calibrate_ocr_output(
     output: dict[str, Any],
     font_path: str | Path = DEFAULT_FONT_PATH,
     metrics_path: str | Path = DEFAULT_METRICS_PATH,
+    default_font_size: float = DEFAULT_FONT_SIZE_BASE,
+    font_size_step: float = DEFAULT_FONT_SIZE_STEP,
 ) -> int:
     metrics = validate_font_ink_metrics(font_path, metrics_path)
     ready = 0
@@ -263,16 +359,24 @@ def calibrate_ocr_output(
         for item in items:
             if not isinstance(item, dict):
                 continue
-            fit = fit_ocr_item(item, font_path=font_path, metrics_path=metrics_path)
+            fit = fit_ocr_item(
+                item,
+                font_path=font_path,
+                metrics_path=metrics_path,
+                default_font_size=default_font_size,
+                font_size_step=font_size_step,
+            )
             item['font_fit'] = fit
             if fit.get('status') == 'ready':
                 ready += 1
     output['font_calibration'] = {
-        'method': 'mit48_cached_font_ink_ratio',
+        'method': 'mit48_cached_font_ink_candidate_grid',
         'font_path': str(Path(font_path)),
         'metrics_path': str(Path(metrics_path)),
         'font_sha256': (metrics.get('font') or {}).get('sha256'),
         'glyph_count': (metrics.get('counts') or {}).get('glyph_count'),
-        'rounding': 'nearest_integer_half_up',
+        'rounding': 'candidate_grid_one_decimal',
+        'default_font_size': round(float(default_font_size), 1),
+        'font_size_step': round(float(font_size_step), 1),
     }
     return ready

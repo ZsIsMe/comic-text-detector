@@ -21,7 +21,6 @@ from detect_folder import (
     TextDetector,
     _align_block_box,
     _align_block_boxes,
-    _char_boxes_from_line_mask,
     _clean_aligned_items,
     _draw_aligned_boxes,
     _draw_line_width_measurements,
@@ -728,203 +727,6 @@ def _upper_median(values: list[float]) -> float:
     return sorted_values[len(sorted_values) // 2]
 
 
-def _percentile(values: list[float], percentile: float) -> float:
-    sorted_values = sorted(float(value) for value in values if float(value) > 0)
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    pos = (len(sorted_values) - 1) * percentile / 100.0
-    lower = int(np.floor(pos))
-    upper = int(np.ceil(pos))
-    if lower == upper:
-        return sorted_values[lower]
-    weight = pos - lower
-    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
-
-
-def _dominant_dimension_values(values: list[float]) -> list[float]:
-    valid = [float(value) for value in values if float(value) > 0]
-    if not valid:
-        return []
-    upper = _percentile(valid, 75)
-    threshold = max(1.0, upper * 0.55)
-    selected = [value for value in valid if value >= threshold]
-    return selected or valid
-
-
-RELIABLE_SQUARE_MIN_DIFF_PX = 5.0
-RELIABLE_SQUARE_DIFF_RATIO = 0.16
-RELIABLE_SQUARE_MIN_COUNT = 4
-RELIABLE_SQUARE_SMALL_SAMPLE_MAX_COUNT = 4
-RELIABLE_SQUARE_SMALL_SAMPLE_MIN_COUNT = 1
-RELIABLE_SQUARE_MIN_PRIMARY_RATIO = 0.55
-SECONDARY_OUTLIER_GAP_PX = 5.0
-
-
-def _reliable_square_diff_limit(width: float, height: float) -> float:
-    return max(RELIABLE_SQUARE_MIN_DIFF_PX, max(width, height) * RELIABLE_SQUARE_DIFF_RATIO)
-
-
-def _paragraph_font_size_from_char_boxes(
-    char_boxes: list[dict],
-    orientation: str,
-) -> tuple[float | None, dict]:
-    widths = [float(box.get('width') or 0) for box in char_boxes if float(box.get('width') or 0) > 0]
-    heights = [float(box.get('height') or 0) for box in char_boxes if float(box.get('height') or 0) > 0]
-    if not widths or not heights:
-        return None, {
-            'method': 'char_box_dual_signal',
-            'accepted': False,
-            'reason': 'no_char_boxes',
-            'char_count': len(char_boxes),
-        }
-
-    primary_key = 'height' if orientation == 'horizontal' else 'width'
-    secondary_key = 'width' if orientation == 'horizontal' else 'height'
-    primary_values = _dominant_dimension_values(heights if orientation == 'horizontal' else widths)
-    secondary_values = _dominant_dimension_values(widths if orientation == 'horizontal' else heights)
-    if not primary_values or not secondary_values:
-        return None, {
-            'method': 'char_box_dual_signal',
-            'accepted': False,
-            'reason': 'no_dominant_values',
-            'char_count': len(char_boxes),
-            'widths': widths,
-            'heights': heights,
-        }
-
-    primary_percentile = 60
-    secondary_percentile = 75
-    if orientation == 'horizontal':
-        primary_percentile = 100
-    else:
-        secondary_percentile = 100
-
-    primary_size = _percentile(primary_values, primary_percentile)
-    secondary_limit = max(primary_size * 1.6, primary_size + 8.0)
-    secondary_min = min(secondary_values)
-    secondary_filtered = []
-    secondary_outliers = []
-    apply_secondary_outlier_filter = len(char_boxes) <= RELIABLE_SQUARE_SMALL_SAMPLE_MAX_COUNT
-    for index, box in enumerate(char_boxes):
-        width = float(box.get('width') or 0)
-        height = float(box.get('height') or 0)
-        primary_value = height if primary_key == 'height' else width
-        secondary_value = height if secondary_key == 'height' else width
-        if primary_value <= 0 or secondary_value <= 0 or secondary_value < secondary_min:
-            continue
-        reason = None
-        if secondary_value > secondary_limit:
-            reason = 'above_secondary_limit'
-        elif (
-            apply_secondary_outlier_filter
-            and
-            secondary_value > primary_size + SECONDARY_OUTLIER_GAP_PX
-            and abs(height - width) > _reliable_square_diff_limit(width, height)
-        ):
-            reason = 'extreme_secondary_not_square'
-        if reason is not None:
-            secondary_outliers.append({
-                'index': index,
-                'width': width,
-                'height': height,
-                'primary_value': primary_value,
-                'secondary_value': secondary_value,
-                'bbox': box.get('bbox'),
-                'line_index': box.get('line_index'),
-                'reason': reason,
-            })
-            continue
-        secondary_filtered.append(secondary_value)
-    if not secondary_filtered:
-        secondary_filtered = secondary_values
-    secondary_size = _percentile(secondary_filtered, secondary_percentile)
-    font_size = max(primary_size, secondary_size)
-    reliable_square_boxes = []
-    reliable_min_size = max(1.0, primary_size * RELIABLE_SQUARE_MIN_PRIMARY_RATIO)
-    required_square_count = (
-        RELIABLE_SQUARE_SMALL_SAMPLE_MIN_COUNT
-        if len(char_boxes) <= RELIABLE_SQUARE_SMALL_SAMPLE_MAX_COUNT
-        else RELIABLE_SQUARE_MIN_COUNT
-    )
-    for index, box in enumerate(char_boxes):
-        width = float(box.get('width') or 0)
-        height = float(box.get('height') or 0)
-        if width <= 0 or height <= 0:
-            continue
-        candidate_size = max(width, height)
-        # Normal main text glyphs should be close to square in the target font box.
-        # Tall/wide ink outliers can be real glyph shapes, but a single one should not
-        # decide the paragraph size. When enough near-square boxes exist, use their
-        # largest side as the best observed estimate of the square font size. Short
-        # paragraphs have fewer samples, so one reliable square box is enough there;
-        # longer paragraphs need more agreement to avoid undersized punctuation pieces.
-        if abs(height - width) <= _reliable_square_diff_limit(width, height) and candidate_size >= reliable_min_size:
-            reliable_square_boxes.append({
-                'index': index,
-                'width': width,
-                'height': height,
-                'size': candidate_size,
-                'bbox': box.get('bbox'),
-                'line_index': box.get('line_index'),
-            })
-    reliable_square_size = None
-    if len(reliable_square_boxes) >= required_square_count:
-        reliable_square_size = max(float(box['size']) for box in reliable_square_boxes)
-        font_size = reliable_square_size
-        method = 'char_box_reliable_square'
-    else:
-        method = 'char_box_dual_signal'
-    return font_size, {
-        'method': method,
-        'accepted': True,
-        'orientation': orientation,
-        'char_count': len(char_boxes),
-        'widths': widths,
-        'heights': heights,
-        'primary_dimension': 'H' if orientation == 'horizontal' else 'W',
-        'secondary_dimension': 'W' if orientation == 'horizontal' else 'H',
-        'primary_values': primary_values,
-        'secondary_values': secondary_values,
-        'secondary_filtered': secondary_filtered,
-        'secondary_outlier_gap_px': SECONDARY_OUTLIER_GAP_PX,
-        'secondary_outlier_filter_applied': apply_secondary_outlier_filter,
-        'secondary_outliers': secondary_outliers,
-        'primary_percentile': primary_percentile,
-        'secondary_percentile': secondary_percentile,
-        'primary_size': primary_size,
-        'secondary_size': secondary_size,
-        'dual_signal_font_size': max(primary_size, secondary_size),
-        'reliable_square_min_diff_px': RELIABLE_SQUARE_MIN_DIFF_PX,
-        'reliable_square_diff_ratio': RELIABLE_SQUARE_DIFF_RATIO,
-        'reliable_square_min_count': RELIABLE_SQUARE_MIN_COUNT,
-        'reliable_square_small_sample_max_count': RELIABLE_SQUARE_SMALL_SAMPLE_MAX_COUNT,
-        'reliable_square_small_sample_min_count': RELIABLE_SQUARE_SMALL_SAMPLE_MIN_COUNT,
-        'reliable_square_required_count': required_square_count,
-        'reliable_square_min_size': reliable_min_size,
-        'reliable_square_boxes': reliable_square_boxes,
-        'reliable_square_size': reliable_square_size,
-        'font_size': font_size,
-    }
-
-
-def _char_boxes_for_lines(mask: np.ndarray | None, lines: list[dict]) -> list[dict]:
-    if mask is None:
-        return []
-    char_boxes = []
-    for line_index, line in enumerate(lines):
-        poly = line.get('polygon')
-        if poly is None:
-            continue
-        _, boxes = _char_boxes_from_line_mask(mask, poly)
-        for box in boxes:
-            item = dict(box)
-            item['line_index'] = line_index
-            char_boxes.append(item)
-    return char_boxes
-
-
 def _orientation_from_lines(lines: list[dict]) -> str:
     if not lines:
         return 'vertical'
@@ -955,8 +757,6 @@ def _build_measure_maps(
     for page_name, align_items in align_pages.items():
         img = imread(_image_path_for_page(img_dir, page_name))
         img_h, img_w = img.shape[:2]
-        mask_path = _mask_path_for_page(paths, page_name)
-        mask = imread(mask_path, cv2.IMREAD_GRAYSCALE) if osp.isfile(mask_path) else None
         block_items = block_pages.get(page_name, [])
         line_items = line_pages.get(page_name, [])
         line_groups = _line_groups_by_block(block_items, line_items)
@@ -970,24 +770,28 @@ def _build_measure_maps(
 
             matched_lines = line_groups.get(source_index, [])
             orientation = _orientation_from_lines(matched_lines)
-            char_boxes = _char_boxes_for_lines(mask, matched_lines)
-            font_size, font_debug = _paragraph_font_size_from_char_boxes(char_boxes, orientation)
-            if font_size is not None:
-                font_method = str(font_debug.get('method') or 'char_box_dual_signal')
-            else:
-                widths = [_line_width(line) for line in matched_lines]
-                widths = [value for value in widths if value > 0]
-                if widths:
-                    font_size = _upper_median(widths)
-                    font_method = 'line_width_upper_median_fallback'
-                else:
-                    x1, y1, x2, y2 = xyxy
-                    font_size = float(min(max(0, x2 - x1), max(0, y2 - y1)))
-                    font_method = 'block_short_side_fallback'
+            widths = [_line_width(line) for line in matched_lines]
+            widths = [value for value in widths if value > 0]
+            if widths:
+                font_size = _upper_median(widths)
+                font_method = 'line_width_upper_median'
                 font_debug = {
-                    **font_debug,
-                    'fallback_method': font_method,
+                    'method': font_method,
+                    'accepted': True,
+                    'orientation': orientation,
                     'line_widths': widths,
+                    'font_size': font_size,
+                }
+            else:
+                x1, y1, x2, y2 = xyxy
+                font_size = float(min(max(0, x2 - x1), max(0, y2 - y1)))
+                font_method = 'block_short_side_fallback'
+                font_debug = {
+                    'method': font_method,
+                    'accepted': True,
+                    'orientation': orientation,
+                    'line_widths': widths,
+                    'font_size': font_size,
                 }
 
             page_items.append({
@@ -1001,7 +805,7 @@ def _build_measure_maps(
             page_debug_items.append({
                 'source_block_index': source_index,
                 'font_size_debug': font_debug,
-                'char_boxes': char_boxes,
+                'lines': matched_lines,
             })
         pages[page_name] = page_items
         debug_pages[page_name] = page_debug_items

@@ -123,8 +123,7 @@ ctd_overlay_processor/.venv/
 - `Ctrl` / `Command` + `N`：在左側圖片游標位置新增文案；系統剪貼簿有非空白文字時，會自動帶入該文字，否則新增空文案。
 - 單框刪除：`Delete` / `Backspace`
 
-`ctd/measure.json` 不支持 GUI 編輯。「字體取偶數」只應在生成 CTD 之前作為生成選項處理，生成後不再修改 `measure.json`。
-在 GUI 勾選「字體取偶數」後按「生成/更新 CTD」，生成出的 `ctd/measure.json` 會將每個 `font_size` 取為偶數。
+點擊「生成/更新 CTD」時會先設定預設字級與 Step（首次預設為 `24.0, 2.0`）。逐字 OCR 會排除不可靠與異常字級，再依可靠結果的範圍建立候選字級，選擇所有可靠字元長寬總誤差最低的候選。`ctd/measure.json` 的 `font_size` 預設保留一位小數。
 
 ## 命令列檢查資料
 

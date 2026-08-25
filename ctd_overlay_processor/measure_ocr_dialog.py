@@ -8,11 +8,12 @@ import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QTimer, Qt, Signal
+from PySide6.QtCore import QProcess, QSettings, QTimer, Qt, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -26,10 +27,18 @@ from PySide6.QtWidgets import (
 )
 
 try:
-    from .font_size_calibration import calibrate_ocr_output
+    from .font_size_calibration import (
+        DEFAULT_FONT_SIZE_BASE,
+        DEFAULT_FONT_SIZE_STEP,
+        calibrate_ocr_output,
+    )
     from .processor import CtdOverlayProcessor
 except ImportError:
-    from font_size_calibration import calibrate_ocr_output
+    from font_size_calibration import (
+        DEFAULT_FONT_SIZE_BASE,
+        DEFAULT_FONT_SIZE_STEP,
+        calibrate_ocr_output,
+    )
     from processor import CtdOverlayProcessor
 
 
@@ -48,6 +57,7 @@ class MeasureOcrDialog(QDialog):
         self.setWindowTitle('逐字 OCR 校準字級')
         self.resize(760, 540)
         self.processor = processor
+        self.settings = QSettings('comic-text-detector', 'ctd-overlay-processor')
         self.current_page_name = current_page_name
         self.current_source_block_index = current_source_block_index
         self.process: QProcess | None = None
@@ -55,7 +65,9 @@ class MeasureOcrDialog(QDialog):
         self.command: list[str] = []
         self._stopping = False
         self.calibrated_output: dict = {}
-        self.proposed_updates: dict[str, dict[int, int]] = {}
+        self.proposed_updates: dict[str, dict[int, float]] = {}
+        self.active_default_font_size = DEFAULT_FONT_SIZE_BASE
+        self.active_font_size_step = DEFAULT_FONT_SIZE_STEP
 
         self.scope_combo = QComboBox()
         if current_page_name and current_source_block_index is not None:
@@ -70,10 +82,30 @@ class MeasureOcrDialog(QDialog):
         self.device_combo.addItem('CPU（目前可用）', 'cpu')
         self.device_combo.addItem('MPS（不可用時自動改 CPU）', 'mps')
         self.device_combo.addItem('CUDA', 'cuda')
+        self.default_font_size_spin = QDoubleSpinBox()
+        self.default_font_size_spin.setRange(0.1, 999.0)
+        self.default_font_size_spin.setDecimals(1)
+        self.default_font_size_spin.setSingleStep(0.1)
+        self.font_size_step_spin = QDoubleSpinBox()
+        self.font_size_step_spin.setRange(0.1, 999.0)
+        self.font_size_step_spin.setDecimals(1)
+        self.font_size_step_spin.setSingleStep(0.1)
+        try:
+            saved_default = float(self.settings.value('font_calibration/default_font_size', DEFAULT_FONT_SIZE_BASE))
+        except (TypeError, ValueError):
+            saved_default = DEFAULT_FONT_SIZE_BASE
+        try:
+            saved_step = float(self.settings.value('font_calibration/font_size_step', DEFAULT_FONT_SIZE_STEP))
+        except (TypeError, ValueError):
+            saved_step = DEFAULT_FONT_SIZE_STEP
+        self.default_font_size_spin.setValue(max(0.1, min(999.0, saved_default)))
+        self.font_size_step_spin.setValue(max(0.1, min(999.0, saved_step)))
+        self.candidate_preview_label = QLabel()
+        self.candidate_preview_label.setWordWrap(True)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.status_label = QLabel('尚未開始逐字 OCR。每個單字框獨立識別，失敗不影響同行其他字。')
+        self.status_label = QLabel('尚未開始逐字 OCR。整行識別後逐字獨立定位，失敗不影響同行其他字。')
         self.status_label.setWordWrap(True)
         self.command_label = QLabel('')
         self.command_label.setWordWrap(True)
@@ -101,6 +133,9 @@ class MeasureOcrDialog(QDialog):
         self.stop_button.clicked.connect(self.stop_ocr)
         self.apply_button.clicked.connect(self.apply_results)
         self.close_button.clicked.connect(self.close)
+        self.default_font_size_spin.valueChanged.connect(self._update_candidate_preview)
+        self.font_size_step_spin.valueChanged.connect(self._update_candidate_preview)
+        self._update_candidate_preview()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -117,6 +152,14 @@ class MeasureOcrDialog(QDialog):
         device_row.addWidget(self.device_combo, 1)
         layout.addLayout(device_row)
 
+        calibration_row = QHBoxLayout()
+        calibration_row.addWidget(QLabel('預設字級'))
+        calibration_row.addWidget(self.default_font_size_spin, 1)
+        calibration_row.addWidget(QLabel('Step'))
+        calibration_row.addWidget(self.font_size_step_spin, 1)
+        layout.addLayout(calibration_row)
+        layout.addWidget(self.candidate_preview_label)
+
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
         layout.addWidget(self.command_label)
@@ -131,6 +174,18 @@ class MeasureOcrDialog(QDialog):
         button_row.addWidget(self.close_button)
         layout.addLayout(button_row)
 
+    def _update_candidate_preview(self) -> None:
+        base = float(self.default_font_size_spin.value())
+        step = float(self.font_size_step_spin.value())
+        candidates = [
+            base + offset * step
+            for offset in range(-2, 3)
+            if base + offset * step > 0
+        ]
+        self.candidate_preview_label.setText(
+            '候選示例：' + '、'.join(f'{candidate:.1f}' for candidate in candidates),
+        )
+
     def start_ocr(self) -> None:
         if self.process is not None:
             return
@@ -143,13 +198,25 @@ class MeasureOcrDialog(QDialog):
             QMessageBox.information(self, '缺少 measure.json', '請先生成或保存 ctd/measure.json。')
             return
 
+        self.active_default_font_size = round(float(self.default_font_size_spin.value()), 1)
+        self.active_font_size_step = round(float(self.font_size_step_spin.value()), 1)
+        self.settings.setValue('font_calibration/default_font_size', self.active_default_font_size)
+        self.settings.setValue('font_calibration/font_size_step', self.active_font_size_step)
+
         args = ['-u', str(script), str(self.processor.image_dir)]
         scope = self.scope_combo.currentData()
         if scope in {'item', 'current'} and self.current_page_name:
             args.extend(['--page', self.current_page_name])
         if scope == 'item' and self.current_source_block_index is not None:
             args.extend(['--source-block-index', str(self.current_source_block_index)])
-        args.extend(['--device', self.device_combo.currentData() or 'cpu'])
+        args.extend([
+            '--device',
+            self.device_combo.currentData() or 'cpu',
+            '--default-font-size',
+            f'{self.active_default_font_size:.1f}',
+            '--font-size-step',
+            f'{self.active_font_size_step:.1f}',
+        ])
         python = self._ocr_python(project_root)
         self.command = [str(python), *args]
         self.output_chunks = []
@@ -177,6 +244,8 @@ class MeasureOcrDialog(QDialog):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.close_button.setEnabled(False)
+        self.default_font_size_spin.setEnabled(False)
+        self.font_size_step_spin.setEnabled(False)
         process.start()
 
     def _ocr_python(self, project_root: Path) -> Path:
@@ -247,6 +316,8 @@ class MeasureOcrDialog(QDialog):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.close_button.setEnabled(True)
+        self.default_font_size_spin.setEnabled(True)
+        self.font_size_step_spin.setEnabled(True)
 
         if self._stopping:
             self.status_label.setText('OCR 已停止。')
@@ -261,7 +332,11 @@ class MeasureOcrDialog(QDialog):
         output_path = self.processor.ctd_dir / 'measure_ocr.json'
         try:
             output = json.loads(output_path.read_text(encoding='utf-8'))
-            ready_count = calibrate_ocr_output(output)
+            ready_count = calibrate_ocr_output(
+                output,
+                default_font_size=self.active_default_font_size,
+                font_size_step=self.active_font_size_step,
+            )
             output_path.write_text(
                 json.dumps(output, ensure_ascii=False, indent=2) + '\n',
                 encoding='utf-8',
@@ -286,7 +361,7 @@ class MeasureOcrDialog(QDialog):
             'suggestion_too_far_from_detected': '與檢測字級差距過大',
         }
         rows = []
-        updates: dict[str, dict[int, int]] = {}
+        updates: dict[str, dict[int, float]] = {}
         for page_name, items in (output.get('pages') or {}).items():
             if not isinstance(items, list):
                 continue
@@ -295,10 +370,15 @@ class MeasureOcrDialog(QDialog):
                     continue
                 fit = item.get('font_fit') or {}
                 status = str(fit.get('status') or 'unknown')
-                suggested = fit.get('suggested_font_size')
+                suggested = fit.get('suggested_font_size_float', fit.get('suggested_font_size'))
                 item_index = item.get('measure_item_index')
-                if status == 'ready' and isinstance(suggested, int) and isinstance(item_index, int):
-                    updates.setdefault(str(page_name), {})[item_index] = suggested
+                if (
+                    status == 'ready'
+                    and isinstance(suggested, (int, float))
+                    and not isinstance(suggested, bool)
+                    and isinstance(item_index, int)
+                ):
+                    updates.setdefault(str(page_name), {})[item_index] = round(float(suggested), 1)
                 rows.append((page_name, item, fit, status_text.get(status, status)))
 
         self.proposed_updates = updates
@@ -308,8 +388,12 @@ class MeasureOcrDialog(QDialog):
                 page_name,
                 str(item.get('source_block_index', '-')),
                 str(item.get('ocr_text') or '').replace('\n', ' / '),
-                str(int(round(float(fit.get('original_font_size') or item.get('font_size') or 0)))),
-                str(fit.get('suggested_font_size') or '-'),
+                f'{float(fit.get("original_font_size") or item.get("font_size") or 0):.1f}',
+                (
+                    f'{float(fit.get("suggested_font_size_float")):.1f}'
+                    if fit.get('suggested_font_size_float') is not None
+                    else '-'
+                ),
                 str(fit.get('accepted_character_count') or 0),
                 display_status,
             ]
@@ -338,6 +422,8 @@ class MeasureOcrDialog(QDialog):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.close_button.setEnabled(True)
+        self.default_font_size_spin.setEnabled(True)
+        self.font_size_step_spin.setEnabled(True)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.status_label.setText(message)

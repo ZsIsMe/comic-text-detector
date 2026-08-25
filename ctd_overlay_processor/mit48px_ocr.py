@@ -7,7 +7,7 @@ import math
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import einops
@@ -81,6 +81,48 @@ def prepare_character_crop(image_rgb: np.ndarray, bbox: list[Any], pad: int = 2)
     return cv2.resize(crop, (target_w, target_h), interpolation=interpolation)
 
 
+def collapse_ctc_runs(
+    log_probabilities: torch.Tensor,
+    dictionary: list[str],
+    *,
+    blank: int = 0,
+    valid_timesteps: int | None = None,
+) -> list[dict[str, Any]]:
+    """Collapse CTC runs while retaining the best timestep of each token."""
+    if log_probabilities.ndim != 2:
+        raise ValueError('CTC log probabilities must have shape [T, C]')
+    timestep_count = int(log_probabilities.shape[0])
+    valid_count = timestep_count if valid_timesteps is None else max(0, min(timestep_count, int(valid_timesteps)))
+    if valid_count == 0:
+        return []
+
+    best_ids = log_probabilities[:valid_count].argmax(dim=1).detach().cpu().tolist()
+    tokens: list[dict[str, Any]] = []
+    run_start = 0
+    while run_start < valid_count:
+        character_id = int(best_ids[run_start])
+        run_end = run_start + 1
+        while run_end < valid_count and int(best_ids[run_end]) == character_id:
+            run_end += 1
+        if character_id != blank:
+            run_scores = log_probabilities[run_start:run_end, character_id]
+            best_offset = int(run_scores.argmax().item())
+            timestep = run_start + best_offset
+            character = dictionary[character_id]
+            if character == '<SP>':
+                character = ' '
+            tokens.append({
+                'text': character,
+                'probability': round(math.exp(float(log_probabilities[timestep, character_id].item())), 6),
+                'timestep': timestep,
+                'run_start': run_start,
+                'run_end': run_end,
+                'position_ratio': round((timestep + 0.5) / valid_count, 6),
+            })
+        run_start = run_end
+    return tokens
+
+
 class Mit48pxCtcOcr:
     def __init__(
         self,
@@ -149,3 +191,65 @@ class Mit48pxCtcOcr:
                     'character_probabilities': [round(value, 6) for value in probabilities],
                 })
         return results
+
+    @torch.inference_mode()
+    def recognize_batch_aligned(
+        self,
+        crops: list[np.ndarray],
+        batch_size: int = 32,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Recognize whole lines and retain an independent CTC position per token."""
+        if not crops:
+            return []
+        results: list[dict[str, Any] | None] = [None] * len(crops)
+        ordered_indices = sorted(range(len(crops)), key=lambda index: int(crops[index].shape[1]))
+        completed = 0
+        for start in range(0, len(ordered_indices), max(1, batch_size)):
+            batch_indices = ordered_indices[start:start + max(1, batch_size)]
+            batch = [crops[index] for index in batch_indices]
+            widths = [int(crop.shape[1]) for crop in batch]
+            max_width = (4 * (max(widths) + 7) // 4) + 128
+            region = np.zeros((len(batch), 48, max_width, 3), dtype=np.uint8)
+            for index, crop in enumerate(batch):
+                region[index, :, :crop.shape[1], :] = crop
+            images = (torch.from_numpy(region).float() - 127.5) / 127.5
+            images = einops.rearrange(images, 'N H W C -> N C H W')
+            if self.device != 'cpu':
+                images = images.to(self.device)
+
+            pred_char_logits, _ = self.net(images)
+            log_probabilities = pred_char_logits.log_softmax(2)
+            total_timesteps = int(log_probabilities.shape[1])
+            for batch_index, crop_width in enumerate(widths):
+                valid_timesteps = max(
+                    1,
+                    min(
+                        total_timesteps,
+                        int(math.ceil(total_timesteps * crop_width / max_width)),
+                    ),
+                )
+                tokens = collapse_ctc_runs(
+                    log_probabilities[batch_index],
+                    self.net.dictionary,
+                    blank=0,
+                    valid_timesteps=valid_timesteps,
+                )
+                probabilities = [float(token['probability']) for token in tokens]
+                probability = (
+                    float(math.exp(sum(math.log(max(value, 1e-12)) for value in probabilities) / len(probabilities)))
+                    if probabilities
+                    else 0.0
+                )
+                results[batch_indices[batch_index]] = {
+                    'text': ''.join(str(token['text']) for token in tokens),
+                    'probability': round(probability, 6),
+                    'character_probabilities': [round(value, 6) for value in probabilities],
+                    'tokens': tokens,
+                    'valid_timesteps': valid_timesteps,
+                    'total_timesteps': total_timesteps,
+                }
+            completed += len(batch)
+            if progress_callback is not None:
+                progress_callback(completed, len(crops))
+        return [result for result in results if result is not None]

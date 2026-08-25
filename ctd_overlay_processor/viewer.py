@@ -70,6 +70,7 @@ if QT_IMPORT_ERROR is None:
         QT_WEBENGINE_AVAILABLE = False
 
 try:
+    from .font_size_calibration import DEFAULT_FONT_SIZE_BASE, DEFAULT_FONT_SIZE_STEP
     from .processor import (
         BoxOverlay,
         CtdOverlayProcessor,
@@ -81,6 +82,7 @@ try:
     from .labelplus_pipeline import build_bt_from_labelplus_txt
     from .measure_view import char_box_label
 except ImportError:
+    from font_size_calibration import DEFAULT_FONT_SIZE_BASE, DEFAULT_FONT_SIZE_STEP
     from processor import (
         BoxOverlay,
         CtdOverlayProcessor,
@@ -990,6 +992,8 @@ if QT_IMPORT_ERROR is None:
             self.font_calibration_process: QProcess | None = None
             self.font_calibration_output_chunks: list[str] = []
             self.font_calibration_command: list[str] = []
+            self.generated_default_font_size = DEFAULT_FONT_SIZE_BASE
+            self.generated_font_size_step = DEFAULT_FONT_SIZE_STEP
             self.hover_char_box: dict | None = None
             self.selected_box_index: int | None = None
             self.undo_stack: list[dict[str, object]] = []
@@ -1054,6 +1058,9 @@ if QT_IMPORT_ERROR is None:
             self.font_size_table = QTableWidget()
             self.status_label = QLabel('尚未選擇資料夾')
             self.status_label.setWordWrap(True)
+            self.font_calibration_progress_label = QLabel('')
+            self.font_calibration_progress_label.setWordWrap(True)
+            self.font_calibration_progress_label.hide()
             self.show_mask = QCheckBox('文字遮罩')
             self.show_block_boxes = QCheckBox('原始區塊框')
             self.show_align_boxes = QCheckBox('重定位框')
@@ -1070,12 +1077,11 @@ if QT_IMPORT_ERROR is None:
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
             self.edit_measure_button = QPushButton('編輯 measure.json')
-            self.even_measure_font_check = QCheckBox('字體取偶數')
             self.auto_calibrate_font_check = QCheckBox('生成後自動校準字級')
             self.auto_calibrate_font_check.setChecked(True)
             self.auto_calibrate_device_combo = QComboBox()
             self.auto_calibrate_device_combo.addItem('字級 OCR：CPU', 'cpu')
-            self.auto_calibrate_device_combo.addItem('字級 OCR：MPS', 'mps')
+            self.auto_calibrate_device_combo.addItem('字級 OCR：MPS（可能回退 CPU）', 'mps')
             self.auto_calibrate_device_combo.addItem('字級 OCR：CUDA', 'cuda')
             self.import_labelplus_button = QPushButton('導入 LabelPlus txt')
             self.open_bt_button = QPushButton('打開 _bt.json')
@@ -1707,8 +1713,6 @@ if QT_IMPORT_ERROR is None:
             reload_button = QPushButton('重新載入目前頁')
             reload_button.clicked.connect(self.reload_current_page)
             layout.addWidget(reload_button)
-            self.even_measure_font_check.setToolTip('生成 CTD 時，將 measure.json 的 font_size 取為偶數。')
-            layout.addWidget(self.even_measure_font_check)
             self.auto_calibrate_font_check.setToolTip(
                 'CTD 生成完成後，自動執行 mit48 逐字 OCR，使用字型墨跡緩存校準並保存 measure.json。'
             )
@@ -1716,6 +1720,7 @@ if QT_IMPORT_ERROR is None:
             layout.addWidget(self.auto_calibrate_device_combo)
             self.generate_button.clicked.connect(self.generate_ctd)
             layout.addWidget(self.generate_button)
+            layout.addWidget(self.font_calibration_progress_label)
             self.edit_measure_button.clicked.connect(self.open_measure_editor)
             layout.addWidget(self.edit_measure_button)
             self.import_labelplus_button.clicked.connect(self.import_labelplus_txt)
@@ -4189,14 +4194,19 @@ if QT_IMPORT_ERROR is None:
                 QMessageBox.critical(self, '找不到生成器', f'找不到：\n{script}')
                 return
 
+            calibration_settings = self._ask_generated_font_calibration_settings()
+            if calibration_settings is None:
+                return
+            self.generated_default_font_size, self.generated_font_size_step = calibration_settings
+
             self.generate_button.setEnabled(False)
-            even_font_size = self.even_measure_font_check.isChecked()
-            option_text = '，字體取偶數' if even_font_size else ''
-            self.status_label.setText(f'正在生成 CTD 資料{option_text}，模型推理可能需要一段時間...')
+            self.status_label.setText(
+                '正在生成 CTD 資料，'
+                f'字級候選基準 {self.generated_default_font_size:.1f}、'
+                f'Step {self.generated_font_size_step:.1f}...'
+            )
             process = QProcess(self)
             args = [str(script), self.current_image_dir]
-            if even_font_size:
-                args.append('--even-font-size')
             self.detect_command = [sys.executable, *args]
             self.detect_output_chunks = []
             process.setProgram(sys.executable)
@@ -4208,6 +4218,74 @@ if QT_IMPORT_ERROR is None:
             process.finished.connect(self._detection_finished)
             self.detect_process = process
             process.start()
+
+        def _ask_generated_font_calibration_settings(self) -> tuple[float, float] | None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle('生成／更新 CTD 字級設定')
+            layout = QVBoxLayout(dialog)
+            description = QLabel(
+                '可靠字元會先計算帶小數的字級並排除異常值，再從「預設字級＋Step」形成的候選中選擇總誤差最低者。'
+            )
+            description.setWordWrap(True)
+            layout.addWidget(description)
+
+            default_row = QHBoxLayout()
+            default_row.addWidget(QLabel('預設字級'))
+            default_spin = QDoubleSpinBox()
+            default_spin.setRange(0.1, 999.0)
+            default_spin.setDecimals(1)
+            default_spin.setSingleStep(0.1)
+            try:
+                saved_default = float(self.settings.value('font_calibration/default_font_size', DEFAULT_FONT_SIZE_BASE))
+            except (TypeError, ValueError):
+                saved_default = DEFAULT_FONT_SIZE_BASE
+            default_spin.setValue(max(0.1, min(999.0, saved_default)))
+            default_row.addWidget(default_spin, 1)
+            layout.addLayout(default_row)
+
+            step_row = QHBoxLayout()
+            step_row.addWidget(QLabel('Step'))
+            step_spin = QDoubleSpinBox()
+            step_spin.setRange(0.1, 999.0)
+            step_spin.setDecimals(1)
+            step_spin.setSingleStep(0.1)
+            try:
+                saved_step = float(self.settings.value('font_calibration/font_size_step', DEFAULT_FONT_SIZE_STEP))
+            except (TypeError, ValueError):
+                saved_step = DEFAULT_FONT_SIZE_STEP
+            step_spin.setValue(max(0.1, min(999.0, saved_step)))
+            step_row.addWidget(step_spin, 1)
+            layout.addLayout(step_row)
+
+            preview = QLabel()
+            preview.setWordWrap(True)
+
+            def update_preview() -> None:
+                base = float(default_spin.value())
+                step = float(step_spin.value())
+                preview.setText(
+                    '候選示例：'
+                    + '、'.join(f'{base + offset * step:.1f}' for offset in range(-2, 3) if base + offset * step > 0)
+                )
+
+            default_spin.valueChanged.connect(update_preview)
+            step_spin.valueChanged.connect(update_preview)
+            update_preview()
+            layout.addWidget(preview)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setText('開始生成')
+            buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return None
+            default_font_size = round(float(default_spin.value()), 1)
+            font_size_step = round(float(step_spin.value()), 1)
+            self.settings.setValue('font_calibration/default_font_size', default_font_size)
+            self.settings.setValue('font_calibration/font_size_step', font_size_step)
+            return default_font_size, font_size_step
 
         def _read_detection_output(self) -> None:
             if self.detect_process is None:
@@ -4305,9 +4383,11 @@ if QT_IMPORT_ERROR is None:
                 '--device',
                 device,
                 '--apply-font-sizes',
+                '--default-font-size',
+                f'{self.generated_default_font_size:.1f}',
+                '--font-size-step',
+                f'{self.generated_font_size_step:.1f}',
             ]
-            if self.even_measure_font_check.isChecked():
-                args.append('--even-font-size')
             process = QProcess(self)
             process.setProgram(sys.executable)
             process.setArguments(args)
@@ -4319,7 +4399,10 @@ if QT_IMPORT_ERROR is None:
             self.font_calibration_process = process
             self.font_calibration_command = [sys.executable, *args]
             self.font_calibration_output_chunks = []
-            self.status_label.setText(f'正在以 {device.upper()} 執行 mit48 與字型緩存校準...')
+            progress_text = f'字級 OCR：正在以 {device.upper()} 載入 mit48 模型...'
+            self.status_label.setText(progress_text)
+            self.font_calibration_progress_label.setText(progress_text)
+            self.font_calibration_progress_label.show()
             process.start()
 
         def _read_font_calibration_output(self) -> None:
@@ -4331,7 +4414,10 @@ if QT_IMPORT_ERROR is None:
             self.font_calibration_output_chunks.append(text)
             lines = text.strip().splitlines()
             if lines:
-                self.status_label.setText(lines[-1])
+                progress_text = lines[-1]
+                self.status_label.setText(progress_text)
+                self.font_calibration_progress_label.setText(progress_text)
+                self.font_calibration_progress_label.show()
 
         def _font_calibration_process_error(self, error) -> None:
             process = self.font_calibration_process
@@ -4352,6 +4438,7 @@ if QT_IMPORT_ERROR is None:
             )
             self.font_calibration_process = None
             self.generate_button.setEnabled(True)
+            self.font_calibration_progress_label.hide()
             self.status_label.setText('CTD 已生成，但自動字級校準失敗。')
             if process is not None:
                 process.deleteLater()
@@ -4386,6 +4473,7 @@ if QT_IMPORT_ERROR is None:
             else:
                 self.status_label.setText('CTD 與字型緩存字級校準完成，正在重新載入...')
             self.generate_button.setEnabled(True)
+            self.font_calibration_progress_label.hide()
             if self.current_image_dir:
                 self.load_folder(self.current_image_dir)
 
@@ -4457,9 +4545,14 @@ if QT_IMPORT_ERROR is None:
             source_index = item.get('source_block_index', '-')
             line_index = item.get('line_index', '-')
             bbox_text = ', '.join(str(int(round(float(value)))) for value in bbox) if isinstance(bbox, list) else '-'
+            try:
+                estimated_font_size = float(item.get('estimated_font_size', item.get('calculated_font_size')))
+                font_size_text = f'{estimated_font_size:.1f}' if estimated_font_size > 0 else '-'
+            except (TypeError, ValueError):
+                font_size_text = '-'
             return (
                 '游標單字框：\n'
-                f'寬：{width_text}px  高：{height_text}px\n'
+                f'寬：{width_text}px  高：{height_text}px  單字字級：{font_size_text}px\n'
                 f'區塊：{source_index}  行：{line_index}\n'
                 f'bbox：{bbox_text}'
             )

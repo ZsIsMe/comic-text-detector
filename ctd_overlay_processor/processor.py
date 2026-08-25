@@ -79,7 +79,7 @@ class BoxOverlay:
         if self.font_size is None:
             parts = [self.direction_suffix]
         else:
-            parts = [f'{int(round(self.font_size))}{self.direction_suffix}']
+            parts = [f'{float(self.font_size):.1f}{self.direction_suffix}']
         if self.text_color == 'black':
             parts.append('黑')
         elif self.text_color == 'white':
@@ -262,8 +262,8 @@ def load_align_masks(path: Path, expected_count: int | None = None) -> AlignMask
     return AlignMasks(smoothed_masks=smoothed, outer_body_masks=outer, accepted=accepted)
 
 
-def _ocr_characters_by_box(measure_ocr: dict[str, Any], page_name: str) -> dict[tuple[int, int, int], dict[str, Any]]:
-    result = {}
+def _reliable_ocr_char_boxes(measure_ocr: dict[str, Any], page_name: str) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
     for fallback_index, block in enumerate((measure_ocr.get('pages') or {}).get(page_name, []) or []):
         if not isinstance(block, dict):
             continue
@@ -278,15 +278,18 @@ def _ocr_characters_by_box(measure_ocr: dict[str, Any], page_name: str) -> dict[
                 continue
             line_index = int(character.get('line_index', 0))
             character_index = int(character.get('character_index', 0))
+            if character.get('status') != 'accepted':
+                continue
             item = dict(character)
             fit = fit_by_position.get((line_index, character_index))
-            if isinstance(fit, dict):
-                item['font_filter_accepted'] = fit.get('accepted') is True
-                if fit.get('accepted') is True and fit.get('pixel_size') is not None:
-                    item['calculated_font_size'] = fit.get('pixel_size')
-                    item['estimated_font_size'] = fit.get('estimated_pixel_size')
-                    item['font_fit_error'] = fit.get('error')
-            result[(source_index, line_index, character_index)] = item
+            if not isinstance(fit, dict) or fit.get('accepted') is not True or fit.get('pixel_size') is None:
+                continue
+            item['source_block_index'] = source_index
+            item['font_filter_accepted'] = True
+            item['calculated_font_size'] = fit.get('pixel_size')
+            item['estimated_font_size'] = fit.get('estimated_pixel_size')
+            item['font_fit_error'] = fit.get('error')
+            result.append(item)
     return result
 
 
@@ -295,42 +298,8 @@ def load_char_boxes(
     page_name: str,
     measure_ocr: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    ocr_by_box = _ocr_characters_by_box(measure_ocr or {}, page_name)
-    processed_sources = {key[0] for key in ocr_by_box}
-    font_debug_pages = measure_debug.get('font_size', {})
-    for block_debug in font_debug_pages.get(page_name, []):
-        source_index = source_index_from_item(block_debug, 0)
-        boxes_by_line: dict[int, list[dict[str, Any]]] = {}
-        for char_box in block_debug.get('char_boxes', []) or []:
-            if isinstance(char_box, dict):
-                boxes_by_line.setdefault(int(char_box.get('line_index', 0)), []).append(char_box)
-        orientation = str((block_debug.get('font_size_debug') or {}).get('orientation') or 'vertical')
-        for line_index, boxes in boxes_by_line.items():
-            def sort_key(char_box: dict[str, Any]) -> tuple[float, float]:
-                bbox = char_box.get('bbox') or [0, 0, 0, 0]
-                x1, y1, x2, y2 = [float(value) for value in bbox]
-                return ((x1 + x2) / 2, (y1 + y2) / 2) if orientation == 'horizontal' else ((y1 + y2) / 2, (x1 + x2) / 2)
-
-            for character_index, char_box in enumerate(sorted(boxes, key=sort_key)):
-                if not isinstance(char_box, dict):
-                    continue
-                item = dict(char_box)
-                item['source_block_index'] = source_index
-                item['character_index'] = character_index
-                ocr_item = ocr_by_box.get((source_index, line_index, character_index))
-                if isinstance(ocr_item, dict):
-                    if source_index in processed_sources and ocr_item.get('status') != 'accepted':
-                        continue
-                    for key in (
-                        'ocr_text', 'ocr_probability', 'status', 'selected_pad',
-                        'font_filter_accepted', 'calculated_font_size',
-                        'estimated_font_size', 'font_fit_error',
-                    ):
-                        if ocr_item.get(key) is not None:
-                            item[key] = ocr_item[key]
-                result.append(item)
-    return result
+    del measure_debug  # The legacy mask-projection character boxes are intentionally ignored.
+    return _reliable_ocr_char_boxes(measure_ocr or {}, page_name)
 
 
 def normalize_measure_map(measure: dict[str, Any]) -> None:

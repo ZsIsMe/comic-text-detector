@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -127,7 +128,7 @@ class MeasureEditorWindow(QMainWindow):
         self.y1_spin = QSpinBox()
         self.x2_spin = QSpinBox()
         self.y2_spin = QSpinBox()
-        self.font_size_spin = QSpinBox()
+        self.font_size_spin = QDoubleSpinBox()
         self.orientation_combo = QComboBox()
         self.color_combo = QComboBox()
         self.text_has_stroke_check = QCheckBox('原字描邊')
@@ -193,8 +194,8 @@ class MeasureEditorWindow(QMainWindow):
         font_layout.setSpacing(8)
         font_layout.addWidget(QLabel('字體大小'))
         self.font_size_list.setMinimumWidth(88)
-        for size in range(6, 1000, 2):
-            self.font_size_list.addItem(QListWidgetItem(str(size)))
+        for size in range(6, 1000):
+            self.font_size_list.addItem(QListWidgetItem(f'{float(size):.1f}'))
         font_layout.addWidget(self.font_size_list, 1)
         splitter.addWidget(font_panel)
 
@@ -217,7 +218,9 @@ class MeasureEditorWindow(QMainWindow):
         xyxy_layout.addWidget(self.y2_spin, 1, 3)
         right_layout.addWidget(QLabel('xyxy_pixel'))
         right_layout.addLayout(xyxy_layout)
-        self.font_size_spin.setRange(1, 999)
+        self.font_size_spin.setRange(0.1, 999.0)
+        self.font_size_spin.setDecimals(1)
+        self.font_size_spin.setSingleStep(0.1)
         self.font_size_spin.setSuffix(' px')
         self.orientation_combo.addItem('直排', 'vertical')
         self.orientation_combo.addItem('橫排', 'horizontal')
@@ -440,7 +443,10 @@ class MeasureEditorWindow(QMainWindow):
         self.item_list.clear()
         for index, item in enumerate(self.current_items()):
             xyxy = xyxy_from_item(item) if isinstance(item, dict) else None
-            font_size = compact_int_px(item.get('font_size')) if isinstance(item, dict) else None
+            try:
+                font_size = f'{float(item.get("font_size")):.1f}' if isinstance(item, dict) else None
+            except (TypeError, ValueError):
+                font_size = None
             orientation = str(item.get('orientation') or 'vertical') if isinstance(item, dict) else 'vertical'
             direction = 'H' if orientation == 'horizontal' else 'V'
             source_index = item.get('source_block_index', index) if isinstance(item, dict) else index
@@ -454,13 +460,16 @@ class MeasureEditorWindow(QMainWindow):
 
     def update_font_size_selection(self) -> None:
         item = self.selected_item()
-        target = positive_int(item.get('font_size'), 0) if item is not None else 0
+        try:
+            target = round(float(item.get('font_size')), 1) if item is not None else 0.0
+        except (TypeError, ValueError):
+            target = 0.0
         self.font_size_list.blockSignals(True)
         self.font_size_list.setCurrentRow(-1)
         if target > 0:
             for row in range(self.font_size_list.count()):
                 list_item = self.font_size_list.item(row)
-                if list_item is not None and list_item.text() == str(target):
+                if list_item is not None and abs(float(list_item.text()) - target) < 0.05:
                     self.font_size_list.setCurrentRow(row)
                     break
         self.font_size_list.blockSignals(False)
@@ -528,7 +537,11 @@ class MeasureEditorWindow(QMainWindow):
             self.y1_spin.setValue(y1)
             self.x2_spin.setValue(x2)
             self.y2_spin.setValue(y2)
-        self.font_size_spin.setValue(positive_int(item.get('font_size'), 40))
+        try:
+            font_size = float(item.get('font_size'))
+        except (TypeError, ValueError):
+            font_size = 40.0
+        self.font_size_spin.setValue(max(0.1, min(999.0, font_size)))
         orientation_index = self.orientation_combo.findData(item.get('orientation') or 'vertical')
         self.orientation_combo.setCurrentIndex(max(0, orientation_index))
         color_index = self.color_combo.findData(item.get('text_color') or 'black')
@@ -547,7 +560,7 @@ class MeasureEditorWindow(QMainWindow):
         before_items = copy.deepcopy(self.current_items())
         before_selected = self.selected_index
         updated = {
-            'font_size': int(self.font_size_spin.value()),
+            'font_size': round(float(self.font_size_spin.value()), 1),
             'orientation': self.orientation_combo.currentData() or 'vertical',
             'text_color': self.color_combo.currentData() or 'black',
             'text_has_stroke': self.text_has_stroke_check.isChecked(),
@@ -570,31 +583,37 @@ class MeasureEditorWindow(QMainWindow):
 
     def apply_font_size_from_list(self, item: QListWidgetItem) -> None:
         try:
-            size = int(item.text())
+            size = float(item.text())
         except ValueError:
             return
-        self.set_selected_font_size(size, f'已把當前 measure 字體大小改為 {size}，尚未保存。')
+        self.set_selected_font_size(size, f'已把當前 measure 字體大小改為 {size:.1f}，尚未保存。')
 
     def nudge_selected_font_size(self, delta: int) -> None:
         item = self.selected_item()
         if item is None:
             self.status_label.setText('請先選擇一個 measure 文字框，再使用字體大小快捷鍵。')
             return
-        current = positive_int(item.get('font_size'), positive_int(self.font_size_spin.value(), 40))
-        size = max(1, min(999, current + delta))
-        if size == current:
+        try:
+            current = float(item.get('font_size'))
+        except (TypeError, ValueError):
+            current = float(self.font_size_spin.value())
+        size = round(max(0.1, min(999.0, current + delta)), 1)
+        if abs(size - current) < 0.05:
             return
         sign = '+' if delta > 0 else ''
         self.set_selected_font_size(size, f'已將當前 measure 字體大小 {sign}{delta} 到 {size}，尚未保存。')
 
-    def set_selected_font_size(self, size: int, status: str) -> None:
+    def set_selected_font_size(self, size: float, status: str) -> None:
         item = self.selected_item()
         if item is None:
             self.status_label.setText('請先選擇一個 measure 文字框。')
             return
-        size = max(1, min(999, int(size)))
-        current = positive_int(item.get('font_size'), positive_int(self.font_size_spin.value(), 40))
-        if current == size:
+        size = round(max(0.1, min(999.0, float(size))), 1)
+        try:
+            current = float(item.get('font_size'))
+        except (TypeError, ValueError):
+            current = float(self.font_size_spin.value())
+        if abs(current - size) < 0.05:
             return
         before_items = copy.deepcopy(self.current_items())
         before_selected = self.selected_index
@@ -618,9 +637,15 @@ class MeasureEditorWindow(QMainWindow):
 
         size_row = QHBoxLayout()
         size_row.addWidget(QLabel('字體大小'))
-        size_spin = QSpinBox()
-        size_spin.setRange(1, 999)
-        size_spin.setValue(positive_int(self.settings.value(self.settings_key('uniform_font_size'), 24), 24))
+        size_spin = QDoubleSpinBox()
+        size_spin.setRange(0.1, 999.0)
+        size_spin.setDecimals(1)
+        size_spin.setSingleStep(0.1)
+        try:
+            uniform_size = float(self.settings.value(self.settings_key('uniform_font_size'), 24.0))
+        except (TypeError, ValueError):
+            uniform_size = 24.0
+        size_spin.setValue(max(0.1, min(999.0, uniform_size)))
         size_spin.selectAll()
         size_row.addWidget(size_spin, 1)
         layout.addLayout(size_row)
@@ -634,12 +659,12 @@ class MeasureEditorWindow(QMainWindow):
 
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        size = int(size_spin.value())
+        size = round(float(size_spin.value()), 1)
         self.settings.setValue(self.settings_key('uniform_font_size'), size)
         self.apply_uniform_font_size(scope_combo.currentData() or 'current', size)
 
-    def apply_uniform_font_size(self, scope: str, size: int) -> None:
-        size = max(1, min(999, int(size)))
+    def apply_uniform_font_size(self, scope: str, size: float) -> None:
+        size = round(max(0.1, min(999.0, float(size))), 1)
         pages = self.measure.setdefault('pages', {})
         if scope == 'all':
             target_page_names = [
@@ -1020,18 +1045,21 @@ class MeasureEditorWindow(QMainWindow):
             for raw_index, raw_size in page_updates.items():
                 try:
                     item_index = int(raw_index)
-                    font_size = max(1, min(999, int(raw_size)))
+                    font_size = round(max(0.1, min(999.0, float(raw_size))), 1)
                 except (TypeError, ValueError):
                     continue
                 if not (0 <= item_index < len(items)) or not isinstance(items[item_index], dict):
                     continue
                 item = items[item_index]
-                current_size = positive_int(item.get('font_size'), 1)
-                if current_size == font_size:
+                try:
+                    current_size = float(item.get('font_size'))
+                except (TypeError, ValueError):
+                    current_size = 0.0
+                if abs(current_size - font_size) < 0.05:
                     continue
                 item.setdefault('font_size_detected', item.get('font_size'))
                 item['font_size'] = font_size
-                item['font_size_method'] = 'mit48_cached_font_ink_ratio'
+                item['font_size_method'] = 'mit48_cached_font_ink_candidate_grid'
                 page_changed += 1
             if page_changed:
                 before_pages[str(page_name)] = original_items

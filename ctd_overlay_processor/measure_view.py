@@ -25,6 +25,16 @@ def compact_int_px(value) -> str | None:
     return str(int(round(number)))
 
 
+def compact_decimal_px(value) -> str | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return f'{number:.1f}'
+
+
 def char_info_text(item: dict[str, Any]) -> str:
     bbox = item.get('bbox')
     width_text = compact_int_px(item.get('width')) or '-'
@@ -32,7 +42,9 @@ def char_info_text(item: dict[str, Any]) -> str:
     source_index = item.get('source_block_index', '-')
     line_index = item.get('line_index', '-')
     bbox_text = ', '.join(str(int(round(float(value)))) for value in bbox) if isinstance(bbox, list) else '-'
-    calculated_text = compact_int_px(item.get('calculated_font_size')) or '-'
+    calculated_text = compact_decimal_px(
+        item.get('estimated_font_size', item.get('calculated_font_size')),
+    ) or '-'
     ocr_text = str(item.get('ocr_text') or '-')
     probability = item.get('ocr_probability')
     probability_text = f'{float(probability):.1%}' if isinstance(probability, (int, float)) else '-'
@@ -51,7 +63,9 @@ def char_box_label(item: dict[str, Any]) -> str | None:
     if width_text is None or height_text is None:
         return None
     label = f'W{width_text}H{height_text}'
-    font_size_text = compact_int_px(item.get('calculated_font_size'))
+    font_size_text = compact_decimal_px(
+        item.get('estimated_font_size', item.get('calculated_font_size')),
+    )
     if font_size_text is not None:
         label += f'FS{font_size_text}'
     return label
