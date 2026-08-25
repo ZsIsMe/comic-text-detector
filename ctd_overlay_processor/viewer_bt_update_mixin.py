@@ -9,12 +9,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 try:
-    from .processor import normalized_center_from_xyxy, tuple_center, xyxy_from_item
-    from .viewer_dialogs import show_exception_details
+    from .processor import BoxOverlay, normalized_center_from_xyxy, tuple_center, xyxy_from_item
+    from .viewer_dialogs import positive_int, show_exception_details
     from .viewer_render_utils import qimage_size
 except ImportError:
-    from processor import normalized_center_from_xyxy, tuple_center, xyxy_from_item
-    from viewer_dialogs import show_exception_details
+    from processor import BoxOverlay, normalized_center_from_xyxy, tuple_center, xyxy_from_item
+    from viewer_dialogs import positive_int, show_exception_details
     from viewer_render_utils import qimage_size
 
 

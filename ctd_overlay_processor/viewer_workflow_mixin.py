@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import (
@@ -21,11 +19,13 @@ from PySide6.QtWidgets import (
 )
 
 try:
+    from .font_size_calibration import DEFAULT_FONT_SIZE_BASE, DEFAULT_FONT_SIZE_STEP
     from .labelplus_pipeline import build_bt_from_labelplus_txt
     from .processor import CtdOverlayProcessor
     from .viewer_dialogs import compact_px, show_error_details, show_exception_details
     from .viewer_render_utils import qimage_size
 except ImportError:
+    from font_size_calibration import DEFAULT_FONT_SIZE_BASE, DEFAULT_FONT_SIZE_STEP
     from labelplus_pipeline import build_bt_from_labelplus_txt
     from processor import CtdOverlayProcessor
     from viewer_dialogs import compact_px, show_error_details, show_exception_details

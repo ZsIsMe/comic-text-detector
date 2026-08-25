@@ -5,14 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QSettings
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QAction, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
     QDockWidget,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QListWidget,
     QPushButton,
@@ -22,12 +21,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-try:
-    from .viewer_widgets import ImageView
-except ImportError:
-    from viewer_widgets import ImageView
-
 
 class ViewerUIMixin:
     def _build_toolbar(self) -> None:

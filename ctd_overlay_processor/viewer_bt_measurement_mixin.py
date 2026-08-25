@@ -8,15 +8,17 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QDialog
 
 try:
     from .bt_measurement_dialog import BtMeasurementDialog
+    from .processor import BoxOverlay
     from .viewer_dialogs import positive_int
 except ImportError:
     from bt_measurement_dialog import BtMeasurementDialog
+    from processor import BoxOverlay
     from viewer_dialogs import positive_int
 
 

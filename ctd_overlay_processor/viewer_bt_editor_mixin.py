@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 import numpy as np
@@ -10,8 +9,12 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 
 try:
+    from .measure_view import char_box_label
+    from .processor import BoxOverlay
     from .viewer_dialogs import positive_int
 except ImportError:
+    from measure_view import char_box_label
+    from processor import BoxOverlay
     from viewer_dialogs import positive_int
 
 
