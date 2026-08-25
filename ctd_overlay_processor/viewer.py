@@ -987,6 +987,20 @@ if QT_IMPORT_ERROR is None:
             self.selected_bt_index: int | None = None
             self.selected_bt_indices: set[int] = set()
             self.bt_undo_stack: list[dict[str, object]] = []
+            self._bt_cached_page_name: str | None = None
+            self._bt_cached_source_image: QImage | None = None
+            self._bt_cached_base_image: QImage | None = None
+            self._bt_cached_base_show_inpainted: bool | None = None
+            self._bt_editor_preview_snapshot: dict[str, object] | None = None
+            self._bt_editor_preview_status: str | None = None
+            self._bt_editor_preview_render_timer = QTimer(self)
+            self._bt_editor_preview_render_timer.setSingleShot(True)
+            self._bt_editor_preview_render_timer.setInterval(16)
+            self._bt_editor_preview_render_timer.timeout.connect(self._render_bt_editor_preview)
+            self._bt_editor_preview_commit_timer = QTimer(self)
+            self._bt_editor_preview_commit_timer.setSingleShot(True)
+            self._bt_editor_preview_commit_timer.setInterval(220)
+            self._bt_editor_preview_commit_timer.timeout.connect(self._commit_bt_editor_preview)
             self.detect_process: QProcess | None = None
             self.detect_output_chunks: list[str] = []
             self.detect_command: list[str] = []
@@ -1176,6 +1190,12 @@ if QT_IMPORT_ERROR is None:
                 event.accept()
                 return
             super().keyPressEvent(event)
+
+        def _clear_bt_image_cache(self) -> None:
+            self._bt_cached_page_name = None
+            self._bt_cached_source_image = None
+            self._bt_cached_base_image = None
+            self._bt_cached_base_show_inpainted = None
 
         def show_shortcuts_dialog(self) -> None:
             shortcuts_text = '''_bt.json 編輯器快捷鍵
@@ -1779,10 +1799,12 @@ if QT_IMPORT_ERROR is None:
             self.show_bt_font_labels_check.stateChanged.connect(self.handle_bt_font_label_setting_changed)
             self.bt_text_edit.textChanged.connect(self.apply_editor_changes_to_selected_box)
             self.bt_text_popover.text_edit.textChanged.connect(self.apply_bt_text_popover_changes)
-            self.font_size_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.font_size_spin.valueChanged.connect(self.handle_typography_control_changed)
             self.orientation_vertical_button.clicked.connect(self.apply_editor_changes_to_selected_box)
             self.orientation_horizontal_button.clicked.connect(self.apply_editor_changes_to_selected_box)
-            self.rotation_spin.valueChanged.connect(self.apply_editor_changes_to_selected_box)
+            self.rotation_spin.valueChanged.connect(self.handle_typography_control_changed)
+            self.font_size_spin.editingFinished.connect(self._commit_bt_editor_preview)
+            self.rotation_spin.editingFinished.connect(self._commit_bt_editor_preview)
             self.copy_bt_button.clicked.connect(self.copy_selected_box)
             self.copy_to_clipboard_button.clicked.connect(self.copy_selected_box_to_clipboard)
             self.delete_clipboard_button.clicked.connect(self.delete_selected_clipboard_item)
@@ -1971,10 +1993,12 @@ if QT_IMPORT_ERROR is None:
             return hasattr(self, 'view') and not self.view.isVisible()
 
         def load_folder(self, image_dir: str) -> None:
+            self._commit_bt_editor_preview()
             if self.bt_dirty and not self.save_pending_changes(auto=True):
                 return
             image_dir = str(Path(image_dir).expanduser().resolve())
             self.current_image_dir = image_dir
+            self._clear_bt_image_cache()
             self.clear_hover_char_box(render=False)
             self._bt_cursor_image_pos = None
             self.page = None
@@ -2447,6 +2471,7 @@ if QT_IMPORT_ERROR is None:
             self.set_bt_selection(selected_indices, active_index=active_index, sync_list=False)
 
         def load_bt_json_path(self, path: Path, *, remember: bool = True) -> None:
+            self._commit_bt_editor_preview()
             path = path.expanduser().resolve()
             data = json.loads(path.read_text(encoding='utf-8'))
             if not isinstance(data, dict) or not isinstance(data.get('transMap'), dict):
@@ -2476,6 +2501,7 @@ if QT_IMPORT_ERROR is None:
                 show_exception_details(self, '打開失敗', '無法打開 _bt.json。下方是完整可複製的出錯信息。', exc)
 
         def save_bt_json(self) -> None:
+            self._commit_bt_editor_preview()
             if self.bt_data is None or self.bt_path is None:
                 return
             self.bt_path.write_text(
@@ -2843,6 +2869,7 @@ if QT_IMPORT_ERROR is None:
             center: bool = False,
             sync_list: bool = True,
         ) -> None:
+            self._commit_bt_editor_preview()
             items = self.bt_items_for_page()
             valid_indices = {
                 index for index in (indices or set())
@@ -3526,6 +3553,132 @@ if QT_IMPORT_ERROR is None:
             if QApplication.focusWidget() is self.bt_text_edit:
                 self.sync_bt_text_popover_from_item()
 
+        def _begin_bt_editor_preview(self) -> None:
+            if self._bt_editor_preview_snapshot is not None:
+                return
+            page_name = self.current_page_name()
+            if page_name is None:
+                return
+            items = self.bt_items_for_page(page_name)
+            self._bt_editor_preview_snapshot = {
+                'page_name': page_name,
+                'items': copy.deepcopy(items),
+                'selected_index': self.selected_bt_index,
+                'selected_indices': set(self.selected_bt_indices),
+            }
+
+        def _schedule_bt_editor_preview_render(self) -> None:
+            if not self._bt_editor_preview_render_timer.isActive():
+                self._bt_editor_preview_render_timer.start()
+
+        def _render_bt_editor_preview(self) -> None:
+            if self._bt_editor_preview_snapshot is None:
+                return
+            self.render_bt_page(refit=False)
+
+        def _commit_bt_editor_preview(self, *_args: object) -> None:
+            render_pending = self._bt_editor_preview_render_timer.isActive()
+            self._bt_editor_preview_render_timer.stop()
+            self._bt_editor_preview_commit_timer.stop()
+            snapshot = self._bt_editor_preview_snapshot
+            self._bt_editor_preview_snapshot = None
+            if snapshot is None:
+                return
+
+            page_name = snapshot.get('page_name')
+            if not isinstance(page_name, str) or page_name != self.current_page_name():
+                self._bt_editor_preview_status = None
+                return
+            items = self.bt_items_for_page(page_name)
+            before_items = snapshot.get('items')
+            if not isinstance(before_items, list) or items == before_items:
+                self._bt_editor_preview_status = None
+                return
+
+            selected_index = snapshot.get('selected_index')
+            selected_indices = snapshot.get('selected_indices')
+            self.push_bt_items_undo_snapshot(
+                self._bt_editor_preview_status or '修改 _bt 字體/旋轉',
+                before_items,
+                selected_index if isinstance(selected_index, int) else None,
+                selected_indices if isinstance(selected_indices, set) else None,
+            )
+            self.mark_bt_dirty()
+            self.update_bt_item_list()
+            self.update_action_state()
+            self.status_label.setText(self._bt_editor_preview_status or '已修改 _bt，尚未保存。')
+            self._bt_editor_preview_status = None
+            if render_pending:
+                self.render_bt_page(refit=False)
+
+        def _preview_bt_updates_to_indices(
+            self,
+            indices: list[int] | set[int],
+            update_builder,
+            *,
+            status: str,
+        ) -> bool:
+            page_name = self.current_page_name()
+            if page_name is None:
+                return False
+            items = self.bt_items_for_page(page_name)
+            target_indices = [
+                index for index in sorted(set(indices))
+                if 0 <= index < len(items) and isinstance(items[index], dict)
+            ]
+            if not target_indices:
+                return False
+
+            changes: list[tuple[int, dict[str, object]]] = []
+            for index in target_indices:
+                updates = update_builder(index, items[index])
+                if not updates:
+                    continue
+                normalized_updates = self.normalized_bt_updates(updates)
+                if self.updates_change_item(items[index], normalized_updates):
+                    changes.append((index, normalized_updates))
+            if not changes:
+                return False
+
+            self._begin_bt_editor_preview()
+            for index, normalized_updates in changes:
+                items[index].update(normalized_updates)
+            self._bt_editor_preview_status = status
+            self._schedule_bt_editor_preview_render()
+            self._bt_editor_preview_commit_timer.start()
+            return True
+
+        def _sync_typography_controls_from_preview(self) -> None:
+            item = self.selected_bt_item()
+            if item is None:
+                return
+            self._updating_editor = True
+            self.font_size_spin.setValue(positive_int(item.get('font-size'), 40))
+            self.rotation_spin.setValue(self.normalized_rotation(item.get('rotation')))
+            self._updating_editor = False
+
+        def handle_typography_control_changed(self, value: object) -> None:
+            if self._updating_editor:
+                return
+            selected_indices = self.selected_bt_indices_list()
+            if not selected_indices:
+                return
+            sender = self.sender()
+            if sender is self.font_size_spin:
+                size = max(1, min(999, int(value)))
+                self._preview_bt_updates_to_indices(
+                    selected_indices,
+                    lambda _index, _item: {'font-size': size},
+                    status=f'已把 {len(selected_indices)} 條 _bt 字體大小預覽為 {size}px，尚未保存。',
+                )
+            elif sender is self.rotation_spin:
+                rotation = self.normalized_rotation(value)
+                self._preview_bt_updates_to_indices(
+                    selected_indices,
+                    lambda _index, _item: {'rotation': rotation},
+                    status=f'已把 {len(selected_indices)} 條 _bt 旋轉預覽為 {rotation:g} 度，尚未保存。',
+                )
+
         def apply_font_size_from_table(self, row: int, column: int) -> None:
             selected_indices = self.selected_bt_indices_list()
             if not selected_indices:
@@ -3553,26 +3706,15 @@ if QT_IMPORT_ERROR is None:
                 self.status_label.setText('請先選擇一條 _bt 文字，再使用字體大小快捷鍵。')
                 return
             sign = '+' if delta > 0 else ''
-            if len(selected_indices) > 1:
-                self.apply_bt_updates_to_indices(
-                    selected_indices,
-                    lambda _index, item: {
-                        'font-size': max(1, min(999, positive_int(item.get('font-size'), 40) + delta))
-                    },
-                    status=f'已將 {len(selected_indices)} 條 _bt 條目字體大小各自 {sign}{delta}，尚未保存。',
-                )
-                return
-            item = self.selected_bt_item()
-            if item is None:
-                return
-            current = positive_int(
-                item.get('font-size'),
-                positive_int(self.font_size_spin.value(), 40),
+            changed = self._preview_bt_updates_to_indices(
+                selected_indices,
+                lambda _index, item: {
+                    'font-size': max(1, min(999, positive_int(item.get('font-size'), 40) + delta))
+                },
+                status=f'已將 {len(selected_indices)} 條 _bt 條目字體大小各自 {sign}{delta}，尚未保存。',
             )
-            size = max(1, min(999, current + delta))
-            if size == current:
-                return
-            self.apply_selected_box_updates({'font-size': size}, status=f'已將當前 _bt 條目字體大小 {sign}{delta} 到 {size}，尚未保存。')
+            if changed:
+                self._sync_typography_controls_from_preview()
 
         def nudge_selected_rotation(self, delta: float) -> None:
             selected_indices = self.selected_bt_indices_list()
@@ -3580,24 +3722,15 @@ if QT_IMPORT_ERROR is None:
                 self.status_label.setText('請先選擇一條 _bt 文字，再使用旋轉快捷鍵。')
                 return
             sign = '+' if delta > 0 else ''
-            if len(selected_indices) > 1:
-                self.apply_bt_updates_to_indices(
-                    selected_indices,
-                    lambda _index, item: {'rotation': self.normalized_rotation(self.normalized_rotation(item.get('rotation')) + delta)},
-                    status=f'已將 {len(selected_indices)} 條 _bt 條目各自旋轉 {sign}{delta:g} 度，尚未保存。',
-                )
-                return
-            item = self.selected_bt_item()
-            if item is None:
-                return
-            current = self.normalized_rotation(item.get('rotation'))
-            rotation = self.normalized_rotation(current + delta)
-            if rotation == current:
-                return
-            self.apply_selected_box_updates(
-                {'rotation': rotation},
-                status=f'已將當前 _bt 條目旋轉 {sign}{delta:g} 度到 {rotation:g} 度，尚未保存。',
+            changed = self._preview_bt_updates_to_indices(
+                selected_indices,
+                lambda _index, item: {
+                    'rotation': self.normalized_rotation(self.normalized_rotation(item.get('rotation')) + delta)
+                },
+                status=f'已將 {len(selected_indices)} 條 _bt 條目各自旋轉 {sign}{delta:g} 度，尚未保存。',
             )
+            if changed:
+                self._sync_typography_controls_from_preview()
 
         def nudge_selected_box_position(self, dx: int, dy: int) -> None:
             selected_indices = self.selected_bt_indices_list()
@@ -3851,6 +3984,7 @@ if QT_IMPORT_ERROR is None:
             self.update_action_state()
 
         def save_pending_changes(self, *_, auto: bool = False) -> bool:
+            self._commit_bt_editor_preview()
             if self.bt_data is None:
                 if not auto:
                     self.status_label.setText('目前沒有載入 _bt.json。')
@@ -3903,6 +4037,7 @@ if QT_IMPORT_ERROR is None:
             status: str = '已修改，尚未保存。',
             refresh_editor: bool = True,
         ) -> bool:
+            self._commit_bt_editor_preview()
             page_name = self.current_page_name()
             if page_name is None:
                 return False
@@ -4556,8 +4691,10 @@ if QT_IMPORT_ERROR is None:
         def load_page_at_row(self, row: int) -> None:
             if row < 0 or row >= len(self.page_names) or self.processor is None:
                 return
+            self._commit_bt_editor_preview()
             page_name = self.page_names[row]
             try:
+                self._clear_bt_image_cache()
                 self.clear_hover_char_box(render=False)
                 self.selected_box_index = None
                 self.selected_bt_index = None
@@ -4691,22 +4828,41 @@ if QT_IMPORT_ERROR is None:
             image_path = self.processor.image_dir / page_name
             if not image_path.is_file() and self.page is not None:
                 image_path = self.page.image_path
+            if self._bt_cached_page_name == page_name and self._bt_cached_source_image is not None:
+                return self._bt_cached_source_image.copy()
             image = QImage(str(image_path))
             if image.isNull():
                 return None
-            return image.convertToFormat(QImage.Format.Format_RGBA8888)
+            image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+            self._bt_cached_page_name = page_name
+            self._bt_cached_source_image = image.copy()
+            self._bt_cached_base_image = None
+            self._bt_cached_base_show_inpainted = None
+            return image
 
         def load_bt_base_image(self, page_name: str) -> QImage | None:
+            if (
+                self._bt_cached_page_name == page_name
+                and self._bt_cached_base_image is not None
+                and self._bt_cached_base_show_inpainted == self.show_bt_inpainted
+            ):
+                return self._bt_cached_base_image.copy()
             image = self.load_bt_source_image(page_name)
             if image is None:
                 return None
             if not self.show_bt_inpainted:
+                self._bt_cached_base_image = image.copy()
+                self._bt_cached_base_show_inpainted = False
                 return image
             overlay_path = self.bt_inpainted_overlay_path(page_name)
             if overlay_path is None:
+                self._bt_cached_base_image = image.copy()
+                self._bt_cached_base_show_inpainted = True
                 return image
             overlay = QImage(str(overlay_path))
             if overlay.isNull():
+                self._bt_cached_base_image = image.copy()
+                self._bt_cached_base_show_inpainted = True
                 return image
             overlay = overlay.convertToFormat(QImage.Format.Format_RGBA8888)
             if overlay.size() != image.size():
@@ -4718,6 +4874,8 @@ if QT_IMPORT_ERROR is None:
             painter = QPainter(image)
             painter.drawImage(0, 0, overlay)
             painter.end()
+            self._bt_cached_base_image = image.copy()
+            self._bt_cached_base_show_inpainted = True
             return image
 
         def render_bt_page(self, *_, refit: bool = True) -> None:
