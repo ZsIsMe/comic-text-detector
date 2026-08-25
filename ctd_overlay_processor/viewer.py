@@ -36,6 +36,7 @@ try:
         QDockWidget,
         QFileDialog,
         QFrame,
+        QGraphicsItem,
         QGraphicsPixmapItem,
         QGraphicsScene,
         QGraphicsView,
@@ -298,6 +299,35 @@ if QT_IMPORT_ERROR is None:
         def leaveEvent(self, event) -> None:
             self.imageMouseLeft.emit()
             super().leaveEvent(event)
+
+
+    class BtAnnotationItem(QGraphicsItem):
+        """獨立繪製 _bt 框，避免拖動時複製整張背景圖片。"""
+
+        def __init__(self, owner) -> None:
+            super().__init__()
+            self.owner = owner
+            self._image_size = (1, 1)
+            self.setZValue(1.0)
+            self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+        def set_image_size(self, width: int, height: int) -> None:
+            width = max(1, int(width))
+            height = max(1, int(height))
+            if self._image_size == (width, height):
+                return
+            self.prepareGeometryChange()
+            self._image_size = (width, height)
+
+        def boundingRect(self) -> QRectF:
+            width, height = self._image_size
+            return QRectF(0, 0, width, height)
+
+        def paint(self, painter, _option, _widget=None) -> None:
+            width, height = self._image_size
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            self.owner._draw_bt_items(painter, width, height)
 
 
     class NavigatorWidget(QWidget):
@@ -991,6 +1021,8 @@ if QT_IMPORT_ERROR is None:
             self._bt_cached_source_image: QImage | None = None
             self._bt_cached_base_image: QImage | None = None
             self._bt_cached_base_show_inpainted: bool | None = None
+            self._bt_cached_image_size: tuple[int, int] | None = None
+            self._bt_displayed_base_key: tuple[str, bool] | None = None
             self._bt_editor_preview_snapshot: dict[str, object] | None = None
             self._bt_editor_preview_status: str | None = None
             self._bt_editor_preview_render_timer = QTimer(self)
@@ -1053,6 +1085,11 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_original_xyxys: dict[int, tuple[int, int, int, int]] = {}
             self._bt_drag_indices: list[int] = []
             self._bt_drag_temporary = False
+            self._bt_drag_active = False
+            self._bt_drag_render_timer = QTimer(self)
+            self._bt_drag_render_timer.setSingleShot(True)
+            self._bt_drag_render_timer.setInterval(16)
+            self._bt_drag_render_timer.timeout.connect(self._render_bt_drag_preview)
             self._bt_cursor_image_pos: tuple[float, float] | None = None
             self.show_bt_inpainted = True
             self.bt_clipboard_items = self.load_bt_clipboard_items()
@@ -1061,6 +1098,8 @@ if QT_IMPORT_ERROR is None:
 
             self.bt_view = ImageView()
             self.view = ImageView()
+            self.bt_annotation_item = BtAnnotationItem(self)
+            self.bt_view.scene().addItem(self.bt_annotation_item)
             self.bt_match_popover = BtMatchPopover(self)
             self.bt_text_popover = BtTextEditPopover(self)
             self.bt_html_overlay = HtmlTextOverlay(self.bt_view) if QT_WEBENGINE_AVAILABLE else None
@@ -1196,6 +1235,8 @@ if QT_IMPORT_ERROR is None:
             self._bt_cached_source_image = None
             self._bt_cached_base_image = None
             self._bt_cached_base_show_inpainted = None
+            self._bt_cached_image_size = None
+            self._bt_displayed_base_key = None
 
         def show_shortcuts_dialog(self) -> None:
             shortcuts_text = '''_bt.json 編輯器快捷鍵
@@ -2538,7 +2579,8 @@ if QT_IMPORT_ERROR is None:
         def set_bt_xyxy(self, item: dict[str, Any], xyxy: tuple[int, int, int, int]) -> None:
             item['xyxy_pixel'] = list(xyxy)
             if self.page is not None:
-                center = normalized_center_from_xyxy(xyxy, qimage_size(self.page.image_path))
+                image_size = self._bt_cached_image_size or qimage_size(self.page.image_path)
+                center = normalized_center_from_xyxy(xyxy, image_size)
                 if center is not None:
                     item['x'] = center[0]
                     item['y'] = center[1]
@@ -4248,7 +4290,7 @@ if QT_IMPORT_ERROR is None:
         def clamp_xyxy(self, xyxy: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
             if self.page is None:
                 return xyxy
-            image_size = qimage_size(self.page.image_path)
+            image_size = self._bt_cached_image_size or qimage_size(self.page.image_path)
             width, height = image_size or (10_000, 10_000)
             x1, y1, x2, y2 = xyxy
             x1 = max(0, min(x1, width - 1))
@@ -4702,6 +4744,7 @@ if QT_IMPORT_ERROR is None:
                 self.show_bt_inpainted = True
                 self.set_box_editor_enabled(False)
                 image_size = qimage_size(self.processor.image_dir / page_name)
+                self._bt_cached_image_size = image_size
                 self.page = self.processor.load_page(page_name, image_size=image_size)
                 self.current_page_row = row
                 self.update_font_size_list()
@@ -4884,15 +4927,32 @@ if QT_IMPORT_ERROR is None:
             page_name = self.current_page_name()
             if not page_name:
                 return
-            image = self.load_bt_base_image(page_name)
-            if image is None:
-                return
-            painter = QPainter(image)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-            self._draw_bt_items(painter, image.width(), image.height())
-            painter.end()
-            self.bt_view.set_pixmap(QPixmap.fromImage(image), fit=refit)
+            base_key = (page_name, bool(self.show_bt_inpainted))
+            base_changed = (
+                self._bt_displayed_base_key != base_key
+                or self.bt_view.current_pixmap().isNull()
+            )
+            if base_changed:
+                image = self.load_bt_base_image(page_name)
+                if image is None:
+                    return
+                self.bt_annotation_item.set_image_size(image.width(), image.height())
+                self.bt_view.set_pixmap(QPixmap.fromImage(image), fit=refit)
+                self._bt_displayed_base_key = base_key
+            else:
+                self.bt_annotation_item.set_image_size(
+                    self.bt_view.current_pixmap().width(),
+                    self.bt_view.current_pixmap().height(),
+                )
+                if refit and not self.bt_view.sceneRect().isEmpty():
+                    self.bt_view._zoom = 1.0
+                    self.bt_view.resetTransform()
+                    self.bt_view.fitInView(
+                        self.bt_view.sceneRect(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                    )
+                    self.bt_view.viewportChanged.emit(self.bt_view)
+            self.bt_annotation_item.update()
             self.update_navigator()
             self.update_bt_html_overlay()
             self.schedule_bt_html_overlay_update()
@@ -4900,6 +4960,9 @@ if QT_IMPORT_ERROR is None:
         def update_bt_html_overlay(self) -> None:
             overlay = getattr(self, 'bt_html_overlay', None)
             if overlay is None:
+                return
+            if self._bt_drag_active:
+                overlay.hide()
                 return
             overlay.update_geometry()
             items = self.build_bt_html_items()
@@ -5112,6 +5175,15 @@ if QT_IMPORT_ERROR is None:
                         (x1, y2), ((x1 + x2) / 2, y2), (x2, y2),
                     ):
                         painter.drawRect(QRectF(hx - 3, hy - 3, 6, 6))
+                if self._bt_drag_active and selected:
+                    center_x = (x1 + x2) / 2.0
+                    center_y = (y1 + y2) / 2.0
+                    center_color = QColor(255, 92, 92, 235) if index == self.selected_bt_index else QColor(80, 210, 255, 230)
+                    painter.setBrush(center_color)
+                    painter.setPen(QPen(center_color, 2))
+                    painter.drawEllipse(QPointF(center_x, center_y), 4, 4)
+                    painter.drawLine(QPointF(center_x - 11, center_y), QPointF(center_x + 11, center_y))
+                    painter.drawLine(QPointF(center_x, center_y - 11), QPointF(center_x, center_y + 11))
                 if self.show_bt_font_labels_check.isChecked():
                     self.draw_bt_font_label(
                         painter,
@@ -5171,7 +5243,17 @@ if QT_IMPORT_ERROR is None:
             _, index, mode = min(matches, key=lambda item: item[0])
             return index, mode
 
+        def _schedule_bt_drag_render(self) -> None:
+            if not self._bt_drag_render_timer.isActive():
+                self._bt_drag_render_timer.start()
+
+        def _render_bt_drag_preview(self) -> None:
+            if self._bt_drag_active:
+                self.bt_annotation_item.update()
+
         def handle_bt_mouse_press(self, x: float, y: float) -> None:
+            self._bt_drag_active = False
+            self._bt_drag_render_timer.stop()
             index, mode = self.hit_test_bt_item(x, y)
             self.bt_view.set_background_pan_enabled(index is None)
             modifiers = QApplication.keyboardModifiers()
@@ -5238,6 +5320,9 @@ if QT_IMPORT_ERROR is None:
                     if selected_xyxy is not None:
                         self._bt_drag_original_xyxys[selected_index] = selected_xyxy
             self._bt_drag_temporary = temporary
+            self._bt_drag_active = True
+            if self.bt_html_overlay is not None:
+                self.bt_html_overlay.hide()
             self.show_bt_match_popover(item)
 
         def update_bt_view_cursor(self, x: float, y: float) -> None:
@@ -5263,11 +5348,7 @@ if QT_IMPORT_ERROR is None:
                     if 0 <= index < len(items):
                         x1, y1, x2, y2 = xyxy
                         self.set_bt_xyxy(items[index], self.clamp_xyxy((x1 + dx, y1 + dy, x2 + dx, y2 + dy)))
-                self.populate_box_editor_for_selection()
-                self.update_bt_item_list()
-                self.render_bt_page(refit=False)
-                if self._bt_drag_temporary:
-                    self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
+                self._schedule_bt_drag_render()
                 return
             x1, y1, x2, y2 = self._bt_drag_original
             if self._bt_drag_mode == 'move':
@@ -5284,15 +5365,11 @@ if QT_IMPORT_ERROR is None:
                     ny2 += dy
                 new_xyxy = (nx1, ny1, nx2, ny2)
             self.set_bt_xyxy(item, self.clamp_xyxy(new_xyxy))
-            self.populate_box_editor_from_bt(item)
-            self.update_bt_item_list()
-            self.render_bt_page(refit=False)
-            if self._popover_bt_item is item and not self.has_multiple_bt_selection():
-                self.position_bt_match_popover(item)
-            if self._bt_drag_temporary:
-                self.status_label.setText('臨時移動預覽：鬆開鼠標後回到原位。')
+            self._schedule_bt_drag_render()
 
         def handle_bt_mouse_release(self, x: float, y: float) -> None:
+            self._bt_drag_render_timer.stop()
+            self._bt_drag_active = False
             item = self.selected_bt_item()
             if (
                 self._bt_drag_temporary
@@ -5344,8 +5421,10 @@ if QT_IMPORT_ERROR is None:
                         self.selected_bt_indices,
                     )
                     self.mark_bt_dirty()
+                    self.populate_box_editor_for_selection()
                     self.update_bt_item_list()
                     self.status_label.setText(f'已移動 {len(self._bt_drag_original_xyxys)} 條 _bt 條目，尚未保存。')
+                self.render_bt_page(refit=False)
                 self._bt_drag_mode = None
                 self._bt_drag_start = None
                 self._bt_drag_original = None
@@ -5368,8 +5447,10 @@ if QT_IMPORT_ERROR is None:
                         })
                     self.mark_bt_dirty()
                     item['match_status'] = 'manual'
+                    self.populate_box_editor_from_bt(item)
                     self.update_bt_item_list()
                     self.status_label.setText('已修改 _bt 框，尚未保存。')
+            self.render_bt_page(refit=False)
             self._bt_drag_mode = None
             self._bt_drag_start = None
             self._bt_drag_original = None
