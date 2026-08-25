@@ -8,56 +8,36 @@
 from __future__ import annotations
 
 import argparse
-import copy
-import hashlib
-import json
-import math
 import sys
-import traceback
 from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 QT_IMPORT_ERROR: ModuleNotFoundError | None = None
 QT_WEBENGINE_AVAILABLE = False
 QWebEngineView = None
 BtMeasurementDialog = None
 try:
-    from PySide6.QtCore import QEvent, QPointF, QProcess, QRectF, QSize, QSettings, Qt, QTimer, Signal
-    from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QKeyEvent, QKeySequence, QPainter, QPen, QPixmap, QTextCursor
+    from PySide6.QtCore import QProcess, QSettings, Qt, QTimer
+    from PySide6.QtGui import QAction, QFont, QImage, QKeyEvent
     from PySide6.QtWidgets import (
         QApplication,
         QButtonGroup,
         QCheckBox,
         QComboBox,
         QDialog,
-        QDialogButtonBox,
         QDockWidget,
-        QFileDialog,
-        QFrame,
-        QGraphicsItem,
-        QGraphicsPixmapItem,
-        QGraphicsScene,
-        QGraphicsView,
-        QHBoxLayout,
         QLabel,
         QListWidget,
         QMainWindow,
-        QMessageBox,
         QPlainTextEdit,
         QPushButton,
         QRadioButton,
-        QScrollArea,
         QSplitter,
         QDoubleSpinBox,
         QSpinBox,
         QSlider,
         QTableWidget,
-        QTableWidgetItem,
-        QToolBar,
         QVBoxLayout,
-        QWidget,
     )
 except ModuleNotFoundError as exc:
     QT_IMPORT_ERROR = exc
@@ -74,71 +54,18 @@ if QT_IMPORT_ERROR is None:
 try:
     from .font_size_calibration import DEFAULT_FONT_SIZE_BASE, DEFAULT_FONT_SIZE_STEP
     from .processor import (
-        BoxOverlay,
         CtdOverlayProcessor,
         PageOverlay,
-        normalized_center_from_xyxy,
-        tuple_center,
-        xyxy_from_item,
     )
-    from .labelplus_pipeline import build_bt_from_labelplus_txt
-    from .measure_view import char_box_label
 except ImportError:
     from font_size_calibration import DEFAULT_FONT_SIZE_BASE, DEFAULT_FONT_SIZE_STEP
     from processor import (
-        BoxOverlay,
         CtdOverlayProcessor,
         PageOverlay,
-        normalized_center_from_xyxy,
-        tuple_center,
-        xyxy_from_item,
     )
-    from labelplus_pipeline import build_bt_from_labelplus_txt
-    from measure_view import char_box_label
 
 
 if QT_IMPORT_ERROR is None:
-    try:
-        from .bt_measurement_dialog import BtMeasurementDialog
-    except ImportError:
-        from bt_measurement_dialog import BtMeasurementDialog
-
-
-    def qimage_size(path: Path) -> tuple[int, int] | None:
-        image = QImage(str(path))
-        if image.isNull():
-            return None
-        return image.width(), image.height()
-
-
-    def mask_to_pixmap(mask: np.ndarray, color: QColor, opacity: float) -> QPixmap:
-        if mask.ndim == 3:
-            mask = mask.max(axis=0)
-        mask = np.asarray(mask)
-        if mask.dtype != np.uint8:
-            mask = np.clip(mask, 0, 255).astype(np.uint8)
-
-        height, width = mask.shape[:2]
-        rgba = np.zeros((height, width, 4), dtype=np.uint8)
-        rgba[:, :, 0] = color.red()
-        rgba[:, :, 1] = color.green()
-        rgba[:, :, 2] = color.blue()
-        rgba[:, :, 3] = np.clip(mask.astype(np.float32) * opacity, 0, 255).astype(np.uint8)
-        image = QImage(rgba.data, width, height, rgba.strides[0], QImage.Format.Format_RGBA8888).copy()
-        return QPixmap.fromImage(image)
-
-
-    def union_mask(masks: np.ndarray | None) -> np.ndarray | None:
-        if masks is None or masks.size == 0:
-            return None
-        arr = np.asarray(masks)
-        if arr.ndim == 2:
-            return arr.astype(np.uint8)
-        if arr.ndim == 3:
-            return arr.max(axis=0).astype(np.uint8)
-        return None
-
-
     try:
         from .viewer_widgets import BtAnnotationItem, ImageView, NavigatorWidget
     except ImportError:
@@ -147,31 +74,6 @@ if QT_IMPORT_ERROR is None:
         from .viewer_popovers import BtMatchPopover, BtTextEditPopover, HtmlTextOverlay
     except ImportError:
         from viewer_popovers import BtMatchPopover, BtTextEditPopover, HtmlTextOverlay
-    try:
-        from .viewer_dialogs import (
-            ConfirmPreviewDialog,
-            FontSizeRegularizeDialog,
-            RangeSlider,
-            compact_int_px,
-            compact_px,
-            even_font_size,
-            positive_int,
-            show_error_details,
-            show_exception_details,
-        )
-    except ImportError:
-        from viewer_dialogs import (
-            ConfirmPreviewDialog,
-            FontSizeRegularizeDialog,
-            RangeSlider,
-            compact_int_px,
-            compact_px,
-            even_font_size,
-            positive_int,
-            show_error_details,
-            show_exception_details,
-        )
-
     try:
         from .viewer_ui_mixin import ViewerUIMixin
     except ImportError:
