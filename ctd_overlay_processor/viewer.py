@@ -648,6 +648,7 @@ if QT_IMPORT_ERROR is None:
             self._ready = False
             self._pending_items: list[dict[str, object]] | None = None
             self._last_payload = ''
+            self._suspended = False
             if self.web_view is None:
                 return
             self.web_view.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -664,6 +665,8 @@ if QT_IMPORT_ERROR is None:
             if self.web_view is None:
                 return
             self._pending_items = items
+            if self._suspended:
+                return
             self.web_view.setVisible(bool(items))
             if items:
                 self.web_view.raise_()
@@ -675,9 +678,23 @@ if QT_IMPORT_ERROR is None:
             self._last_payload = payload
             self.web_view.page().runJavaScript(f'window.updateItems({payload});')
 
+        def suspend(self) -> None:
+            if self.web_view is None:
+                return
+            self._suspended = True
+            self.web_view.hide()
+
+        def resume(self) -> None:
+            if self.web_view is None:
+                return
+            self._suspended = False
+            if self._pending_items is not None:
+                self.set_items(self._pending_items)
+
         def hide(self) -> None:
             if self.web_view is None:
                 return
+            self._suspended = False
             self._pending_items = []
             self._last_payload = ''
             if self._ready:
@@ -1072,6 +1089,11 @@ if QT_IMPORT_ERROR is None:
             self._updating_editor = False
             self._syncing_views = False
             self._fitting_views = False
+            self._pending_viewport_source: ImageView | None = None
+            self._viewport_sync_timer = QTimer(self)
+            self._viewport_sync_timer.setSingleShot(True)
+            self._viewport_sync_timer.setInterval(16)
+            self._viewport_sync_timer.timeout.connect(self._flush_viewport_sync)
             self._popover_bt_item: dict[str, Any] | None = None
             self._box_drag_mode: str | None = None
             self._box_drag_start: tuple[float, float] | None = None
@@ -1081,7 +1103,7 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_start: tuple[float, float] | None = None
             self._bt_drag_original: tuple[int, int, int, int] | None = None
             self._bt_drag_original_item: dict[str, Any] | None = None
-            self._bt_drag_original_items: list[dict[str, Any]] | None = None
+            self._bt_drag_original_items: dict[int, dict[str, Any]] | None = None
             self._bt_drag_original_xyxys: dict[int, tuple[int, int, int, int]] = {}
             self._bt_drag_indices: list[int] = []
             self._bt_drag_temporary = False
@@ -2119,11 +2141,19 @@ if QT_IMPORT_ERROR is None:
             else:
                 self.sync_viewports_from(self.view)
             self.update_navigator()
-            self.update_bt_html_overlay()
             self.schedule_bt_html_overlay_update()
 
         def sync_viewports_from(self, source: ImageView) -> None:
             if self._syncing_views or self._fitting_views:
+                return
+            self._pending_viewport_source = source
+            if not self._viewport_sync_timer.isActive():
+                self._viewport_sync_timer.start()
+
+        def _flush_viewport_sync(self) -> None:
+            source = self._pending_viewport_source
+            self._pending_viewport_source = None
+            if source is None or self._syncing_views or self._fitting_views:
                 return
             target = self.view if source is self.bt_view else self.bt_view
             if source.sceneRect().isEmpty() or target.sceneRect().isEmpty():
@@ -2134,7 +2164,7 @@ if QT_IMPORT_ERROR is None:
             target.centerOn(center)
             self._syncing_views = False
             self.update_navigator()
-            self.update_bt_html_overlay()
+            self.schedule_bt_html_overlay_update()
             if self._popover_bt_item is not None and self.bt_match_popover.isVisible():
                 self.position_bt_match_popover(self._popover_bt_item)
             item = self.selected_bt_item()
@@ -2148,7 +2178,7 @@ if QT_IMPORT_ERROR is None:
             self.view.centerOn(center)
             self._syncing_views = False
             self.update_navigator()
-            self.update_bt_html_overlay()
+            self.schedule_bt_html_overlay_update()
 
         def update_navigator(self) -> None:
             if not hasattr(self, 'navigator'):
@@ -2171,7 +2201,7 @@ if QT_IMPORT_ERROR is None:
             if not hasattr(self, '_fitting_views'):
                 return
             self.fit_both_views()
-            self.update_bt_html_overlay()
+            self.schedule_bt_html_overlay_update()
 
         def load_bt_clipboard_items(self) -> list[dict[str, Any]]:
             """Load the app-wide text-box clipboard without trusting stored data."""
@@ -2646,6 +2676,29 @@ if QT_IMPORT_ERROR is None:
             self.bt_undo_stack.append({
                 'page_name': page_name,
                 'items': copy.deepcopy(items),
+                'selected_index': selected_index,
+                'selected_indices': sorted(selected_indices or []),
+                'description': description,
+            })
+            if len(self.bt_undo_stack) > 200:
+                self.bt_undo_stack = self.bt_undo_stack[-200:]
+
+        def push_bt_changes_undo_snapshot(
+            self,
+            description: str,
+            before_items: dict[int, dict[str, Any]],
+            selected_index: int | None,
+            selected_indices: set[int] | list[int] | None = None,
+        ) -> None:
+            page_name = self.current_page_name()
+            if page_name is None or not before_items:
+                return
+            self.bt_undo_stack.append({
+                'page_name': page_name,
+                'changes': [
+                    {'index': index, 'item': item}
+                    for index, item in sorted(before_items.items())
+                ],
                 'selected_index': selected_index,
                 'selected_indices': sorted(selected_indices or []),
                 'description': description,
@@ -3602,9 +3655,14 @@ if QT_IMPORT_ERROR is None:
             if page_name is None:
                 return
             items = self.bt_items_for_page(page_name)
+            indices = self.selected_bt_indices_list()
             self._bt_editor_preview_snapshot = {
                 'page_name': page_name,
-                'items': copy.deepcopy(items),
+                'items': {
+                    index: copy.deepcopy(items[index])
+                    for index in indices
+                    if 0 <= index < len(items) and isinstance(items[index], dict)
+                },
                 'selected_index': self.selected_bt_index,
                 'selected_indices': set(self.selected_bt_indices),
             }
@@ -3633,15 +3691,26 @@ if QT_IMPORT_ERROR is None:
                 return
             items = self.bt_items_for_page(page_name)
             before_items = snapshot.get('items')
-            if not isinstance(before_items, list) or items == before_items:
+            if not isinstance(before_items, dict):
+                self._bt_editor_preview_status = None
+                return
+            changed_before_items = {
+                index: item
+                for index, item in before_items.items()
+                if isinstance(index, int)
+                and 0 <= index < len(items)
+                and isinstance(item, dict)
+                and items[index] != item
+            }
+            if not changed_before_items:
                 self._bt_editor_preview_status = None
                 return
 
             selected_index = snapshot.get('selected_index')
             selected_indices = snapshot.get('selected_indices')
-            self.push_bt_items_undo_snapshot(
+            self.push_bt_changes_undo_snapshot(
                 self._bt_editor_preview_status or '修改 _bt 字體/旋轉',
-                before_items,
+                changed_before_items,
                 selected_index if isinstance(selected_index, int) else None,
                 selected_indices if isinstance(selected_indices, set) else None,
             )
@@ -4102,10 +4171,14 @@ if QT_IMPORT_ERROR is None:
             if not changes:
                 return False
 
-            before_items = copy.deepcopy(items)
+            before_items = {
+                index: copy.deepcopy(items[index])
+                for index, _updates in changes
+                if 0 <= index < len(items) and isinstance(items[index], dict)
+            }
             before_selected = self.selected_bt_index
             before_selected_indices = set(self.selected_bt_indices)
-            self.push_bt_items_undo_snapshot(status, before_items, before_selected, before_selected_indices)
+            self.push_bt_changes_undo_snapshot(status, before_items, before_selected, before_selected_indices)
             for index, normalized_updates in changes:
                 item = items[index]
                 if 'xyxy_pixel' in normalized_updates:
@@ -4165,6 +4238,40 @@ if QT_IMPORT_ERROR is None:
             if self.page is None or page_name != self.page.page_name:
                 self.status_label.setText('撤銷只支持當前頁；已忽略其它頁面的撤銷記錄。')
                 self.update_action_state()
+                return
+            if isinstance(entry.get('changes'), list):
+                items = self.bt_items_for_page(page_name)
+                for change in entry['changes']:
+                    if not isinstance(change, dict):
+                        continue
+                    item_index = change.get('index')
+                    before_item = change.get('item')
+                    if (
+                        isinstance(item_index, int)
+                        and 0 <= item_index < len(items)
+                        and isinstance(before_item, dict)
+                    ):
+                        items[item_index] = copy.deepcopy(before_item)
+                selected_index = entry.get('selected_index')
+                selected_indices = entry.get('selected_indices')
+                restored_indices = {
+                    index for index in selected_indices
+                    if isinstance(index, int) and 0 <= index < len(items)
+                } if isinstance(selected_indices, list) else set()
+                if isinstance(selected_index, int) and 0 <= selected_index < len(items):
+                    restored_indices.add(selected_index)
+                    self.selected_bt_index = selected_index
+                else:
+                    self.selected_bt_index = self.active_bt_index_from_selection(restored_indices)
+                self.selected_bt_indices = restored_indices
+                self.mark_bt_dirty()
+                if self.selected_bt_items():
+                    self.populate_box_editor_for_selection()
+                else:
+                    self.set_box_editor_enabled(False)
+                self.update_bt_item_list()
+                self.render_bt_page(refit=False)
+                self.status_label.setText('已撤銷上一個 _bt 修改，尚未保存。')
                 return
             if isinstance(entry.get('items'), list):
                 items = self.bt_items_for_page(page_name)
@@ -4954,7 +5061,6 @@ if QT_IMPORT_ERROR is None:
                     self.bt_view.viewportChanged.emit(self.bt_view)
             self.bt_annotation_item.update()
             self.update_navigator()
-            self.update_bt_html_overlay()
             self.schedule_bt_html_overlay_update()
 
         def update_bt_html_overlay(self) -> None:
@@ -4962,8 +5068,9 @@ if QT_IMPORT_ERROR is None:
             if overlay is None:
                 return
             if self._bt_drag_active:
-                overlay.hide()
+                overlay.suspend()
                 return
+            overlay.resume()
             overlay.update_geometry()
             items = self.build_bt_html_items()
             if items:
@@ -4977,14 +5084,11 @@ if QT_IMPORT_ERROR is None:
             if getattr(self, '_bt_html_overlay_update_scheduled', False):
                 return
             self._bt_html_overlay_update_scheduled = True
+            QTimer.singleShot(16, self._flush_bt_html_overlay_update)
 
-            def refresh(final: bool = False) -> None:
-                self.update_bt_html_overlay()
-                if final:
-                    self._bt_html_overlay_update_scheduled = False
-
-            QTimer.singleShot(0, refresh)
-            QTimer.singleShot(30, lambda: refresh(True))
+        def _flush_bt_html_overlay_update(self) -> None:
+            self._bt_html_overlay_update_scheduled = False
+            self.update_bt_html_overlay()
 
         def build_bt_html_items(self) -> list[dict[str, object]]:
             if self.bt_data is None:
@@ -5156,12 +5260,15 @@ if QT_IMPORT_ERROR is None:
 
             selected_indices = set(self.selected_bt_indices_list())
             multiple_selected = len(selected_indices) > 1
+            dragging = self._bt_drag_active
             for index, item in enumerate(items):
                 xyxy = self.bt_xyxy_from_item(item)
                 if xyxy is None:
                     continue
                 x1, y1, x2, y2 = xyxy
                 selected = index in selected_indices
+                if dragging and not selected:
+                    continue
                 frame_color = QColor(255, 236, 150, 210)
                 if selected:
                     painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -5184,7 +5291,7 @@ if QT_IMPORT_ERROR is None:
                     painter.drawEllipse(QPointF(center_x, center_y), 4, 4)
                     painter.drawLine(QPointF(center_x - 11, center_y), QPointF(center_x + 11, center_y))
                     painter.drawLine(QPointF(center_x, center_y - 11), QPointF(center_x, center_y + 11))
-                if self.show_bt_font_labels_check.isChecked():
+                if not dragging and self.show_bt_font_labels_check.isChecked():
                     self.draw_bt_font_label(
                         painter,
                         QRectF(x1, y1, x2 - x1, y2 - y1),
@@ -5310,10 +5417,14 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_start = (x, y)
             self._bt_drag_original = xyxy
             self._bt_drag_original_item = copy.deepcopy(item)
-            self._bt_drag_original_items = copy.deepcopy(self.bt_items_for_page())
             self._bt_drag_indices = drag_indices
             self._bt_drag_original_xyxys = {}
             items = self.bt_items_for_page()
+            self._bt_drag_original_items = {
+                selected_index: copy.deepcopy(items[selected_index])
+                for selected_index in drag_indices
+                if 0 <= selected_index < len(items) and isinstance(items[selected_index], dict)
+            }
             for selected_index in drag_indices:
                 if 0 <= selected_index < len(items):
                     selected_xyxy = self.bt_xyxy_from_item(items[selected_index])
@@ -5322,7 +5433,7 @@ if QT_IMPORT_ERROR is None:
             self._bt_drag_temporary = temporary
             self._bt_drag_active = True
             if self.bt_html_overlay is not None:
-                self.bt_html_overlay.hide()
+                self.bt_html_overlay.suspend()
             self.show_bt_match_popover(item)
 
         def update_bt_view_cursor(self, x: float, y: float) -> None:
@@ -5379,14 +5490,10 @@ if QT_IMPORT_ERROR is None:
                 page_name = self.current_page_name()
                 items = self.bt_items_for_page(page_name)
                 if self._bt_drag_original_items is not None:
-                    items[:] = self._bt_drag_original_items
+                    for index, original_item in self._bt_drag_original_items.items():
+                        if 0 <= index < len(items):
+                            items[index] = copy.deepcopy(original_item)
                     self.populate_box_editor_for_selection()
-                    self.update_bt_item_list()
-                    self.render_bt_page(refit=False)
-                    self.status_label.setText('臨時移動結束，已回到原位。')
-                elif 0 <= self.selected_bt_index < len(items):
-                    items[self.selected_bt_index] = self._bt_drag_original_item
-                    self.populate_box_editor_from_bt(items[self.selected_bt_index])
                     self.update_bt_item_list()
                     self.render_bt_page(refit=False)
                     self.status_label.setText('臨時移動結束，已回到原位。')
@@ -5414,7 +5521,7 @@ if QT_IMPORT_ERROR is None:
                             items[index]['match_status'] = 'manual'
                             changed = True
                 if changed:
-                    self.push_bt_items_undo_snapshot(
+                    self.push_bt_changes_undo_snapshot(
                         '移動 _bt 多選框',
                         self._bt_drag_original_items,
                         self.selected_bt_index,
