@@ -107,6 +107,10 @@ if QT_IMPORT_ERROR is None:
         from .viewer_render_mixin import ViewerRenderMixin
     except ImportError:
         from viewer_render_mixin import ViewerRenderMixin
+    try:
+        from .viewer_bt_render_mixin import ViewerBTRenderMixin
+    except ImportError:
+        from viewer_bt_render_mixin import ViewerBTRenderMixin
 
     class CtdOverlayViewer(
         ViewerUIMixin,
@@ -116,6 +120,7 @@ if QT_IMPORT_ERROR is None:
         ViewerBTMeasurementMixin,
         ViewerBTUpdateMixin,
         ViewerWorkflowMixin,
+        ViewerBTRenderMixin,
         ViewerRenderMixin,
         QMainWindow,
     ):
