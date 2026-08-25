@@ -1033,6 +1033,7 @@ class MeasureEditorWindow(QMainWindow):
     def apply_ocr_font_size_updates(self, updates: object) -> None:
         if not isinstance(updates, dict):
             return
+        previous_method = self.measure.get('font_size_calculation_method')
         pages = self.measure.setdefault('pages', {})
         before_pages: dict[str, list[dict[str, Any]]] = {}
         changed = 0
@@ -1065,16 +1066,30 @@ class MeasureEditorWindow(QMainWindow):
                 before_pages[str(page_name)] = original_items
                 changed += page_changed
 
-        if changed == 0:
+        calibration = self.processor.measure_ocr.get('font_calibration') or {}
+        self.measure['font_size_calculation_method'] = 'ocr_aligned'
+        self.measure['font_size_calculation_settings'] = {
+            'default_font_size': round(float(calibration.get('default_font_size', 24.0)), 1),
+            'font_size_step': round(float(calibration.get('font_size_step', 2.0)), 1),
+        }
+        self.processor.font_size_calculation_method = 'ocr_aligned'
+        method_changed = previous_method != 'ocr_aligned'
+
+        if changed == 0 and not method_changed:
             self.status_label.setText('OCR 字級建議與目前值相同，沒有修改。')
             return
-        self.push_undo_pages_snapshot(
-            '套用 OCR 字級校準',
-            before_pages,
-            self.current_page_name(),
-            self.selected_index,
-        )
-        self.mark_dirty(f'已套用 {changed} 個 OCR 字級建議，尚未保存。')
+        if changed:
+            self.push_undo_pages_snapshot(
+                '套用 OCR 字級校準',
+                before_pages,
+                self.current_page_name(),
+                self.selected_index,
+            )
+        if changed:
+            status = f'已套用 {changed} 個 OCR 字級建議，尚未保存。'
+        else:
+            status = '字級數值相同，已切換為 OCR 對齊逐字計算，尚未保存。'
+        self.mark_dirty(status)
         self.refresh_after_measure_change(refit=False)
 
     def render_page(self, *_, refit: bool = True) -> None:

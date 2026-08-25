@@ -29,6 +29,8 @@ except Exception:
 
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tif', '.tiff')
 CTD_MEASURE_JSON = 'measure.json'
+FONT_SIZE_METHOD_OCR_ALIGNED = 'ocr_aligned'
+FONT_SIZE_METHOD_CHAR_BOX = 'char_box'
 
 
 @dataclass(slots=True)
@@ -293,13 +295,52 @@ def _reliable_ocr_char_boxes(measure_ocr: dict[str, Any], page_name: str) -> lis
     return result
 
 
+def _legacy_char_boxes(measure_debug: dict[str, Any], page_name: str) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    font_debug_pages = measure_debug.get('font_size', {})
+    for fallback_index, block_debug in enumerate(font_debug_pages.get(page_name, []) or []):
+        if not isinstance(block_debug, dict):
+            continue
+        source_index = source_index_from_item(block_debug, fallback_index)
+        orientation = str((block_debug.get('font_size_debug') or {}).get('orientation') or 'vertical')
+        boxes_by_line: dict[int, list[dict[str, Any]]] = {}
+        for char_box in block_debug.get('char_boxes', []) or []:
+            if isinstance(char_box, dict):
+                boxes_by_line.setdefault(int(char_box.get('line_index', 0)), []).append(char_box)
+        for line_index, boxes in boxes_by_line.items():
+            def sort_key(char_box: dict[str, Any]) -> tuple[float, float]:
+                bbox = char_box.get('bbox') or [0, 0, 0, 0]
+                x1, y1, x2, y2 = [float(value) for value in bbox]
+                if orientation == 'horizontal':
+                    return (x1 + x2) / 2, (y1 + y2) / 2
+                return (y1 + y2) / 2, (x1 + x2) / 2
+
+            for character_index, char_box in enumerate(sorted(boxes, key=sort_key)):
+                item = dict(char_box)
+                item['source_block_index'] = source_index
+                item['line_index'] = line_index
+                item['character_index'] = character_index
+                item['font_size_calculation_method'] = FONT_SIZE_METHOD_CHAR_BOX
+                result.append(item)
+    return result
+
+
 def load_char_boxes(
     measure_debug: dict[str, Any],
     page_name: str,
     measure_ocr: dict[str, Any] | None = None,
+    calculation_method: str | None = None,
 ) -> list[dict[str, Any]]:
-    del measure_debug  # The legacy mask-projection character boxes are intentionally ignored.
-    return _reliable_ocr_char_boxes(measure_ocr or {}, page_name)
+    if calculation_method == FONT_SIZE_METHOD_CHAR_BOX:
+        return _legacy_char_boxes(measure_debug, page_name)
+    if calculation_method == FONT_SIZE_METHOD_OCR_ALIGNED:
+        return _reliable_ocr_char_boxes(measure_ocr or {}, page_name)
+
+    # Backward compatibility for files generated before the explicit method marker.
+    ocr_pages = (measure_ocr or {}).get('pages') or {}
+    if page_name in ocr_pages:
+        return _reliable_ocr_char_boxes(measure_ocr or {}, page_name)
+    return _legacy_char_boxes(measure_debug, page_name)
 
 
 def normalize_measure_map(measure: dict[str, Any]) -> None:
@@ -338,6 +379,7 @@ class CtdOverlayProcessor:
         self.aligned_box_map = load_json(self.aligned_box_map_path, required=False)
         self.measure = load_json(self.measure_path, required=False)
         normalize_measure_map(self.measure)
+        self.font_size_calculation_method = self.measure.get('font_size_calculation_method')
         self.measure_debug = load_json(self.measure_debug_path, required=False)
         self.measure_ocr = load_json(self.measure_ocr_path, required=False)
         self.source_images = find_source_images(self.image_dir)
@@ -499,7 +541,12 @@ class CtdOverlayProcessor:
             boxes=boxes,
             lines=lines,
             align_masks=align_masks,
-            char_boxes=load_char_boxes(self.measure_debug, page_name, self.measure_ocr),
+            char_boxes=load_char_boxes(
+                self.measure_debug,
+                page_name,
+                self.measure_ocr,
+                self.font_size_calculation_method,
+            ),
         )
 
     def summary(self) -> dict[str, Any]:

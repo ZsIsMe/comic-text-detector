@@ -128,6 +128,9 @@ def run_detection(
     device: str | None = None,
     only_align: bool = False,
     need_neck: bool = False,
+    font_size_calculation_method: str = 'ocr_aligned',
+    default_font_size: float = 24.0,
+    font_size_step: float = 2.0,
 ) -> int:
     os.chdir(PROJECT_ROOT)
     image_dir = osp.abspath(image_dir)
@@ -198,6 +201,9 @@ def run_detection(
         block_map,
         line_trans_map,
         aligned_box_map,
+        font_size_calculation_method=font_size_calculation_method,
+        default_font_size=default_font_size,
+        font_size_step=font_size_step,
     )
     enriched_count, enrich_errors = enrich_measure_map(Path(image_dir), measure_map)
     write_json(measure_path, measure_map)
@@ -265,6 +271,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=False,
         help='是否啟用 neck/deal_overlap 輔助流程，預設 false。',
     )
+    parser.add_argument(
+        '--font-size-calculation-method',
+        choices=['ocr_aligned', 'char_box'],
+        default='ocr_aligned',
+        help='字級算法：ocr_aligned 或 char_box。',
+    )
+    parser.add_argument('--default-font-size', type=float, default=24.0)
+    parser.add_argument('--font-size-step', type=float, default=2.0)
     return parser
 
 
@@ -276,6 +290,9 @@ def main() -> None:
         device=args.device,
         only_align=args.only_align,
         need_neck=args.need_neck,
+        font_size_calculation_method=args.font_size_calculation_method,
+        default_font_size=max(0.1, round(float(args.default_font_size), 1)),
+        font_size_step=max(0.1, round(float(args.font_size_step), 1)),
     )
 
 

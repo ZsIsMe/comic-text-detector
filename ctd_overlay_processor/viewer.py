@@ -46,6 +46,7 @@ try:
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QRadioButton,
         QScrollArea,
         QSplitter,
         QDoubleSpinBox,
@@ -994,6 +995,8 @@ if QT_IMPORT_ERROR is None:
             self.font_calibration_command: list[str] = []
             self.generated_default_font_size = DEFAULT_FONT_SIZE_BASE
             self.generated_font_size_step = DEFAULT_FONT_SIZE_STEP
+            self.generated_font_size_method = 'ocr_aligned'
+            self.generated_calibration_backup: dict[Path, bytes | None] | None = None
             self.hover_char_box: dict | None = None
             self.selected_box_index: int | None = None
             self.undo_stack: list[dict[str, object]] = []
@@ -1077,8 +1080,12 @@ if QT_IMPORT_ERROR is None:
             self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
             self.generate_button = QPushButton('生成/更新 CTD')
             self.edit_measure_button = QPushButton('編輯 measure.json')
-            self.auto_calibrate_font_check = QCheckBox('生成後自動校準字級')
-            self.auto_calibrate_font_check.setChecked(True)
+            self.font_size_method_group = QButtonGroup(self)
+            self.ocr_aligned_font_radio = QRadioButton('OCR 對齊逐字計算')
+            self.char_box_font_radio = QRadioButton('單字框計算')
+            self.font_size_method_group.addButton(self.ocr_aligned_font_radio)
+            self.font_size_method_group.addButton(self.char_box_font_radio)
+            self.ocr_aligned_font_radio.setChecked(True)
             self.auto_calibrate_device_combo = QComboBox()
             self.auto_calibrate_device_combo.addItem('字級 OCR：CPU', 'cpu')
             self.auto_calibrate_device_combo.addItem('字級 OCR：MPS（可能回退 CPU）', 'mps')
@@ -1713,10 +1720,16 @@ if QT_IMPORT_ERROR is None:
             reload_button = QPushButton('重新載入目前頁')
             reload_button.clicked.connect(self.reload_current_page)
             layout.addWidget(reload_button)
-            self.auto_calibrate_font_check.setToolTip(
-                'CTD 生成完成後，自動執行 mit48 逐字 OCR，使用字型墨跡緩存校準並保存 measure.json。'
+            layout.addWidget(QLabel('字級計算方法'))
+            self.ocr_aligned_font_radio.setToolTip(
+                '使用 mit48 整行 OCR 對齊可靠文字，再依字型墨跡緩存逐字計算字級。'
             )
-            layout.addWidget(self.auto_calibrate_font_check)
+            self.char_box_font_radio.setToolTip(
+                '使用原有遮罩切分單字框的字級計算方法，不執行 mit48 OCR。'
+            )
+            self.ocr_aligned_font_radio.toggled.connect(self.auto_calibrate_device_combo.setEnabled)
+            layout.addWidget(self.ocr_aligned_font_radio)
+            layout.addWidget(self.char_box_font_radio)
             layout.addWidget(self.auto_calibrate_device_combo)
             self.generate_button.clicked.connect(self.generate_ctd)
             layout.addWidget(self.generate_button)
@@ -4198,15 +4211,33 @@ if QT_IMPORT_ERROR is None:
             if calibration_settings is None:
                 return
             self.generated_default_font_size, self.generated_font_size_step = calibration_settings
+            self.generated_font_size_method = (
+                'ocr_aligned' if self.ocr_aligned_font_radio.isChecked() else 'char_box'
+            )
+            self._capture_generated_calibration_backup()
 
             self.generate_button.setEnabled(False)
+            method_label = (
+                'OCR 對齊逐字計算'
+                if self.generated_font_size_method == 'ocr_aligned'
+                else '單字框計算'
+            )
             self.status_label.setText(
-                '正在生成 CTD 資料，'
+                f'正在生成 CTD 資料（{method_label}），'
                 f'字級候選基準 {self.generated_default_font_size:.1f}、'
                 f'Step {self.generated_font_size_step:.1f}...'
             )
             process = QProcess(self)
-            args = [str(script), self.current_image_dir]
+            args = [
+                str(script),
+                self.current_image_dir,
+                '--font-size-calculation-method',
+                self.generated_font_size_method,
+                '--default-font-size',
+                f'{self.generated_default_font_size:.1f}',
+                '--font-size-step',
+                f'{self.generated_font_size_step:.1f}',
+            ]
             self.detect_command = [sys.executable, *args]
             self.detect_output_chunks = []
             process.setProgram(sys.executable)
@@ -4223,9 +4254,15 @@ if QT_IMPORT_ERROR is None:
             dialog = QDialog(self)
             dialog.setWindowTitle('生成／更新 CTD 字級設定')
             layout = QVBoxLayout(dialog)
-            description = QLabel(
-                '可靠字元會先計算帶小數的字級並排除異常值，再從「預設字級＋Step」形成的候選中選擇總誤差最低者。'
-            )
+            if self.ocr_aligned_font_radio.isChecked():
+                description_text = (
+                    'OCR 對齊逐字計算會先排除不可靠字元，再從「預設字級＋Step」形成的候選中選擇總誤差最低者。'
+                )
+            else:
+                description_text = (
+                    '單字框計算沿用原有遮罩切框與段落字級估算，最後依「預設字級＋Step」選擇最接近的候選字級。'
+                )
+            description = QLabel(description_text)
             description.setWordWrap(True)
             layout.addWidget(description)
 
@@ -4287,6 +4324,37 @@ if QT_IMPORT_ERROR is None:
             self.settings.setValue('font_calibration/font_size_step', font_size_step)
             return default_font_size, font_size_step
 
+        def _generated_calibration_paths(self) -> tuple[Path, ...]:
+            if not self.current_image_dir:
+                return ()
+            ctd_dir = Path(self.current_image_dir) / 'ctd'
+            return (
+                ctd_dir / 'measure.json',
+                ctd_dir / 'measure.debug.json',
+                ctd_dir / 'measure_ocr.json',
+            )
+
+        def _capture_generated_calibration_backup(self) -> None:
+            self.generated_calibration_backup = {
+                path: path.read_bytes() if path.is_file() else None
+                for path in self._generated_calibration_paths()
+            }
+
+        def _restore_generated_calibration_backup(self) -> None:
+            backup = self.generated_calibration_backup
+            self.generated_calibration_backup = None
+            if backup is None:
+                return
+            for path, content in backup.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+
+        def _clear_generated_calibration_backup(self) -> None:
+            self.generated_calibration_backup = None
+
         def _read_detection_output(self) -> None:
             if self.detect_process is None:
                 return
@@ -4320,6 +4388,7 @@ if QT_IMPORT_ERROR is None:
             )
             self.generate_button.setEnabled(True)
             self.status_label.setText('生成 CTD 失敗。')
+            self._restore_generated_calibration_backup()
             self.detect_process = None
             if process is not None:
                 process.deleteLater()
@@ -4355,24 +4424,28 @@ if QT_IMPORT_ERROR is None:
                 )
                 self.status_label.setText('生成 CTD 失敗。')
                 self.generate_button.setEnabled(True)
+                self._restore_generated_calibration_backup()
                 return
-            if self.auto_calibrate_font_check.isChecked():
+            if self.generated_font_size_method == 'ocr_aligned':
                 self.status_label.setText('CTD 資料生成完成，正在啟動 mit48 字級校準...')
                 self._start_generated_font_calibration()
                 return
+            self._clear_generated_calibration_backup()
             self.generate_button.setEnabled(True)
-            self.status_label.setText('CTD 資料生成完成，正在重新載入...')
+            self.status_label.setText('CTD 與單字框字級計算完成，正在重新載入...')
             if self.current_image_dir:
                 self.load_folder(self.current_image_dir)
 
         def _start_generated_font_calibration(self) -> None:
             if not self.current_image_dir:
                 self.generate_button.setEnabled(True)
+                self._restore_generated_calibration_backup()
                 return
             project_root = Path(__file__).resolve().parents[1]
             script = project_root / 'measure_ocr.py'
             if not script.is_file():
                 self.generate_button.setEnabled(True)
+                self._restore_generated_calibration_backup()
                 QMessageBox.critical(self, '找不到 OCR 腳本', f'找不到：\n{script}')
                 return
             device = str(self.auto_calibrate_device_combo.currentData() or 'cpu')
@@ -4439,7 +4512,8 @@ if QT_IMPORT_ERROR is None:
             self.font_calibration_process = None
             self.generate_button.setEnabled(True)
             self.font_calibration_progress_label.hide()
-            self.status_label.setText('CTD 已生成，但自動字級校準失敗。')
+            self._restore_generated_calibration_backup()
+            self.status_label.setText('OCR 字級校準失敗，已恢復執行前的字級結果。')
             if process is not None:
                 process.deleteLater()
             if self.current_image_dir:
@@ -4469,8 +4543,10 @@ if QT_IMPORT_ERROR is None:
                     'CTD 已生成，但 mit48 字級校準失敗。可稍後在 measure 編輯器中重新執行。',
                     details,
                 )
-                self.status_label.setText('CTD 已生成，但自動字級校準失敗。')
+                self._restore_generated_calibration_backup()
+                self.status_label.setText('OCR 字級校準失敗，已恢復執行前的字級結果。')
             else:
+                self._clear_generated_calibration_backup()
                 self.status_label.setText('CTD 與字型緩存字級校準完成，正在重新載入...')
             self.generate_button.setEnabled(True)
             self.font_calibration_progress_label.hide()

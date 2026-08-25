@@ -459,6 +459,12 @@ def apply_calibrated_font_sizes(
                 unchanged = False
             if not unchanged:
                 changed += 1
+    calibration = output.get('font_calibration') or {}
+    measure['font_size_calculation_method'] = 'ocr_aligned'
+    measure['font_size_calculation_settings'] = {
+        'default_font_size': round(float(calibration.get('default_font_size', DEFAULT_FONT_SIZE_BASE)), 1),
+        'font_size_step': round(float(calibration.get('font_size_step', DEFAULT_FONT_SIZE_STEP)), 1),
+    }
     return changed
 
 

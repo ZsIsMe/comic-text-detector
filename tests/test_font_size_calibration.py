@@ -20,6 +20,7 @@ from ctd_overlay_processor.mit48px_ocr import (
     collapse_ctc_runs,
 )
 from ctd_overlay_processor.processor import load_char_boxes
+from new_detect_folder import _snap_font_size_to_grid
 from measure_ocr import (
     _character_region_from_token,
     _line_tasks_for_page,
@@ -42,6 +43,11 @@ class FontSizeCalibrationTests(unittest.TestCase):
 
     def test_candidate_grid_uses_default_24_and_step_2(self) -> None:
         self.assertEqual([28.0, 30.0, 32.0], _font_size_candidates(29.4, 31.2, 24.0, 2.0))
+
+    def test_legacy_font_size_uses_same_default_and_step_grid(self) -> None:
+        self.assertEqual(30.0, _snap_font_size_to_grid(29.4, 24.0, 2.0))
+        self.assertEqual(30.0, _snap_font_size_to_grid(29.0, 24.0, 2.0))
+        self.assertEqual(28.0, _snap_font_size_to_grid(28.8, 24.0, 2.0))
 
     def test_ocr_characters_drops_whitespace(self) -> None:
         self.assertEqual(['日', '本', '語'], ocr_characters('日 本\n語'))
@@ -282,6 +288,38 @@ class FontSizeCalibrationTests(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4], boxes[0]['bbox'])
         self.assertEqual(30, boxes[0]['calculated_font_size'])
 
+    def test_legacy_method_ignores_stale_ocr_boxes(self) -> None:
+        measure_debug = {
+            'font_size': {
+                '001.jpg': [{
+                    'source_block_index': 2,
+                    'font_size_debug': {'orientation': 'horizontal'},
+                    'char_boxes': [
+                        {'line_index': 0, 'bbox': [20, 2, 30, 14], 'width': 10, 'height': 12},
+                        {'line_index': 0, 'bbox': [5, 2, 15, 14], 'width': 10, 'height': 12},
+                    ],
+                }],
+            },
+        }
+        stale_ocr = {
+            'pages': {
+                '001.jpg': [{
+                    'source_block_index': 2,
+                    'ocr_characters': [
+                        {'line_index': 0, 'character_index': 0, 'status': 'accepted', 'bbox': [100, 100, 110, 110]},
+                    ],
+                    'font_fit': {
+                        'character_results': [
+                            {'line_index': 0, 'character_index': 0, 'accepted': True, 'pixel_size': 30},
+                        ],
+                    },
+                }],
+            },
+        }
+        boxes = load_char_boxes(measure_debug, '001.jpg', stale_ocr, 'char_box')
+        self.assertEqual([[5, 2, 15, 14], [20, 2, 30, 14]], [box['bbox'] for box in boxes])
+        self.assertTrue(all(box['font_size_calculation_method'] == 'char_box' for box in boxes))
+
     def test_apply_calibrated_font_sizes_updates_measure_and_preserves_detected_size(self) -> None:
         measure = {'pages': {'001.jpg': [{'font_size': 27}]}}
         output = {
@@ -299,6 +337,11 @@ class FontSizeCalibrationTests(unittest.TestCase):
         self.assertEqual(31.0, item['font_size'])
         self.assertEqual('mit48_cached_font_ink_candidate_grid', item['font_size_method'])
         self.assertEqual(31.0, output['pages']['001.jpg'][0]['font_fit']['applied_font_size'])
+        self.assertEqual('ocr_aligned', measure['font_size_calculation_method'])
+        self.assertEqual(
+            {'default_font_size': 24.0, 'font_size_step': 2.0},
+            measure['font_size_calculation_settings'],
+        )
 
     def test_apply_calibrated_font_sizes_preserves_one_decimal(self) -> None:
         measure = {'pages': {'001.jpg': [{'font_size': 27}]}}
