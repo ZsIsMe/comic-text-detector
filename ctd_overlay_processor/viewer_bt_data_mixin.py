@@ -692,5 +692,5 @@ class ViewerBTDataMixin:
                 for item in (size_item, count_item):
                     item.setForeground(QBrush(QColor(225, 229, 233)))
             self.font_size_table.setItem(row, 0, size_item)
-        self.font_size_table.setItem(row, 1, count_item)
+            self.font_size_table.setItem(row, 1, count_item)
         self.font_size_table.resizeRowsToContents()
