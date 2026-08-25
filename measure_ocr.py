@@ -430,8 +430,9 @@ def apply_calibrated_font_sizes(
             suggested = fit.get('suggested_font_size')
             suggested_float = fit.get('suggested_font_size_float', suggested)
             item_index = output_item.get('measure_item_index')
+            fit_status = str(fit.get('status') or '')
             if (
-                fit.get('status') != 'ready'
+                fit_status not in {'ready', 'ready_overlap_inherited'}
                 or not isinstance(suggested, (int, float))
                 or isinstance(suggested, bool)
                 or not isinstance(item_index, int)
@@ -450,7 +451,11 @@ def apply_calibrated_font_sizes(
             old_size = measure_item.get('font_size')
             measure_item.setdefault('font_size_detected', old_size)
             measure_item['font_size'] = font_size
-            measure_item['font_size_method'] = 'mit48_cached_font_ink_candidate_grid'
+            measure_item['font_size_method'] = (
+                'mit48_cached_font_ink_overlap_inherited'
+                if fit_status == 'ready_overlap_inherited'
+                else 'mit48_cached_font_ink_candidate_grid'
+            )
             fit['applied_font_size'] = font_size
             fit['applied_font_size_source_float'] = round(suggested_float, 3)
             try:

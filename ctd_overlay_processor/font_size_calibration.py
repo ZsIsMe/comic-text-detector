@@ -206,7 +206,7 @@ def fit_ocr_item(
     metrics_path: str | Path = DEFAULT_METRICS_PATH,
     maximum_fit_error: float = 0.45,
     maximum_axis_size_disagreement: float = 0.35,
-    minimum_reliable_characters: int = 3,
+    minimum_reliable_characters: int = 1,
     default_font_size: float = DEFAULT_FONT_SIZE_BASE,
     font_size_step: float = DEFAULT_FONT_SIZE_STEP,
 ) -> dict[str, Any]:
@@ -344,6 +344,106 @@ def fit_ocr_item(
     }
 
 
+def _item_xyxy(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    value = item.get('xyxy_pixel')
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = [float(part) for part in value]
+    except (TypeError, ValueError):
+        return None
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _box_iou(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    ix1 = max(left[0], right[0])
+    iy1 = max(left[1], right[1])
+    ix2 = min(left[2], right[2])
+    iy2 = min(left[3], right[3])
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if intersection <= 0:
+        return 0.0
+    left_area = (left[2] - left[0]) * (left[3] - left[1])
+    right_area = (right[2] - right[0]) * (right[3] - right[1])
+    union = left_area + right_area - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def _inherit_overlapping_ready_fits(
+    output: dict[str, Any],
+    minimum_iou: float = 0.85,
+) -> int:
+    inherited = 0
+    for items in (output.get('pages') or {}).values():
+        if not isinstance(items, list):
+            continue
+        donors = [
+            item
+            for item in items
+            if isinstance(item, dict)
+            and (item.get('font_fit') or {}).get('status') == 'ready'
+            and _item_xyxy(item) is not None
+        ]
+        for target in items:
+            if not isinstance(target, dict):
+                continue
+            target_fit = target.get('font_fit') or {}
+            if (
+                target_fit.get('status') != 'no_reliable_characters'
+                or target.get('ocr_lines')
+                or target.get('ocr_characters')
+            ):
+                continue
+            target_box = _item_xyxy(target)
+            if target_box is None:
+                continue
+            target_orientation = str(target.get('orientation') or 'vertical')
+            candidates = []
+            for donor in donors:
+                if donor is target or str(donor.get('orientation') or 'vertical') != target_orientation:
+                    continue
+                donor_box = _item_xyxy(donor)
+                if donor_box is None:
+                    continue
+                overlap = _box_iou(target_box, donor_box)
+                if overlap >= minimum_iou:
+                    candidates.append((overlap, donor))
+            if not candidates:
+                continue
+            overlap, donor = max(
+                candidates,
+                key=lambda entry: (
+                    entry[0],
+                    int((entry[1].get('font_fit') or {}).get('accepted_character_count') or 0),
+                ),
+            )
+            donor_fit = donor.get('font_fit') or {}
+            for key in (
+                'suggested_font_size',
+                'suggested_font_size_float',
+                'continuous_font_size_median',
+                'reliable_font_size_range',
+                'default_font_size',
+                'font_size_step',
+                'candidate_scores',
+            ):
+                target_fit[key] = donor_fit.get(key)
+            target_fit.update({
+                'status': 'ready_overlap_inherited',
+                'inherited_overlap_iou': round(float(overlap), 4),
+                'inherited_from_source_block_index': donor.get('source_block_index'),
+                'inherited_from_measure_item_index': donor.get('measure_item_index'),
+            })
+            target['font_fit'] = target_fit
+            inherited += 1
+    return inherited
+
+
 def calibrate_ocr_output(
     output: dict[str, Any],
     font_path: str | Path = DEFAULT_FONT_PATH,
@@ -352,7 +452,6 @@ def calibrate_ocr_output(
     font_size_step: float = DEFAULT_FONT_SIZE_STEP,
 ) -> int:
     metrics = validate_font_ink_metrics(font_path, metrics_path)
-    ready = 0
     for items in (output.get('pages') or {}).values():
         if not isinstance(items, list):
             continue
@@ -367,8 +466,15 @@ def calibrate_ocr_output(
                 font_size_step=font_size_step,
             )
             item['font_fit'] = fit
-            if fit.get('status') == 'ready':
-                ready += 1
+    inherited = _inherit_overlapping_ready_fits(output)
+    ready = sum(
+        1
+        for items in (output.get('pages') or {}).values()
+        if isinstance(items, list)
+        for item in items
+        if isinstance(item, dict)
+        and (item.get('font_fit') or {}).get('status') in {'ready', 'ready_overlap_inherited'}
+    )
     output['font_calibration'] = {
         'method': 'mit48_cached_font_ink_candidate_grid',
         'font_path': str(Path(font_path)),
@@ -378,5 +484,8 @@ def calibrate_ocr_output(
         'rounding': 'candidate_grid_one_decimal',
         'default_font_size': round(float(default_font_size), 1),
         'font_size_step': round(float(font_size_step), 1),
+        'minimum_reliable_characters': 1,
+        'overlap_inherited_count': inherited,
+        'overlap_inheritance_minimum_iou': 0.85,
     }
     return ready

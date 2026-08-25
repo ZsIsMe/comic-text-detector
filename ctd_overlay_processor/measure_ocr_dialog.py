@@ -356,6 +356,7 @@ class MeasureOcrDialog(QDialog):
     def _show_calibration_results(self, output: dict) -> None:
         status_text = {
             'ready': '可套用',
+            'ready_overlap_inherited': '沿用重疊區塊',
             'no_reliable_characters': '沒有可靠字元',
             'too_few_reliable_characters': '可靠字元不足',
             'suggestion_too_far_from_detected': '與檢測字級差距過大',
@@ -373,7 +374,7 @@ class MeasureOcrDialog(QDialog):
                 suggested = fit.get('suggested_font_size_float', fit.get('suggested_font_size'))
                 item_index = item.get('measure_item_index')
                 if (
-                    status == 'ready'
+                    status in {'ready', 'ready_overlap_inherited'}
                     and isinstance(suggested, (int, float))
                     and not isinstance(suggested, bool)
                     and isinstance(item_index, int)

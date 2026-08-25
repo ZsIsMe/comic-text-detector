@@ -111,6 +111,85 @@ class FontSizeCalibrationTests(unittest.TestCase):
         self.assertEqual(24.0, fit['default_font_size'])
         self.assertEqual(2.0, fit['font_size_step'])
 
+    def test_one_reliable_character_is_enough_for_calibration(self) -> None:
+        width, height = character_ink_size('日', 30) or (0, 0)
+        output = {
+            'pages': {
+                '001.jpg': [{
+                    'font_size': 24,
+                    'orientation': 'vertical',
+                    'ocr_characters': [{
+                        'line_index': 0,
+                        'character_index': 0,
+                        'orientation': 'vertical',
+                        'ocr_text': '日',
+                        'ocr_probability': 0.99,
+                        'status': 'accepted',
+                        'width': width,
+                        'height': height,
+                    }],
+                }],
+            },
+        }
+        ready = calibrate_ocr_output(output)
+        fit = output['pages']['001.jpg'][0]['font_fit']
+        self.assertEqual(1, ready)
+        self.assertEqual('ready', fit['status'])
+        self.assertEqual(1, fit['minimum_reliable_characters'])
+        self.assertEqual(30.0, fit['suggested_font_size_float'])
+
+    def test_empty_overlapping_block_inherits_ready_font_size(self) -> None:
+        width, height = character_ink_size('日', 30) or (0, 0)
+        output = {
+            'pages': {
+                '001.jpg': [
+                    {
+                        'source_block_index': 0,
+                        'measure_item_index': 0,
+                        'xyxy_pixel': [0, 0, 100, 100],
+                        'font_size': 24,
+                        'orientation': 'vertical',
+                        'ocr_lines': [{'ocr_text': '日'}],
+                        'ocr_characters': [{
+                            'line_index': 0,
+                            'character_index': 0,
+                            'orientation': 'vertical',
+                            'ocr_text': '日',
+                            'ocr_probability': 0.99,
+                            'status': 'accepted',
+                            'width': width,
+                            'height': height,
+                        }],
+                    },
+                    {
+                        'source_block_index': 1,
+                        'measure_item_index': 1,
+                        'xyxy_pixel': [2, 2, 98, 98],
+                        'font_size': 96,
+                        'orientation': 'vertical',
+                        'ocr_lines': [],
+                        'ocr_characters': [],
+                    },
+                ],
+            },
+        }
+        ready = calibrate_ocr_output(output)
+        inherited = output['pages']['001.jpg'][1]['font_fit']
+        self.assertEqual(2, ready)
+        self.assertEqual('ready_overlap_inherited', inherited['status'])
+        self.assertEqual(0, inherited['inherited_from_source_block_index'])
+        self.assertEqual(30.0, inherited['suggested_font_size_float'])
+        self.assertEqual(1, output['font_calibration']['overlap_inherited_count'])
+
+        measure = {'pages': {'001.jpg': [{'font_size': 24}, {'font_size': 96}]}}
+        changed = apply_calibrated_font_sizes(measure, output)
+        self.assertEqual(2, changed)
+        self.assertEqual(30.0, measure['pages']['001.jpg'][1]['font_size'])
+        self.assertEqual(
+            'mit48_cached_font_ink_overlap_inherited',
+            measure['pages']['001.jpg'][1]['font_size_method'],
+        )
+
     def test_calibration_recovers_rendered_integer_font_size(self) -> None:
         expected_size = 40
         characters = '日本語'
